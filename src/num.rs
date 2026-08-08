@@ -109,7 +109,6 @@ impl Number {
                 Some(Cow::Borrowed(complex))
             }
             _ => None,
-            // NumberInner::Simple(_) => None,
         }
     }
 
@@ -1937,94 +1936,80 @@ impl_op_for_number!(Div, div);
 // Numerical built-ins:
 
 #[bridge(name = "number?", lib = "(rnrs base builtins (6))")]
-pub fn is_number(arg: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(arg.type_of() == ValueType::Number)])
+pub fn is_number(arg: &Value) -> bool {
+    arg.type_of() == ValueType::Number
 }
 
 #[bridge(name = "complex?", lib = "(rnrs base builtins (6))")]
-pub fn is_complex(arg: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(
-        arg.cast::<Number>()
-            .as_ref()
-            .is_some_and(Number::is_complex),
-    )])
+pub fn is_complex(arg: &Value) -> bool {
+    arg.cast::<Number>()
+        .as_ref()
+        .is_some_and(Number::is_complex)
 }
 
 #[bridge(name = "real?", lib = "(rnrs base builtins (6))")]
-pub fn is_real(arg: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(
-        arg.cast::<Number>().as_ref().is_some_and(Number::is_real),
-    )])
+pub fn is_real(arg: &Value) -> bool {
+    arg.cast::<Number>().as_ref().is_some_and(Number::is_real)
 }
 
 #[bridge(name = "rational?", lib = "(rnrs base builtins (6))")]
-pub fn is_rational(arg: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(
-        arg.cast::<Number>()
-            .as_ref()
-            .is_some_and(Number::is_rational),
-    )])
+pub fn is_rational(arg: &Value) -> bool {
+    arg.cast::<Number>()
+        .as_ref()
+        .is_some_and(Number::is_rational)
 }
 
 #[bridge(name = "integer?", lib = "(rnrs base builtins (6))")]
-pub fn is_integer(arg: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(
-        arg.cast::<Number>()
-            .as_ref()
-            .is_some_and(Number::is_integer),
-    )])
+pub fn is_integer(arg: &Value) -> bool {
+    arg.cast::<Number>()
+        .as_ref()
+        .is_some_and(Number::is_integer)
 }
 
 #[bridge(name = "real-valued?", lib = "(rnrs base builtins (6))")]
-pub fn real_valued_pred(arg: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(
-        arg.cast::<Number>()
-            .as_ref()
-            .is_some_and(Number::is_real_valued),
-    )])
+pub fn real_valued_pred(arg: &Value) -> bool {
+    arg.cast::<Number>()
+        .as_ref()
+        .is_some_and(Number::is_real_valued)
 }
 
 #[bridge(name = "rational-valued?", lib = "(rnrs base builtins (6))")]
-pub fn rational_valued_pred(arg: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(
-        arg.cast::<Number>()
-            .as_ref()
-            .is_some_and(Number::is_rational_valued),
-    )])
+pub fn rational_valued_pred(arg: &Value) -> bool {
+    arg.cast::<Number>()
+        .as_ref()
+        .is_some_and(Number::is_rational_valued)
 }
 
 #[bridge(name = "integer-valued?", lib = "(rnrs base builtins (6))")]
-pub fn integer_valued_pred(arg: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(
-        arg.cast::<Number>()
-            .as_ref()
-            .is_some_and(Number::is_integer_valued),
-    )])
+pub fn integer_valued_pred(arg: &Value) -> bool {
+    arg.cast::<Number>()
+        .as_ref()
+        .is_some_and(Number::is_integer_valued)
 }
 
 #[bridge(name = "exact?", lib = "(rnrs base builtins (6))")]
-pub fn exact_pred(z: Number) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(z.is_exact())])
+pub fn exact_pred(z: Number) -> bool {
+    z.is_exact()
 }
 
 #[bridge(name = "inexact?", lib = "(rnrs base builtins (6))")]
-pub fn inexact_pred(z: Number) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(z.is_inexact())])
+pub fn inexact_pred(z: Number) -> bool {
+    z.is_inexact()
 }
 
 #[bridge(name = "inexact", lib = "(rnrs base builtins (6))")]
-pub fn inexact(z: Number) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(z.inexact())])
+pub fn inexact(z: Number) -> Number {
+    z.inexact()
 }
 
 #[bridge(name = "exact", lib = "(rnrs base builtins (6))")]
-pub fn exact(z: Number) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(z.exact())])
+pub fn exact(z: Number) -> Number {
+    z.exact()
 }
 
 #[bridge(name = "=", lib = "(rnrs base builtins (6))")]
-pub fn equal(args: &[Value]) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(equal_prim(args)?)])
+pub fn equal(args: &[Value]) -> Result<bool, Exception> {
+    equal_prim(args)
 }
 
 pub(crate) fn equal_prim(vals: &[Value]) -> Result<bool, Exception> {
@@ -2041,8 +2026,8 @@ pub(crate) fn equal_prim(vals: &[Value]) -> Result<bool, Exception> {
 }
 
 #[bridge(name = "<", lib = "(rnrs base builtins (6))")]
-pub fn lesser(args: &[Value]) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(lesser_prim(args)?)])
+pub fn lesser(args: &[Value]) -> Result<bool, Exception> {
+    lesser_prim(args)
 }
 
 pub(crate) fn lesser_prim(vals: &[Value]) -> Result<bool, Exception> {
@@ -2067,8 +2052,8 @@ pub(crate) fn lesser_prim(vals: &[Value]) -> Result<bool, Exception> {
 }
 
 #[bridge(name = ">", lib = "(rnrs base builtins (6))")]
-pub fn greater(args: &[Value]) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(greater_prim(args)?)])
+pub fn greater(args: &[Value]) -> Result<bool, Exception> {
+    greater_prim(args)
 }
 
 pub(crate) fn greater_prim(vals: &[Value]) -> Result<bool, Exception> {
@@ -2095,8 +2080,8 @@ pub(crate) fn greater_prim(vals: &[Value]) -> Result<bool, Exception> {
 }
 
 #[bridge(name = "<=", lib = "(rnrs base builtins (6))")]
-pub fn lesser_equal(args: &[Value]) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(lesser_equal_prim(args)?)])
+pub fn lesser_equal(args: &[Value]) -> Result<bool, Exception> {
+    lesser_equal_prim(args)
 }
 
 pub(crate) fn lesser_equal_prim(vals: &[Value]) -> Result<bool, Exception> {
@@ -2124,8 +2109,8 @@ pub(crate) fn lesser_equal_prim(vals: &[Value]) -> Result<bool, Exception> {
 }
 
 #[bridge(name = ">=", lib = "(rnrs base builtins (6))")]
-pub fn greater_equal(args: &[Value]) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(greater_equal_prim(args)?)])
+pub fn greater_equal(args: &[Value]) -> Result<bool, Exception> {
+    greater_equal_prim(args)
 }
 
 pub(crate) fn greater_equal_prim(vals: &[Value]) -> Result<bool, Exception> {
@@ -2153,45 +2138,38 @@ pub(crate) fn greater_equal_prim(vals: &[Value]) -> Result<bool, Exception> {
 }
 
 #[bridge(name = "zero?", lib = "(rnrs base builtins (6))")]
-pub fn zero(arg: &Value) -> Result<Vec<Value>, Exception> {
-    let num: Number = arg.try_to()?;
-    Ok(vec![Value::from(num.is_zero())])
+pub fn zero(num: Number) -> bool {
+    num.is_zero()
 }
 
 #[bridge(name = "odd?", lib = "(rnrs base builtins (6))")]
-pub fn odd(arg: &Value) -> Result<Vec<Value>, Exception> {
-    let int: Integer = arg.try_to()?;
-    Ok(vec![Value::from(int.odd())])
+pub fn odd(int: Integer) -> bool {
+    int.odd()
 }
 
 #[bridge(name = "even?", lib = "(rnrs base builtins (6))")]
-pub fn even(arg: &Value) -> Result<Vec<Value>, Exception> {
-    let int: Integer = arg.try_to()?;
-    Ok(vec![Value::from(int.even())])
+pub fn even(int: Integer) -> bool {
+    int.even()
 }
 
 #[bridge(name = "finite?", lib = "(rnrs base builtins (6))")]
-pub fn is_finite(arg: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(
-        !arg.try_to::<SimpleNumber>()?.is_infinite(),
-    )])
+pub fn is_finite(num: SimpleNumber) -> bool {
+    num.is_finite()
 }
 
 #[bridge(name = "infinite?", lib = "(rnrs base builtins (6))")]
-pub fn is_infinite(arg: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(
-        arg.try_to::<SimpleNumber>()?.is_infinite(),
-    )])
+pub fn is_infinite(num: SimpleNumber) -> bool {
+    num.is_infinite()
 }
 
 #[bridge(name = "nan?", lib = "(rnrs base builtins (6))")]
-pub fn is_nan(arg: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(arg.try_to::<SimpleNumber>()?.is_nan())])
+pub fn is_nan(num: SimpleNumber) -> bool {
+    num.is_nan()
 }
 
 #[bridge(name = "+", lib = "(rnrs base builtins (6))")]
-pub fn add(args: &[Value]) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(add_prim(args)?)])
+pub fn add(args: &[Value]) -> Result<Number, Exception> {
+    add_prim(args)
 }
 
 pub(crate) fn add_prim(vals: &[Value]) -> Result<Number, Exception> {
@@ -2204,8 +2182,8 @@ pub(crate) fn add_prim(vals: &[Value]) -> Result<Number, Exception> {
 }
 
 #[bridge(name = "*", lib = "(rnrs base builtins (6))")]
-pub fn mul(args: &[Value]) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(mul_prim(args)?)])
+pub fn mul(args: &[Value]) -> Result<Number, Exception> {
+    mul_prim(args)
 }
 
 pub(crate) fn mul_prim(vals: &[Value]) -> Result<Number, Exception> {
@@ -2218,8 +2196,8 @@ pub(crate) fn mul_prim(vals: &[Value]) -> Result<Number, Exception> {
 }
 
 #[bridge(name = "-", lib = "(rnrs base builtins (6))")]
-pub fn sub(arg1: &Value, args: &[Value]) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(sub_prim(arg1, args)?)])
+pub fn sub(arg1: &Value, args: &[Value]) -> Result<Number, Exception> {
+    sub_prim(arg1, args)
 }
 
 pub(crate) fn sub_prim(val1: &Value, vals: &[Value]) -> Result<Number, Exception> {
@@ -2237,8 +2215,8 @@ pub(crate) fn sub_prim(val1: &Value, vals: &[Value]) -> Result<Number, Exception
 }
 
 #[bridge(name = "/", lib = "(rnrs base builtins (6))")]
-pub fn div(arg1: &Value, args: &[Value]) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(div_prim(arg1, args)?)])
+pub fn div(arg1: &Value, args: &[Value]) -> Result<Number, Exception> {
+    div_prim(arg1, args)
 }
 
 pub(crate) fn div_prim(val1: &Value, vals: &[Value]) -> Result<Number, Exception> {
@@ -2261,55 +2239,57 @@ pub(crate) fn div_prim(val1: &Value, vals: &[Value]) -> Result<Number, Exception
 }
 
 #[bridge(name = "div-and-mod", lib = "(rnrs base builtins (6))")]
-pub fn div_mod(x1: SimpleNumber, x2: SimpleNumber) -> Result<Vec<Value>, Exception> {
+pub fn div_mod(
+    x1: SimpleNumber,
+    x2: SimpleNumber,
+) -> Result<(SimpleNumber, SimpleNumber), Exception> {
     if x2.is_zero() {
         return Err(Exception::error("division by zero"));
     }
     let nd = x1.div_euclid(&x2);
     let nd_x2 = &x2 * &nd;
     let modulo = if nd_x2 < x1 { x1 - nd_x2 } else { nd_x2 - x1 };
-    Ok(vec![Value::from(nd), Value::from(modulo)])
+    Ok((nd, modulo))
 }
 
 #[bridge(name = "div", lib = "(rnrs base builtins (6))")]
-pub fn integer_division(x1: SimpleNumber, x2: SimpleNumber) -> Result<Vec<Value>, Exception> {
+pub fn integer_division(x1: SimpleNumber, x2: SimpleNumber) -> Result<SimpleNumber, Exception> {
     if x2.is_zero() {
-        return Err(Exception::error("division by zero"));
+        Err(Exception::error("division by zero"))
+    } else {
+        Ok(x1.div_euclid(&x2))
     }
-    let nd = x1.div_euclid(&x2);
-    Ok(vec![Value::from(nd)])
 }
 
 #[bridge(name = "mod", lib = "(rnrs base builtins (6))")]
-pub fn modulo(x1: SimpleNumber, x2: SimpleNumber) -> Result<Vec<Value>, Exception> {
+pub fn modulo(x1: SimpleNumber, x2: SimpleNumber) -> Result<SimpleNumber, Exception> {
     if x2.is_zero() {
         return Err(Exception::error("modulo by zero"));
     }
     let nd = x1.div_euclid(&x2);
     let nd_x2 = &x2 * &nd;
     if nd_x2 < x1 {
-        Ok(vec![Value::from(x1 - nd_x2)])
+        Ok(x1 - nd_x2)
     } else {
-        Ok(vec![Value::from(nd_x2 - x1)])
+        Ok(nd_x2 - x1)
     }
 }
 
 #[bridge(name = "numerator", lib = "(rnrs base builtins (6))")]
-pub fn numerator(obj: &Value) -> Result<Vec<Value>, Exception> {
-    match obj.try_to::<SimpleNumber>()? {
-        SimpleNumber::Rational(r) => Ok(vec![Value::from(Integer::from_sign_and_abs(
-            r >= 0i64,
-            r.into_numerator(),
-        ))]),
-        _ => Ok(vec![obj.clone()]),
+pub fn numerator(num: SimpleNumber) -> Value {
+    match num {
+        SimpleNumber::Rational(r) => {
+            Value::from(Integer::from_sign_and_abs(r >= 0i64, r.into_numerator()))
+        }
+        _ => Value::from(num),
     }
 }
 
 #[bridge(name = "denominator", lib = "(rnrs base builtins (6))")]
-pub fn denominator(obj: &Value) -> Result<Vec<Value>, Exception> {
-    match obj.try_to::<SimpleNumber>()? {
-        SimpleNumber::Rational(r) => Ok(vec![Value::from(Integer::from(r.into_denominator()))]),
-        SimpleNumber::Real(r) => Ok(vec![Value::from(
+pub fn denominator(num: SimpleNumber) -> Result<Value, Exception> {
+    match num {
+        SimpleNumber::Rational(r) => Ok(Value::from(Integer::from(r.into_denominator()))),
+        SimpleNumber::Real(r) => Ok(Value::from(
             f64::rounding_from(
                 &Rational::try_from_float_simplest(r)
                     .map_err(|_| Exception::error("not a rational"))?
@@ -2317,62 +2297,58 @@ pub fn denominator(obj: &Value) -> Result<Vec<Value>, Exception> {
                 RoundingMode::Nearest,
             )
             .0,
-        )]),
-        _ => Ok(vec![Value::from(1)]),
+        )),
+        _ => Ok(Value::from(1)),
     }
 }
 
 #[bridge(name = "floor", lib = "(rnrs base builtins (6))")]
-pub fn floor(obj: &Value) -> Result<Vec<Value>, Exception> {
-    match obj.try_to::<SimpleNumber>()? {
-        SimpleNumber::Rational(r) => Ok(vec![Value::from(
-            Integer::rounding_from(r, RoundingMode::Floor).0,
-        )]),
-        SimpleNumber::Real(r) => Ok(vec![Value::from(r.floor())]),
-        _ => Ok(vec![obj.clone()]),
+pub fn floor(num: SimpleNumber) -> Value {
+    match num {
+        SimpleNumber::Rational(r) => Value::from(Integer::rounding_from(r, RoundingMode::Floor).0),
+        SimpleNumber::Real(r) => Value::from(r.floor()),
+        _ => Value::from(num),
     }
 }
 
 #[bridge(name = "ceiling", lib = "(rnrs base builtins (6))")]
-pub fn ceiling(obj: &Value) -> Result<Vec<Value>, Exception> {
-    match obj.try_to::<SimpleNumber>()? {
-        SimpleNumber::Rational(r) => Ok(vec![Value::from(
-            Integer::rounding_from(r, RoundingMode::Ceiling).0,
-        )]),
-        SimpleNumber::Real(r) => Ok(vec![Value::from(r.ceil())]),
-        _ => Ok(vec![obj.clone()]),
+pub fn ceiling(num: SimpleNumber) -> Value {
+    match num {
+        SimpleNumber::Rational(r) => {
+            Value::from(Integer::rounding_from(r, RoundingMode::Ceiling).0)
+        }
+        SimpleNumber::Real(r) => Value::from(r.ceil()),
+        _ => Value::from(num),
     }
 }
 
 #[bridge(name = "truncate", lib = "(rnrs base builtins (6))")]
-pub fn truncate(obj: &Value) -> Result<Vec<Value>, Exception> {
-    match obj.try_to::<SimpleNumber>()? {
-        SimpleNumber::Rational(r) => Ok(vec![Value::from(
-            Integer::rounding_from(r, RoundingMode::Down).0,
-        )]),
-        SimpleNumber::Real(r) => Ok(vec![Value::from(r.trunc())]),
-        _ => Ok(vec![obj.clone()]),
+pub fn truncate(num: SimpleNumber) -> Value {
+    match num {
+        SimpleNumber::Rational(r) => Value::from(Integer::rounding_from(r, RoundingMode::Down).0),
+        SimpleNumber::Real(r) => Value::from(r.trunc()),
+        _ => Value::from(num),
     }
 }
 
 #[bridge(name = "round", lib = "(rnrs base builtins (6))")]
-pub fn round(obj: &Value) -> Result<Vec<Value>, Exception> {
-    match obj.try_to::<SimpleNumber>()? {
-        SimpleNumber::Rational(r) => Ok(vec![Value::from(
-            Integer::rounding_from(r, RoundingMode::Nearest).0,
-        )]),
-        SimpleNumber::Real(r) => Ok(vec![Value::from(r.round_ties_even())]),
-        _ => Ok(vec![obj.clone()]),
+pub fn round(num: SimpleNumber) -> Value {
+    match num {
+        SimpleNumber::Rational(r) => {
+            Value::from(Integer::rounding_from(r, RoundingMode::Nearest).0)
+        }
+        SimpleNumber::Real(r) => Value::from(r.round_ties_even()),
+        _ => Value::from(num),
     }
 }
 
 #[bridge(name = "exp", lib = "(rnrs base builtins (6))")]
-pub fn exp(z: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(z.try_to::<Number>()?.exp())])
+pub fn exp(z: Number) -> Number {
+    z.exp()
 }
 
 #[bridge(name = "log", lib = "(rnrs base builtins (6))")]
-pub fn log(z: &Value, base: &[Value]) -> Result<Vec<Value>, Exception> {
+pub fn log(z: &Value, base: &[Value]) -> Result<f64, Exception> {
     let base = match base {
         [] => None,
         [base] => Some(base.try_to::<f64>()?),
@@ -2385,109 +2361,104 @@ pub fn log(z: &Value, base: &[Value]) -> Result<Vec<Value>, Exception> {
         SimpleNumber::Real(r) => r,
     };
     if let Some(base) = base {
-        Ok(vec![Value::from(num.log(base))])
+        Ok(num.log(base))
     } else {
-        Ok(vec![Value::from(num.ln())])
+        Ok(num.ln())
     }
 }
 
 #[bridge(name = "sin", lib = "(rnrs base builtins (6))")]
-pub fn sin(z: Number) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(z.sin())])
+pub fn sin(z: Number) -> Number {
+    z.sin()
 }
 
 #[bridge(name = "cos", lib = "(rnrs base builtins (6))")]
-pub fn cos(z: Number) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(z.cos())])
+pub fn cos(z: Number) -> Number {
+    z.cos()
 }
 
 #[bridge(name = "tan", lib = "(rnrs base builtins (6))")]
-pub fn tan(z: Number) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(z.tan())])
+pub fn tan(z: Number) -> Number {
+    z.tan()
 }
 
 #[bridge(name = "asin", lib = "(rnrs base builtins (6))")]
-pub fn asin(z: Number) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(z.asin())])
+pub fn asin(z: Number) -> Number {
+    z.asin()
 }
 
 #[bridge(name = "acos", lib = "(rnrs base builtins (6))")]
-pub fn acos(z: Number) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(z.acos())])
+pub fn acos(z: Number) -> Number {
+    z.acos()
 }
 
 #[bridge(name = "atan", lib = "(rnrs base builtins (6))")]
-pub fn atan(z: Number) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(z.atan())])
+pub fn atan(z: Number) -> Number {
+    z.atan()
 }
 
 #[bridge(name = "sqrt", lib = "(rnrs base builtins (6))")]
-pub fn sqrt(z: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(z.try_to::<Number>()?.sqrt())])
+pub fn sqrt(z: Number) -> Number {
+    z.sqrt()
 }
 
 #[bridge(name = "exact-integer-sqrt", lib = "(rnrs base builtins (6))")]
-pub fn exact_integer_sqrt(arg: Integer) -> Result<Vec<Value>, Exception> {
+pub fn exact_integer_sqrt(arg: Integer) -> (Integer, Integer) {
     let s = (&arg).floor_sqrt();
     let r = arg - &s * &s;
-    Ok(vec![Value::from(s), Value::from(r)])
+    (s, r)
 }
 
 #[bridge(name = "expt", lib = "(rnrs base builtins (6))")]
-pub fn expt(z1: &Value, z2: &Value) -> Result<Vec<Value>, Exception> {
-    let z1 = z1.try_to::<Number>()?;
-    let z2 = z2.try_to::<Number>()?;
-    Ok(vec![Value::from(z1.pow(&z2))])
+pub fn expt(z1: Number, z2: Number) -> Number {
+    z1.pow(&z2)
 }
 
 #[bridge(name = "make-rectangular", lib = "(rnrs base builtins (6))")]
-pub fn make_rectangular(x1: SimpleNumber, x2: SimpleNumber) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(ComplexNumber::new(x1, x2))])
+pub fn make_rectangular(x1: SimpleNumber, x2: SimpleNumber) -> ComplexNumber {
+    ComplexNumber::new(x1, x2)
 }
 
 #[bridge(name = "make-polar", lib = "(rnrs base builtins (6))")]
-pub fn make_polar(x1: SimpleNumber, x2: SimpleNumber) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(ComplexNumber::from_polar(x1, x2))])
+pub fn make_polar(x1: SimpleNumber, x2: SimpleNumber) -> ComplexNumber {
+    ComplexNumber::from_polar(x1, x2)
 }
 
 #[bridge(name = "real-part", lib = "(rnrs base builtins (6))")]
-pub fn real_part(arg: &Value) -> Result<Vec<Value>, Exception> {
-    let num: Number = arg.try_to()?;
+pub fn real_part(num: Number) -> Value {
     if let Some(complex) = num.as_complex() {
-        Ok(vec![Value::from(complex.re.clone())])
+        Value::from(complex.re.clone())
     } else {
-        Ok(vec![arg.clone()])
+        Value::from(num)
     }
 }
 
 #[bridge(name = "imag-part", lib = "(rnrs base builtins (6))")]
-pub fn imag_part(arg: &Value) -> Result<Vec<Value>, Exception> {
-    let num: Number = arg.try_to()?;
+pub fn imag_part(num: Number) -> Result<SimpleNumber, Exception> {
     if let Some(complex) = num.as_complex() {
-        Ok(vec![Value::from(complex.im.clone())])
+        Ok(complex.im.clone())
     } else {
         Err(Exception::error("expected complex number"))
     }
 }
 
 #[bridge(name = "magnitude", lib = "(rnrs base builtins (6))")]
-pub fn magnitude(arg: &Value) -> Result<Vec<Value>, Exception> {
-    let num: Number = arg.try_to()?;
+pub fn magnitude(num: Number) -> Value {
     if let Some(complex) = num.as_complex() {
-        Ok(vec![Value::from(complex.magnitude())])
+        Value::from(complex.magnitude())
     } else {
-        Ok(vec![arg.clone()])
+        Value::from(num)
     }
 }
 
 #[bridge(name = "angle", lib = "(rnrs base builtins (6))")]
-pub fn angle(z: ComplexNumber) -> Result<Vec<Value>, Exception> {
+pub fn angle(z: ComplexNumber) -> SimpleNumber {
     let (_, angle) = z.to_polar();
-    Ok(vec![Value::from(angle)])
+    angle
 }
 
 #[bridge(name = "number->string", lib = "(rnrs base builtins (6))")]
-pub fn number_to_string(z: ComplexNumber, rest_args: &[Value]) -> Result<Vec<Value>, Exception> {
+pub fn number_to_string(z: ComplexNumber, rest_args: &[Value]) -> Result<String, Exception> {
     let (radix, precision) = match rest_args {
         [] => (10, None),
         [radix] => (radix.try_to::<u32>()?, None),
@@ -2499,15 +2470,14 @@ pub fn number_to_string(z: ComplexNumber, rest_args: &[Value]) -> Result<Vec<Val
             "invalid radix ({radix}) must be 2, 8, 10 or 16"
         )));
     }
-    let result = z.to_string(radix, precision).ok_or_else(|| {
+    z.to_string(radix, precision).ok_or_else(|| {
         Exception::implementation_restriction(format!("could not format {z} with radix {radix}"))
-    })?;
-    Ok(vec![Value::from(result)])
+    })
 }
 
 #[maybe_async]
 #[bridge(name = "string->number", lib = "(rnrs base builtins (6))")]
-pub fn string_to_number(s: WideString, rest_args: &[Value]) -> Result<Vec<Value>, Exception> {
+pub fn string_to_number(s: WideString, rest_args: &[Value]) -> Result<Value, Exception> {
     let radix = match rest_args {
         [] => 10,
         [radix] => match radix.try_to::<u32>()? {
@@ -2520,6 +2490,7 @@ pub fn string_to_number(s: WideString, rest_args: &[Value]) -> Result<Vec<Value>
         },
         _ => return Err(Exception::wrong_num_of_var_args(1..2, 1 + rest_args.len())),
     };
+
     // TODO: This is not ideal
     let s = s.to_string();
     let bytes = Cursor::new(s.as_bytes().to_vec());
@@ -2531,18 +2502,18 @@ pub fn string_to_number(s: WideString, rest_args: &[Value]) -> Result<Vec<Value>
     let mut data = port.0.data.lock().await;
     let mut lexer = Lexer::new(&mut data, info, Span::default());
     let Some(number) = maybe_await!(lexer.number(radix)).ok().flatten() else {
-        return Ok(vec![Value::from(false)]);
+        return Ok(Value::from(false));
     };
 
     if maybe_await!(lexer.take()).ok().flatten().is_some() {
-        return Ok(vec![Value::from(false)]);
+        return Ok(Value::from(false));
     }
 
     let Ok(number) = Number::try_from(number) else {
-        return Ok(vec![Value::from(false)]);
+        return Ok(Value::from(false));
     };
 
-    Ok(vec![Value::from(number)])
+    Ok(Value::from(number))
 }
 
 /// R6RS Fixnums
@@ -2577,23 +2548,23 @@ impl TryFrom<&Value> for Fixnum {
 }
 
 #[bridge(name = "fixnum?", lib = "(rnrs arithmetic fixnums (6))")]
-pub fn fixnum_pred(obj: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(obj.cast::<Fixnum>().is_some())])
+pub fn fixnum_pred(obj: &Value) -> bool {
+    obj.cast::<Fixnum>().is_some()
 }
 
 #[bridge(name = "fixnum-width", lib = "(rnrs arithmetic fixnums (6))")]
-pub fn fixnum_width() -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(63)])
+pub fn fixnum_width() -> i64 {
+    63
 }
 
 #[bridge(name = "least-fixnum", lib = "(rnrs arithmetic fixnums (6))")]
-pub fn least_fixnum() -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(FIXNUM_MIN)])
+pub fn least_fixnum() -> i64 {
+    FIXNUM_MIN
 }
 
 #[bridge(name = "greatest-fixnum", lib = "(rnrs arithmetic fixnums (6))")]
-pub fn greatest_fixnum() -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(FIXNUM_MAX)])
+pub fn greatest_fixnum() -> i64 {
+    FIXNUM_MAX
 }
 
 /// R6RS Flonums
@@ -2628,6 +2599,6 @@ impl TryFrom<&Value> for Flonum {
 }
 
 #[bridge(name = "flonum?", lib = "(rnrs arithmetic flonums (6))")]
-pub fn flonum_pred(obj: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(obj.cast::<Flonum>().is_some())])
+pub fn flonum_pred(obj: &Value) -> bool {
+    obj.cast::<Flonum>().is_some()
 }

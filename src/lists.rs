@@ -233,7 +233,7 @@ where
         let items = iter.into_iter().map(Into::into).collect::<Vec<_>>();
         let mut head = Value::null();
         for item in items.iter().rev() {
-            head = Value::from((item.clone(), head));
+            head = Value::cons(item.clone(), head);
         }
         Self { head, items }
     }
@@ -243,7 +243,7 @@ impl From<Vec<Value>> for List {
     fn from(items: Vec<Value>) -> Self {
         let mut head = Value::null();
         for item in items.iter().rev() {
-            head = Value::from((item.clone(), head));
+            head = Value::cons(item.clone(), head);
         }
         Self { head, items }
     }
@@ -307,58 +307,50 @@ pub fn is_list(curr: &Value, seen: &mut HashSet<Value>) -> bool {
 }
 
 #[bridge(name = "list?", lib = "(rnrs base builtins (6))")]
-pub fn list_pred(arg: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(is_list(arg, &mut HashSet::default()))])
+pub fn list_pred(arg: &Value) -> bool {
+    is_list(arg, &mut HashSet::default())
 }
 
 #[bridge(name = "list", lib = "(rnrs base builtins (6))")]
-pub fn list(args: &[Value]) -> Result<Vec<Value>, Exception> {
+pub fn list(args: &[Value]) -> Value {
     // Construct the list in reverse
     let mut cdr = Value::null();
     for arg in args.iter().rev() {
         cdr = Value::from(Pair::mutable(arg.clone(), cdr));
     }
-    Ok(vec![cdr])
+    cdr
 }
 
 #[bridge(name = "cons", lib = "(rnrs base builtins (6))")]
-pub fn cons(car: &Value, cdr: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(Pair::mutable(car.clone(), cdr.clone()))])
+pub fn cons(car: &Value, cdr: &Value) -> Pair {
+    Pair::mutable(car.clone(), cdr.clone())
 }
 
 #[bridge(name = "car", lib = "(rnrs base builtins (6))")]
-pub fn car(val: &Value) -> Result<Vec<Value>, Exception> {
-    match val.pair_car() {
-        Some(car) => Ok(vec![car]),
-        None => Ok(vec![val.try_to::<Pair>()?.car()]),
-    }
+pub fn car(val: Pair) -> Value {
+    val.car()
 }
 
 #[bridge(name = "cdr", lib = "(rnrs base builtins (6))")]
-pub fn cdr(val: &Value) -> Result<Vec<Value>, Exception> {
-    match val.pair_cdr() {
-        Some(cdr) => Ok(vec![cdr]),
-        None => Ok(vec![val.try_to::<Pair>()?.cdr()]),
-    }
+pub fn cdr(val: Pair) -> Value {
+    val.cdr()
 }
 
 #[bridge(name = "set-car!", lib = "(rnrs mutable-pairs (6))")]
-pub fn set_car(var: &Value, val: &Value) -> Result<Vec<Value>, Exception> {
-    let pair: Pair = var.clone().try_into()?;
+pub fn set_car(pair: Pair, val: &Value) -> Result<(), Exception> {
     pair.set_car(val.clone())?;
-    Ok(Vec::new())
+    Ok(())
 }
 
 #[bridge(name = "set-cdr!", lib = "(rnrs mutable-pairs (6))")]
-pub fn set_cdr(var: &Value, val: &Value) -> Result<Vec<Value>, Exception> {
-    let pair: Pair = var.clone().try_into()?;
+pub fn set_cdr(pair: Pair, val: &Value) -> Result<(), Exception> {
     pair.set_cdr(val.clone())?;
-    Ok(Vec::new())
+    Ok(())
 }
 
 #[bridge(name = "length", lib = "(rnrs base builtins (6))")]
-pub fn length_builtin(arg: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(length(arg)?)])
+pub fn length_builtin(arg: &Value) -> Result<usize, Exception> {
+    length(arg)
 }
 
 pub fn length(arg: &Value) -> Result<usize, Exception> {
@@ -378,27 +370,26 @@ pub fn length(arg: &Value) -> Result<usize, Exception> {
 }
 
 #[bridge(name = "list->vector", lib = "(rnrs base builtins (6))")]
-pub fn list_to_vector(list: &Value) -> Result<Vec<Value>, Exception> {
-    let List { items, .. } = list.try_to()?;
-    Ok(vec![Value::from(items)])
+pub fn list_to_vector(List { items, .. }: List) -> Value {
+    Value::from(items)
 }
 
 #[bridge(name = "list->string", lib = "(rnrs base builtins (6))")]
-pub fn list_to_string(List { items, .. }: List) -> Result<Vec<Value>, Exception> {
+pub fn list_to_string(List { items, .. }: List) -> Result<WideString, Exception> {
     let chars = items
         .into_iter()
         .map(char::try_from)
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(vec![Value::from(WideString::mutable(chars))])
+    Ok(WideString::mutable(chars))
 }
 
 #[bridge(name = "append", lib = "(rnrs base builtins (6))")]
-pub fn append(lists: &[Value]) -> Result<Vec<Value>, Exception> {
+pub fn append(lists: &[Value]) -> Result<Value, Exception> {
     if lists.is_empty() {
-        return Ok(vec![Value::null()]);
+        return Ok(Value::null());
     }
     if lists.len() == 1 {
-        return Ok(vec![lists[0].clone()]);
+        return Ok(lists[0].clone());
     }
     let mut result = lists.last().unwrap().clone();
     for list in lists[..lists.len() - 1].iter().rev() {
@@ -408,7 +399,7 @@ pub fn append(lists: &[Value]) -> Result<Vec<Value>, Exception> {
             result = Value::from(Pair::mutable(item, result));
         }
     }
-    Ok(vec![result])
+    Ok(result)
 }
 
 #[cps_bridge(def = "map proc list1 . listn", lib = "(rnrs base builtins (6))")]
@@ -509,7 +500,7 @@ unsafe extern "C" fn map_k(
 }
 
 #[bridge(name = "zip", lib = "(rnrs base builtins (6))")]
-pub fn zip(list1: &Value, listn: &[Value]) -> Result<Vec<Value>, Exception> {
+pub fn zip(list1: &Value, listn: &[Value]) -> Result<Value, Exception> {
     let mut output: Option<Vec<Value>> = None;
     for list in Some(list1).into_iter().chain(listn.iter()).rev() {
         let List { items, .. } = list.try_to()?;
@@ -523,13 +514,13 @@ pub fn zip(list1: &Value, listn: &[Value]) -> Result<Vec<Value>, Exception> {
 
         let output = output.as_mut().unwrap();
         for (i, item) in items.into_iter().enumerate() {
-            output[i] = Value::from((item, output[i].clone()));
+            output[i] = Value::cons(item, output[i].clone());
         }
     }
 
     if let Some(output) = output {
-        Ok(vec![slice_to_list(&output)])
+        Ok(slice_to_list(&output))
     } else {
-        Ok(vec![Value::null()])
+        Ok(Value::null())
     }
 }

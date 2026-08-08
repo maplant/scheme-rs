@@ -54,9 +54,9 @@ use crate::{
     gc::Trace,
     lists::slice_to_list,
     ports::{IoDecodingError, IoEncodingError, IoError, IoReadError, IoWriteError},
-    proc::{Application, ContBarrier, ContPtr, DynStackElem, FuncPtr, Procedure, pop_dyn_stack},
+    proc::{Application, ContBarrier, ContPtr, DynStackElem, FuncPtr, Procedure},
     records::{Embeddable, Embedded, RecordTypeDescriptor, rtd},
-    registry::{bridge, cps_bridge},
+    registry::bridge,
     runtime::Runtime,
     syntax::{Identifier, Span, Syntax, parse::ParseSyntaxError},
     value::{UnpackedValue, Value},
@@ -447,10 +447,9 @@ impl fmt::Debug for SimpleCondition {
 }
 
 #[bridge(name = "condition?", lib = "(rnrs conditions (6))")]
-pub fn condition_pred(obj: &Value) -> Result<Vec<Value>, Exception> {
-    let is_condition = obj.cast::<Embedded<SimpleCondition>>().is_some()
-        || obj.cast::<Embedded<CompoundCondition>>().is_some();
-    Ok(vec![Value::from(is_condition)])
+pub fn condition_pred(obj: &Value) -> bool {
+    obj.cast::<Embedded<SimpleCondition>>().is_some()
+        || obj.cast::<Embedded<CompoundCondition>>().is_some()
 }
 
 define_condition_type!(
@@ -912,53 +911,34 @@ pub fn condition(conditions: &[Value]) -> Result<Vec<Value>, Exception> {
 }
 
 #[bridge(name = "simple-conditions", lib = "(rnrs conditions (6))")]
-pub fn simple_conditions(condition: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![slice_to_list(
+pub fn simple_conditions(condition: &Value) -> Result<Value, Exception> {
+    Ok(slice_to_list(
         &Exception(condition.clone()).simple_conditions()?,
-    )])
+    ))
 }
 
-#[doc(hidden)]
-#[cps_bridge(
-    def = "with-exception-handler handler thunk",
-    lib = "(rnrs exceptions (6))"
-)]
+#[bridge(name = "with-exception-handler", lib = "(rnrs exceptions (6))")]
 pub fn with_exception_handler(
-    _env: &[Value],
-    args: &[Value],
-    _rest_args: &[Value],
+    handler: Procedure,
+    thunk: Procedure,
     barrier: &mut ContBarrier,
-) -> Result<Application, Exception> {
-    let [handler, thunk] = args else {
-        unreachable!();
-    };
-
-    let handler: Procedure = handler.clone().try_into()?;
-    let thunk: Procedure = thunk.clone().try_into()?;
-
+) -> Application {
     barrier.push_dyn_stack(DynStackElem::ExceptionHandler(handler));
-
-    let (req_args, var) = barrier.cont_formals();
-
-    barrier.push_cont(
-        Vec::new(),
-        ContPtr::Continuation(pop_dyn_stack),
-        req_args,
-        var,
-    );
-
-    Ok(Application::new(thunk, Vec::new()))
+    thunk.call_with_cont(
+        &[],
+        [],
+        |[]: &[Value; 0], args: &[Value], barrier: &mut ContBarrier| {
+            barrier.pop_dyn_stack();
+            barrier.call_cont(args.to_vec())
+        },
+        barrier,
+    )
 }
 
 #[doc(hidden)]
-#[cps_bridge(def = "raise obj", lib = "(rnrs exceptions (6))")]
-pub fn raise_builtin(
-    _env: &[Value],
-    args: &[Value],
-    _rest_args: &[Value],
-    barrier: &mut ContBarrier,
-) -> Result<Application, Exception> {
-    Ok(raise(args[0].clone(), barrier))
+#[bridge(name = "raise", lib = "(rnrs exceptions (6))")]
+pub fn raise_builtin(obj: &Value, barrier: &mut ContBarrier) -> Application {
+    raise(obj.clone(), barrier)
 }
 
 /// Raises a non-continuable exception to the current exception handler.
@@ -1057,17 +1037,11 @@ unsafe extern "C" fn reraise_exception(
 /// Raises an exception to the current exception handler and continues with the
 /// value returned by the handler.
 #[doc(hidden)]
-#[cps_bridge(def = "raise-continuable obj", lib = "(rnrs exceptions (6))")]
+#[bridge(name = "raise-continuable", lib = "(rnrs exceptions (6))")]
 pub fn raise_continuable(
-    _env: &[Value],
-    args: &[Value],
-    _rest_args: &[Value],
+    condition: &Value,
     barrier: &mut ContBarrier,
 ) -> Result<Application, Exception> {
-    let [condition] = args else {
-        unreachable!();
-    };
-
     let Some(handler) = barrier.current_exception_handler() else {
         return Ok(Application::halt_err(condition.clone()));
     };

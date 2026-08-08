@@ -503,86 +503,79 @@ pub fn hashtable_clear_bang(hashtable: HashTable, rest: &[Value]) -> Result<Vec<
 }
 
 #[bridge(name = "hashtable-keys", lib = "(rnrs hashtables builtins (6))")]
-pub fn hashtable_keys(hashtable: HashTable) -> Result<Vec<Value>, Exception> {
-    let keys = Value::from(hashtable.keys());
-    Ok(vec![keys])
+pub fn hashtable_keys(hashtable: HashTable) -> Vec<Value> {
+    hashtable.keys()
 }
 
 #[bridge(name = "hashtable-entries", lib = "(rnrs hashtables builtins (6))")]
-pub fn hashtable_entries(hashtable: HashTable) -> Result<Vec<Value>, Exception> {
+pub fn hashtable_entries(hashtable: HashTable) -> (Vec<Value>, Vec<Value>) {
     let (keys, values) = hashtable.entries();
-    Ok(vec![Value::from(keys), Value::from(values)])
+    (keys, values)
 }
 
 #[bridge(
     name = "hashtable-equivalence-function",
     lib = "(rnrs hashtables builtins (6))"
 )]
-pub fn hashtable_equivalence_function(hashtable: HashTable) -> Result<Vec<Value>, Exception> {
-    let eqv_func = Value::from(hashtable.0.eq.clone());
-    Ok(vec![eqv_func])
+pub fn hashtable_equivalence_function(hashtable: HashTable) -> Procedure {
+    hashtable.0.eq.clone()
 }
 
 #[bridge(
     name = "hashtable-hash-function",
     lib = "(rnrs hashtables builtins (6))"
 )]
-pub fn hashtable_hash_function(hashtable: HashTable) -> Result<Vec<Value>, Exception> {
-    let hash_func = Value::from(hashtable.0.hash.clone());
-    Ok(vec![hash_func])
+pub fn hashtable_hash_function(hashtable: HashTable) -> Procedure {
+    hashtable.0.hash.clone()
 }
 
 #[bridge(name = "hashtable-mutable?", lib = "(rnrs hashtables builtins (6))")]
-pub fn hashtable_mutable_pred(hashtable: HashTable) -> Result<Vec<Value>, Exception> {
-    let is_mutable = Value::from(hashtable.0.mutable);
-    Ok(vec![is_mutable])
+pub fn hashtable_mutable_pred(hashtable: HashTable) -> bool {
+    hashtable.0.mutable
 }
 
 #[bridge(name = "eq-hash", lib = "(rnrs hashtables builtins (6))")]
-pub fn eq_hash(obj: &Value) -> Result<Vec<Value>, Exception> {
+pub fn eq_hash(obj: &Value) -> u64 {
     let mut hasher = DefaultHasher::new();
     obj.eq_hash(&mut hasher);
-    Ok(vec![Value::from(hasher.finish())])
+    hasher.finish()
 }
 
 #[bridge(name = "eqv-hash", lib = "(rnrs hashtables builtins (6))")]
-pub fn eqv_hash(obj: &Value) -> Result<Vec<Value>, Exception> {
+pub fn eqv_hash(obj: &Value) -> u64 {
     let mut hasher = DefaultHasher::new();
     obj.eqv_hash(&mut hasher);
-    Ok(vec![Value::from(hasher.finish())])
+    hasher.finish()
 }
 
 #[bridge(name = "equal-hash", lib = "(rnrs hashtables builtins (6))")]
-pub fn equal_hash(obj: &Value) -> Result<Vec<Value>, Exception> {
+pub fn equal_hash(obj: &Value) -> u64 {
     let mut hasher = DefaultHasher::new();
     obj.equal_hash(&mut IndexSet::default(), &mut hasher);
-    Ok(vec![Value::from(hasher.finish())])
+    hasher.finish()
 }
 
 #[bridge(name = "string-hash", lib = "(rnrs hashtables builtins (6))")]
-pub fn string_hash(string: &Value) -> Result<Vec<Value>, Exception> {
-    let string: WideString = string.clone().try_into()?;
+pub fn string_hash(string: WideString) -> u64 {
     let mut hasher = DefaultHasher::new();
     string.hash(&mut hasher);
-    Ok(vec![Value::from(hasher.finish())])
+    hasher.finish()
 }
 
 #[bridge(name = "string-ci-hash", lib = "(rnrs hashtables builtins (6))")]
-pub fn string_ci_hash(string: &Value) -> Result<Vec<Value>, Exception> {
-    let string: WideString = string.clone().try_into()?;
+pub fn string_ci_hash(string: WideString) -> u64 {
     let mut hasher = DefaultHasher::new();
     let chars = string.0.chars.read();
     hasher.write_usize(chars.len());
     for lowercase in chars.iter().copied().flat_map(char::to_lowercase) {
         lowercase.hash(&mut hasher);
     }
-    Ok(vec![Value::from(hasher.finish())])
+    hasher.finish()
 }
 
 #[bridge(name = "symbol-hash", lib = "(rnrs hashtables builtins (6))")]
-pub fn symbol_hash(symbol: &Value) -> Result<Vec<Value>, Exception> {
-    let symbol: Symbol = symbol.clone().try_into()?;
+pub fn symbol_hash(symbol: Symbol) -> u64 {
     let mut hasher = DefaultHasher::new();
     symbol.hash(&mut hasher);
-    Ok(vec![Value::from(hasher.finish())])
+    hasher.finish()
 }

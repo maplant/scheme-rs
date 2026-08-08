@@ -15,7 +15,7 @@ use tokio::{
 use crate::{
     exceptions::Exception,
     ports::{BufferMode, Port},
-    proc::{ContBarrier, Procedure},
+    proc::{Application, ContBarrier, Procedure},
     records::{Embeddable, Embedded, RecordTypeDescriptor, rtd},
     strings::WideString,
     value::Value,
@@ -35,26 +35,24 @@ unsafe impl Embeddable for Future {
 }
 
 #[bridge(name = "future", lib = "(async)")]
-pub async fn make_future(proc: Procedure) -> Result<Vec<Value>, Exception> {
-    let future: Future = async move { proc.call(&[], &mut ContBarrier::new()).await }
+pub async fn make_future(proc: Procedure) -> Future {
+    async move { proc.call(&[], &mut ContBarrier::new()).await }
         .boxed()
-        .shared();
-    let future = Value::from(future);
-    Ok(vec![future])
+        .shared()
 }
 
 #[bridge(name = "spawn", lib = "(async)")]
-pub async fn spawn(task: &Value) -> Result<Vec<Value>, Exception> {
-    let task: Procedure = task.clone().try_into()?;
+pub async fn spawn(task: Procedure) -> Future {
     let task = tokio::task::spawn(async move { task.call(&[], &mut ContBarrier::new()).await });
-    let future: Future = async move { task.await.unwrap() }.boxed().shared();
-    let future = Value::from(future);
-    Ok(vec![future])
+    async move { task.await.unwrap() }.boxed().shared()
 }
 
 #[bridge(name = "await", lib = "(async)")]
-pub async fn await_future(future: &Value) -> Result<Vec<Value>, Exception> {
-    future.try_to::<Embedded<Future>>()?.as_ref().clone().await
+pub async fn await_future(
+    future: Embedded<Future>,
+    barrier: &mut ContBarrier<'_>,
+) -> Result<Application, Exception> {
+    Ok(barrier.call_cont(future.as_ref().clone().await?))
 }
 
 unsafe impl Embeddable for Arc<TcpListener> {
@@ -69,13 +67,11 @@ unsafe impl Embeddable for Arc<TcpListener> {
 }
 
 #[bridge(name = "bind-tcp", lib = "(async)")]
-pub async fn bind_tcp(addr: &Value) -> Result<Vec<Value>, Exception> {
-    let addr: WideString = addr.clone().try_into()?;
+pub async fn bind_tcp(addr: WideString) -> Result<Arc<TcpListener>, Exception> {
     let listener = TcpListener::bind(&addr.to_string())
         .await
         .map_err(|e| Exception::error(format!("failed to bind to address: {e}")))?;
-    let listener = Value::from(Arc::new(listener));
-    Ok(vec![listener])
+    Ok(Arc::new(listener))
 }
 
 unsafe impl Embeddable for Arc<Mutex<TcpStream>> {
@@ -90,24 +86,18 @@ unsafe impl Embeddable for Arc<Mutex<TcpStream>> {
 }
 
 #[bridge(name = "accept", lib = "(async)")]
-pub async fn accept(listener: &Value) -> Result<Vec<Value>, Exception> {
-    let listener = {
-        listener
-            .try_to::<Embedded<Arc<TcpListener>>>()?
-            .as_ref()
-            .clone()
-    };
+pub async fn accept(listener: Embedded<Arc<TcpListener>>) -> Result<(Port, String), Exception> {
     let (socket, addr) = listener
         .accept()
         .await
         .map_err(|e| Exception::error(format!("could not accept client: {e}")))?;
-    let socket = Value::from(Port::new(addr.to_string(), socket, BufferMode::Block, None));
-    let addr = Value::from(addr.to_string());
-    Ok(vec![socket, addr])
+    let socket = Port::new(addr.to_string(), socket, BufferMode::Block, None);
+    let addr = addr.to_string();
+    Ok((socket, addr))
 }
 
 #[bridge(name = "sleep", lib = "(async)")]
-pub async fn sleep_ms(ms: u64) -> Result<Vec<Value>, Exception> {
+pub async fn sleep_ms(ms: u64) -> Result<(), Exception> {
     sleep(Duration::from_millis(ms)).await;
-    Ok(Vec::new())
+    Ok(())
 }

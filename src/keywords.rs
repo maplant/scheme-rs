@@ -5,7 +5,6 @@ use scheme_rs_macros::{Trace, bridge};
 
 use crate::records::Embedded;
 use crate::{
-    exceptions::Exception,
     records::{Embeddable, RecordTypeDescriptor, rtd},
     strings::WideString,
     symbols::Symbol,
@@ -36,16 +35,16 @@ unsafe impl Embeddable for Keyword {
 }
 
 #[bridge(name = "keyword?", lib = "(srfi :88)")]
-pub fn keyword_pred(obj: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(obj.cast::<Embedded<Keyword>>().is_some())])
+pub fn keyword_pred(obj: &Value) -> bool {
+    obj.cast::<Embedded<Keyword>>().is_some()
 }
 
 #[bridge(name = "keyword->string", lib = "(srfi :88)")]
-pub fn keyword_to_string(kw: Embedded<Keyword>) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(kw.0.to_str().to_string())])
+pub fn keyword_to_string(kw: Embedded<Keyword>) -> String {
+    kw.0.to_str().to_string()
 }
 
 #[bridge(name = "string->keyword", lib = "(srfi :88)")]
-pub fn string_to_keyword(s: WideString) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Keyword::intern(&s.to_string())])
+pub fn string_to_keyword(s: WideString) -> Value {
+    Keyword::intern(&s.to_string())
 }

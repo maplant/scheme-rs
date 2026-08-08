@@ -335,6 +335,11 @@ impl Value {
         }
     }
 
+    /// Construct a mutable cons cell from two values.
+    pub fn cons(car: impl Into<Value>, cdr: impl Into<Value>) -> Value {
+        UnpackedValue::Pair(Pair::mutable(car.into(), cdr.into())).into_value()
+    }
+
     #[inline]
     pub(crate) fn pair_car(&self) -> Option<Value> {
         Some(self.borrow_pair()?.car.read().clone())
@@ -1102,36 +1107,6 @@ impl From<Infallible> for Value {
     }
 }
 
-impl From<()> for UnpackedValue {
-    fn from((): ()) -> Self {
-        Self::Null
-    }
-}
-
-impl From<()> for Value {
-    fn from((): ()) -> Self {
-        UnpackedValue::Null.into_value()
-    }
-}
-
-impl TryFrom<UnpackedValue> for () {
-    type Error = Exception;
-
-    fn try_from(value: UnpackedValue) -> Result<Self, Self::Error> {
-        match value {
-            UnpackedValue::Null => Ok(()),
-            e => Err(Exception::type_error("null", &e.type_name())),
-        }
-    }
-}
-
-impl TryFrom<Value> for () {
-    type Error = Exception;
-
-    fn try_from(value: Value) -> Result<Self, Self::Error> {
-        value.unpack().try_into()
-    }
-}
 
 impl From<Cell> for UnpackedValue {
     fn from(cell: Cell) -> Self {
@@ -1190,8 +1165,6 @@ impl From<bool> for Value {
     }
 }
 
-// impl_try_from_value_for!(bool, Boolean, "bool");
-
 impl_try_from_value_for!(char, Character, "char");
 impl_try_from_value_for!(Number, Number, "number");
 impl_try_from_value_for!(Symbol, Symbol, "symbol");
@@ -1215,8 +1188,6 @@ macro_rules! impl_from_wrapped_for {
         }
     };
 }
-
-impl_from_wrapped_for!((Value, Value), Pair, |(car, cdr)| Pair::immutable(car, cdr));
 
 impl From<UnpackedValue> for Option<(Value, Value)> {
     fn from(val: UnpackedValue) -> Self {
@@ -1436,8 +1407,8 @@ pub(crate) fn write_value(
 }
 
 #[bridge(name = "not", lib = "(rnrs base builtins (6))")]
-pub fn not(a: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(a.0 as usize == FALSE_VALUE)])
+pub fn not(a: &Value) -> bool {
+    a.0 as usize == FALSE_VALUE
 }
 
 #[bridge(name = "eq?", lib = "(rnrs base builtins (6))")]
@@ -1455,44 +1426,36 @@ pub fn equal_pred(a: &Value, b: &Value) -> bool {
 }
 
 #[bridge(name = "boolean?", lib = "(rnrs base builtins (6))")]
-pub fn boolean_pred(arg: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(arg.type_of() == ValueType::Boolean)])
+pub fn boolean_pred(arg: &Value) -> bool {
+    arg.type_of() == ValueType::Boolean
 }
 
 #[bridge(name = "boolean=?", lib = "(rnrs base builtins (6))")]
-pub fn boolean_eq_pred(a: &Value, args: &[Value]) -> Result<Vec<Value>, Exception> {
-    let res = if a.type_of() == ValueType::Boolean {
-        args.iter().all(|arg| arg == a)
-    } else {
-        false
-    };
-    Ok(vec![Value::from(res)])
+pub fn boolean_eq_pred(a: &Value, args: &[Value]) -> bool {
+    a.type_of() == ValueType::Boolean && args.iter().all(|arg| arg == a)
 }
 
 #[bridge(name = "symbol?", lib = "(rnrs base builtins (6))")]
-pub fn symbol_pred(arg: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(arg.type_of() == ValueType::Symbol)])
+pub fn symbol_pred(arg: &Value) -> bool {
+    arg.type_of() == ValueType::Symbol
 }
 
 #[bridge(name = "char?", lib = "(rnrs base builtins (6))")]
-pub fn char_pred(arg: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(arg.type_of() == ValueType::Character)])
+pub fn char_pred(arg: &Value) -> bool {
+    arg.type_of() == ValueType::Character
 }
 
 #[bridge(name = "null?", lib = "(rnrs base builtins (6))")]
-pub fn null_pred(arg: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(arg.type_of() == ValueType::Null)])
+pub fn null_pred(arg: &Value) -> bool {
+    arg.type_of() == ValueType::Null
 }
 
 #[bridge(name = "pair?", lib = "(rnrs base builtins (6))")]
-pub fn pair_pred(arg: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(matches!(
-        *arg.unpacked_ref(),
-        UnpackedValue::Pair(_)
-    ))])
+pub fn pair_pred(arg: &Value) -> bool {
+    arg.type_of() == ValueType::Pair
 }
 
 #[bridge(name = "procedure?", lib = "(rnrs base builtins (6))")]
-pub fn procedure_pred(arg: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(arg.type_of() == ValueType::Procedure)])
+pub fn procedure_pred(arg: &Value) -> bool {
+    arg.type_of() == ValueType::Procedure
 }
