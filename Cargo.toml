@@ -50,14 +50,16 @@ cranelift-module = "0.122"
 tokio = { version = "1.47", features = ["full"], optional = true }
 async-stream = { version = "0.3", optional = true }
 async-lock = { version = "3.4", optional = true }
+mimalloc = { version = "0.1.52", optional = true }
 
 [features]
-default = ["load-libraries-from-fs"]
+default = ["load-libraries-from-fs", "mimalloc"]
 async = ["dep:futures", "dep:async-stream", "dep:async-lock"]
 lsp = ["dep:lsp-server", "dep:lsp-types", "dep:serde", "dep:serde_json"]
 load-libraries-from-fs = []
 continuation-marks = []
 plugins = ["dep:libloading"]
+mimalloc = ["dep:mimalloc"]
 
 [profile.release]
 lto = true
