@@ -287,9 +287,13 @@ impl CompilationUnit<'_, '_> {
                 self.alloc_cell_codegen(into, *cexpr, deferred_procs, deferred_local_conts);
             }
             Cps::PrimOp(PrimOp::Read, args, result, cexpr) => {
-                let value = self.value_codegen(&args[0]);
-                self.rebinds.rebind(result, IrValue::Value(value));
-                self.cps_codegen(*cexpr, deferred_procs, deferred_local_conts);
+                self.read_codegen(
+                    &args[0],
+                    result,
+                    *cexpr,
+                    deferred_procs,
+                    deferred_local_conts,
+                );
             }
             Cps::PrimOp(PrimOp::Matches, args, bind_to, cexpr) => {
                 let [pattern, expr] = args.as_slice() else {
@@ -964,6 +968,25 @@ impl CompilationUnit<'_, '_> {
         let cell = self.builder.inst_results(call)[0];
         self.rebinds.rebind(var, IrValue::Cell(cell));
         self.push_alloc(cell);
+        self.cps_codegen(cexpr, deferred_procs, deferred_local_conts);
+    }
+
+    fn read_codegen(
+        &mut self,
+        from: &CpsValue,
+        result: Local,
+        cexpr: Cps,
+        deferred_procs: &mut Vec<ProcedureBundle>,
+        deferred_local_conts: &mut Vec<ProcedureBundle>,
+    ) {
+        let value = self.value_codegen(from);
+        let clonev = self
+            .module
+            .declare_func_in_func(self.runtime_funcs.clonev, self.builder.func);
+        let call = self.builder.ins().call(clonev, &[value]);
+        let value = self.builder.inst_results(call)[0];
+        self.rebinds.rebind(result, IrValue::Value(value));
+        self.push_alloc(value);
         self.cps_codegen(cexpr, deferred_procs, deferred_local_conts);
     }
 
