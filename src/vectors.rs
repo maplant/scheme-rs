@@ -6,7 +6,7 @@ use crate::{
     DynHasher,
     exceptions::Exception,
     gc::Trace,
-    lists::{List, slice_to_list},
+    lists::{List, iter_list, slice_to_list},
     records::{Embeddable, Embedded, Record},
     registry::bridge,
     value::{Value, write_value},
@@ -377,22 +377,16 @@ trait Indexer {
 
     fn get_range(_: &Self::Collection, _: Range<usize>) -> Self::Collection;
 
-    fn index(from: &Value, range: &[Value]) -> Result<Self::Collection, Exception> {
+    fn index(
+        from: &Value,
+        start: Option<usize>,
+        end: Option<usize>,
+    ) -> Result<Self::Collection, Exception> {
         let collection = Self::Collection::try_from(from.clone())?;
         let len = Self::get_len(&collection);
 
-        let start: usize = range
-            .first()
-            .cloned()
-            .map(Value::try_into)
-            .transpose()?
-            .unwrap_or(0);
-        let end: usize = range
-            .get(1)
-            .cloned()
-            .map(Value::try_into)
-            .transpose()?
-            .unwrap_or(len);
+        let start = start.unwrap_or(0);
+        let end = end.unwrap_or(len);
 
         let range = try_make_range(start, end)?;
         if range.end > len {
@@ -431,22 +425,21 @@ impl Indexer for VectorIndexer {
 }
 
 #[bridge(name = "vector?", lib = "(rnrs base builtins (6))")]
-pub fn vector_pred(arg: &Value) -> bool {
+pub fn vector_pred(arg: Value) -> bool {
     arg.is_a::<Vector>()
 }
 
 #[bridge(name = "make-vector", lib = "(rnrs base builtins (6))")]
-pub fn make_vector(n: usize, #[rest_args] with: &[Value]) -> Vector {
-    Vector::mutable(
-        (0..n)
-            .map(|_| with.first().cloned().unwrap_or_else(Value::null))
-            .collect::<Vec<_>>(),
-    )
+pub fn make_vector(n: usize, with: Option<Value>) -> Result<Vector, Exception> {
+    let with = with.unwrap_or_else(Value::null);
+    Ok(Vector::mutable(
+        (0..n).map(|_| with.clone()).collect::<Vec<_>>(),
+    ))
 }
 
 #[bridge(name = "vector", lib = "(rnrs base builtins (6))")]
-pub fn vector(#[rest_args] args: &[Value]) -> Vector {
-    Vector::mutable(args.to_vec())
+pub fn vector(#[rest_args] args: Value) -> Vector {
+    Vector::mutable(iter_list(&args).collect())
 }
 
 #[bridge(name = "vector-ref", lib = "(rnrs base builtins (6))")]
@@ -470,7 +463,7 @@ pub fn bytevector_len(vec: ByteVector) -> usize {
 }
 
 #[bridge(name = "vector-set!", lib = "(rnrs base builtins (6))")]
-pub fn vector_set_bang(vec: Vector, index: usize, with: &Value) -> Result<(), Exception> {
+pub fn vector_set_bang(vec: Vector, index: usize, with: Value) -> Result<(), Exception> {
     if !vec.0.mutable {
         return Err(Exception::error("vector is immutable"));
     }
@@ -486,15 +479,23 @@ pub fn vector_set_bang(vec: Vector, index: usize, with: &Value) -> Result<(), Ex
 }
 
 #[bridge(name = "vector->list", lib = "(rnrs base builtins (6))")]
-pub fn vector_to_list(from: &Value, #[rest_args] range: &[Value]) -> Result<Value, Exception> {
-    let vec = VectorIndexer::index(from, range)?;
+pub fn vector_to_list(
+    from: Value,
+    start: Option<usize>,
+    end: Option<usize>,
+) -> Result<Value, Exception> {
+    let vec = VectorIndexer::index(&from, start, end)?;
     let vec_read = vec.0.vec.read();
     Ok(slice_to_list(&vec_read))
 }
 
 #[bridge(name = "vector->string", lib = "(rnrs base builtins (6))")]
-pub fn vector_to_string(from: &Value, #[rest_args] range: &[Value]) -> Result<String, Exception> {
-    let vec = VectorIndexer::index(from, range)?;
+pub fn vector_to_string(
+    from: Value,
+    start: Option<usize>,
+    end: Option<usize>,
+) -> Result<String, Exception> {
+    let vec = VectorIndexer::index(&from, start, end)?;
     let vec_read = vec.0.vec.read();
     vec_read
         .iter()
@@ -504,16 +505,21 @@ pub fn vector_to_string(from: &Value, #[rest_args] range: &[Value]) -> Result<St
 }
 
 #[bridge(name = "vector-copy", lib = "(rnrs base builtins (6))")]
-pub fn vector_copy(from: &Value, #[rest_args] range: &[Value]) -> Result<Value, Exception> {
-    Ok(Value::from(VectorIndexer::index(from, range)?))
+pub fn vector_copy(
+    from: Value,
+    start: Option<usize>,
+    end: Option<usize>,
+) -> Result<Value, Exception> {
+    Ok(Value::from(VectorIndexer::index(&from, start, end)?))
 }
 
 #[bridge(name = "vector-copy!", lib = "(rnrs base builtins (6))")]
 pub fn vector_copy_to(
     to: Vector,
     at: usize,
-    from: &Value,
-    #[rest_args] range: &[Value],
+    from: Value,
+    start: Option<usize>,
+    end: Option<usize>,
 ) -> Result<(), Exception> {
     let mut to = to.0.vec.write();
 
@@ -521,7 +527,7 @@ pub fn vector_copy_to(
         return Err(Exception::invalid_index(at, to.len()));
     }
 
-    let copies = VectorIndexer::index(from, range)?;
+    let copies = VectorIndexer::index(&from, start, end)?;
     let copies = copies.0.vec.read();
     if copies.len() + at >= to.len() {
         return Err(Exception::invalid_range(at..at + copies.len(), to.len()));
@@ -541,37 +547,31 @@ pub fn vector_copy_to(
 }
 
 #[bridge(name = "vector-append", lib = "(rnrs base builtins (6))")]
-pub fn vector_append(#[rest_args] args: &[Value]) -> Result<Value, Exception> {
-    if args.is_empty() {
+pub fn vector_append(#[rest_args] args: Value) -> Result<Value, Exception> {
+    if args.is_null() {
         return Err(Exception::wrong_num_of_var_args(1..usize::MAX, 0));
     }
 
-    Ok(Value::from(
-        args.iter()
-            .map(|arg| {
-                let vec: Vector = arg.clone().try_into()?;
-                let vec_read = vec.0.vec.read();
-                Ok(vec_read.clone())
-            })
-            .collect::<Result<Vec<_>, Exception>>()?
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>(),
-    ))
+    let mut appended = Vec::new();
+    for arg in iter_list(&args) {
+        let vec: Vector = arg.try_into()?;
+        appended.extend(vec.0.vec.read().iter().cloned());
+    }
+    Ok(Value::from(appended))
 }
 
 #[bridge(name = "vector-fill!", lib = "(rnrs base builtins (6))")]
 pub fn vector_fill(
     vector: Vector,
-    with: &Value,
-    start: &Value,
-    #[rest_args] end: &[Value],
+    with: Value,
+    start: Value,
+    end: Option<usize>,
 ) -> Result<(), Exception> {
     let mut vector = vector.0.vec.write();
 
     let start: usize = start.clone().try_into()?;
-    let end = match end.first() {
-        Some(end) => end.clone().try_into()?,
+    let end = match end {
+        Some(end) => end,
         None => vector.len(),
     };
 
@@ -602,17 +602,13 @@ pub fn native_endianness() -> Symbol {
 }
 
 #[bridge(name = "bytevector?", lib = "(rnrs bytevectors (6))")]
-pub fn bytevector_pred(arg: &Value) -> bool {
+pub fn bytevector_pred(arg: Value) -> bool {
     arg.is_a::<Embedded<VectorInner<u8>>>()
 }
 
 #[bridge(name = "make-bytevector", lib = "(rnrs bytevectors (6))")]
-pub fn make_bytevector(k: usize, #[rest_args] fill: &[Value]) -> Result<ByteVector, Exception> {
-    let fill: u8 = match fill {
-        [] => 0u8,
-        [fill] => fill.try_into()?,
-        _ => return Err(Exception::wrong_num_of_var_args(1..2, 1 + fill.len())),
-    };
+pub fn make_bytevector(k: usize, fill: Option<u8>) -> Result<ByteVector, Exception> {
+    let fill = fill.unwrap_or(0);
     Ok(ByteVector::mutable(vec![fill; k]))
 }
 

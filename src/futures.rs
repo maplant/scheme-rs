@@ -15,7 +15,7 @@ use tokio::{
 use crate::{
     exceptions::Exception,
     ports::{BufferMode, Port},
-    proc::{Application, ContBarrier, Procedure},
+    proc::{Application, Args, ContBarrier, Procedure},
     records::{Embeddable, Embedded, RecordTypeDescriptor, rtd},
     strings::WideString,
     value::Value,
@@ -52,7 +52,7 @@ pub async fn await_future(
     future: Embedded<Future>,
     barrier: &mut ContBarrier<'_>,
 ) -> Result<Application, Exception> {
-    Ok(barrier.call_cont(future.as_ref().clone().await?))
+    Ok(barrier.call_cont(Args::pack(future.as_ref().clone().await?)))
 }
 
 unsafe impl Embeddable for Arc<TcpListener> {

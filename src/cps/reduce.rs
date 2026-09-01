@@ -31,19 +31,26 @@ impl Cps {
     /// is applied to exactly once in its continuation expression, its body is
     /// substituted for the application.
     fn beta_reduction(self, uses: &mut Uses, modified: &mut bool) -> Self {
-        match self {
-            Cps::PrimOp(prim_op, values, result, cexp) => Cps::PrimOp(
-                prim_op,
-                values,
-                result,
-                Box::new(cexp.beta_reduction(uses, modified)),
+        let Cps { inst, local } = self;
+        match inst {
+            Inst::PrimOp(prim_op, values, result, cexp) => Cps::with_local(
+                Inst::PrimOp(
+                    prim_op,
+                    values,
+                    result,
+                    Box::new(cexp.beta_reduction(uses, modified)),
+                ),
+                local,
             ),
-            Cps::If(cond, success, failure) => Cps::If(
-                cond,
-                Box::new(success.beta_reduction(uses, modified)),
-                Box::new(failure.beta_reduction(uses, modified)),
+            Inst::If(cond, success, failure) => Cps::with_local(
+                Inst::If(
+                    cond,
+                    Box::new(success.beta_reduction(uses, modified)),
+                    Box::new(failure.beta_reduction(uses, modified)),
+                ),
+                local,
             ),
-            Cps::Fix(mut bindings, cexpr) if bindings.len() == 1 => {
+            Inst::Fix(mut bindings, cexpr) if bindings.len() == 1 => {
                 let binding = bindings.pop().unwrap();
 
                 let body = binding.body.beta_reduction(uses, modified);
@@ -64,27 +71,33 @@ impl Cps {
                     return cexpr;
                 }
 
-                Cps::Fix(
-                    vec![LambdaBinding {
-                        args: binding.args,
-                        body: Box::new(body),
-                        val: binding.val,
-                        span: binding.span,
-                    }],
-                    Box::new(cexpr),
+                Cps::with_local(
+                    Inst::Fix(
+                        vec![LambdaBinding {
+                            args: binding.args,
+                            body: Box::new(body),
+                            val: binding.val,
+                            span: binding.span,
+                        }],
+                        Box::new(cexpr),
+                    ),
+                    local,
                 )
             }
-            Cps::Fix(mut bindings, cexpr) => {
+            Inst::Fix(mut bindings, cexpr) => {
                 for binding in &mut bindings {
                     let body = std::mem::replace(
                         binding.body.as_mut(),
-                        Cps::Halt(Value::Const(RuntimeValue::undefined())),
+                        Cps::new(Inst::Halt(Value::Const(RuntimeValue::undefined()))),
                     );
                     *binding.body = body.beta_reduction(uses, modified);
                 }
-                Cps::Fix(bindings, Box::new(cexpr.beta_reduction(uses, modified)))
+                Cps::with_local(
+                    Inst::Fix(bindings, Box::new(cexpr.beta_reduction(uses, modified))),
+                    local,
+                )
             }
-            cexpr => cexpr,
+            inst => Cps::with_local(inst, local),
         }
     }
 
@@ -95,19 +108,19 @@ impl Cps {
         func_body: &Cps,
         uses: &mut Uses,
     ) -> bool {
-        let new = match self {
-            Cps::PrimOp(_, _, val, cexp) => {
+        let new = match &mut self.inst {
+            Inst::PrimOp(_, _, val, cexp) => {
                 let reduced = cexp.beta_reduce_function(func, args, func_body, uses);
                 if reduced {
                     uses.remove(val);
                 }
                 return reduced;
             }
-            Cps::If(_, succ, fail) => {
+            Inst::If(_, succ, fail) => {
                 return succ.beta_reduce_function(func, args, func_body, uses)
                     || fail.beta_reduce_function(func, args, func_body, uses);
             }
-            Cps::Fix(bindings, cexpr) => {
+            Inst::Fix(bindings, cexpr) => {
                 for binding in bindings {
                     if binding
                         .body
@@ -119,7 +132,7 @@ impl Cps {
                 }
                 return cexpr.beta_reduce_function(func, args, func_body, uses);
             }
-            Cps::App(Value::Var(Var::Local(operator)), applied) if *operator == func => {
+            Inst::App(Value::Var(Var::Local(operator)), applied) if *operator == func => {
                 let (k, applied) = if args.continuation.is_some() {
                     if let Some((k, applied)) = applied.split_first() {
                         (Some(k.clone()), applied)
@@ -133,7 +146,7 @@ impl Cps {
                 if args.variadic {
                     let (req, var) = applied.split_at(args.num_required());
                     let var_args = Local::gensym();
-                    Cps::PrimOp(
+                    Cps::new(Inst::PrimOp(
                         PrimOp::List,
                         var.to_vec(),
                         var_args,
@@ -145,7 +158,7 @@ impl Cps {
                                 .chain(Some(Value::from(var_args))),
                             uses,
                         )),
-                    )
+                    ))
                 } else if args.num_required() == applied.len() {
                     substitute(
                         func_body.clone(),
@@ -159,7 +172,7 @@ impl Cps {
                     return false;
                 }
             }
-            Cps::App(_, _) | Cps::Halt(_) => return false,
+            Inst::App(_, _) | Inst::Halt(_) => return false,
         };
         *self = new;
         true
@@ -168,26 +181,33 @@ impl Cps {
     /// Eta-reduction optimization steps. Replaces lambdas that forward their
     /// arguments to another lambda with the body lambda.
     fn eta_reduction(self, uses: &mut Uses, modified: &mut bool) -> Self {
-        match self {
-            Cps::PrimOp(prim_op, values, result, cexp) => Cps::PrimOp(
-                prim_op,
-                values,
-                result,
-                Box::new(cexp.eta_reduction(uses, modified)),
+        let Cps { inst, local } = self;
+        match inst {
+            Inst::PrimOp(prim_op, values, result, cexp) => Cps::with_local(
+                Inst::PrimOp(
+                    prim_op,
+                    values,
+                    result,
+                    Box::new(cexp.eta_reduction(uses, modified)),
+                ),
+                local,
             ),
-            Cps::If(cond, success, failure) => Cps::If(
-                cond,
-                Box::new(success.eta_reduction(uses, modified)),
-                Box::new(failure.eta_reduction(uses, modified)),
+            Inst::If(cond, success, failure) => Cps::with_local(
+                Inst::If(
+                    cond,
+                    Box::new(success.eta_reduction(uses, modified)),
+                    Box::new(failure.eta_reduction(uses, modified)),
+                ),
+                local,
             ),
-            Cps::Fix(mut bindings, cexpr) if bindings.len() == 1 => {
+            Inst::Fix(mut bindings, cexpr) if bindings.len() == 1 => {
                 let binding = bindings.pop().unwrap();
                 let body = binding.body.eta_reduction(uses, modified);
                 let mut cexpr = cexpr.eta_reduction(uses, modified);
 
                 if !binding.args.variadic
                     && binding.args.continuation.is_none()
-                    && let Cps::App(k, app_args) = &body
+                    && let Inst::App(k, app_args) = &body.inst
                     && *k != Value::from(binding.val)
                     && binding.args.args.len() == app_args.len()
                     && binding
@@ -201,51 +221,64 @@ impl Cps {
                     cexpr.substitute(&[(binding.val, k.clone())].into_iter().collect(), uses);
                     cexpr
                 } else {
-                    Cps::Fix(
-                        vec![LambdaBinding {
-                            args: binding.args,
-                            body: Box::new(body),
-                            val: binding.val,
-                            span: binding.span,
-                        }],
-                        Box::new(cexpr),
+                    Cps::with_local(
+                        Inst::Fix(
+                            vec![LambdaBinding {
+                                args: binding.args,
+                                body: Box::new(body),
+                                val: binding.val,
+                                span: binding.span,
+                            }],
+                            Box::new(cexpr),
+                        ),
+                        local,
                     )
                 }
             }
-            Cps::Fix(mut bindings, cexpr) => {
+            Inst::Fix(mut bindings, cexpr) => {
                 for binding in &mut bindings {
                     let body = std::mem::replace(
                         binding.body.as_mut(),
-                        Cps::Halt(Value::Const(RuntimeValue::undefined())),
+                        Cps::new(Inst::Halt(Value::Const(RuntimeValue::undefined()))),
                     );
                     *binding.body = body.eta_reduction(uses, modified);
                 }
-                Cps::Fix(bindings, Box::new(cexpr.eta_reduction(uses, modified)))
+                Cps::with_local(
+                    Inst::Fix(bindings, Box::new(cexpr.eta_reduction(uses, modified))),
+                    local,
+                )
             }
-            cexpr => cexpr,
+            inst => Cps::with_local(inst, local),
         }
     }
 
     /// Removes any closures and allocated cells that are left unused.
     fn dead_code_elimination(self, uses: &mut Uses) -> Self {
-        match self {
-            Cps::PrimOp(PrimOp::AllocCell, _, result, cexpr)
+        let Cps { inst, local } = self;
+        match inst {
+            Inst::PrimOp(PrimOp::AllocCell, _, result, cexpr)
                 if !uses.find_uses(&cexpr).contains_key(&result) =>
             {
                 cexpr.dead_code_elimination(uses)
             }
-            Cps::PrimOp(prim_op, values, result, cexpr) => Cps::PrimOp(
-                prim_op,
-                values,
-                result,
-                Box::new(cexpr.dead_code_elimination(uses)),
+            Inst::PrimOp(prim_op, values, result, cexpr) => Cps::with_local(
+                Inst::PrimOp(
+                    prim_op,
+                    values,
+                    result,
+                    Box::new(cexpr.dead_code_elimination(uses)),
+                ),
+                local,
             ),
-            Cps::If(cond, success, failure) => Cps::If(
-                cond,
-                Box::new(success.dead_code_elimination(uses)),
-                Box::new(failure.dead_code_elimination(uses)),
+            Inst::If(cond, success, failure) => Cps::with_local(
+                Inst::If(
+                    cond,
+                    Box::new(success.dead_code_elimination(uses)),
+                    Box::new(failure.dead_code_elimination(uses)),
+                ),
+                local,
             ),
-            Cps::Fix(mut bindings, cexpr) => {
+            Inst::Fix(mut bindings, cexpr) => {
                 let cexpr = cexpr.dead_code_elimination(uses);
 
                 // Compute the live set of the Fix operator. A procedure is live
@@ -277,10 +310,10 @@ impl Cps {
                 if bindings.is_empty() {
                     cexpr
                 } else {
-                    Cps::Fix(bindings, Box::new(cexpr))
+                    Cps::with_local(Inst::Fix(bindings, Box::new(cexpr)), local)
                 }
             }
-            cexpr => cexpr,
+            inst => Cps::with_local(inst, local),
         }
     }
 }
@@ -310,25 +343,25 @@ mod tests {
         let f = Local::gensym();
         let lambda_val = Local::gensym();
 
-        let cps = Cps::Fix(
+        let cps = Cps::new(Inst::Fix(
             vec![LambdaBinding {
                 args: LambdaArgs::new(vec![a, b], false, None),
-                body: Box::new(Cps::App(Value::from(f), vec![Value::from(a)])),
+                body: Box::new(Cps::new(Inst::App(Value::from(f), vec![Value::from(a)]))),
                 val: lambda_val,
                 span: None,
             }],
-            Box::new(Cps::Halt(Value::from(lambda_val))),
-        );
+            Box::new(Cps::new(Inst::Halt(Value::from(lambda_val)))),
+        ));
 
         let reduced = cps.reduce();
 
         // The lambda must survive — it should NOT be eta-reduced.
-        match &reduced {
-            Cps::Fix(bindings, _) if bindings.len() == 1 => {
+        match &reduced.inst {
+            Inst::Fix(bindings, _) if bindings.len() == 1 => {
                 let binding = &bindings[0];
                 assert_eq!(binding.args.args.len(), 2, "lambda should keep both args");
                 assert!(
-                    matches!(binding.body.as_ref(), Cps::App(_, app_args) if app_args.len() == 1),
+                    matches!(&binding.body.inst, Inst::App(_, app_args) if app_args.len() == 1),
                     "body should still forward only one arg"
                 );
             }
@@ -344,24 +377,24 @@ mod tests {
         let f = Local::gensym();
         let lambda_val = Local::gensym();
 
-        let cps = Cps::Fix(
+        let cps = Cps::new(Inst::Fix(
             vec![LambdaBinding {
                 args: LambdaArgs::new(vec![a, b], false, None),
-                body: Box::new(Cps::App(
+                body: Box::new(Cps::new(Inst::App(
                     Value::from(f),
                     vec![Value::from(a), Value::from(b)],
-                )),
+                ))),
                 val: lambda_val,
                 span: None,
             }],
-            Box::new(Cps::Halt(Value::from(lambda_val))),
-        );
+            Box::new(Cps::new(Inst::Halt(Value::from(lambda_val)))),
+        ));
 
         let reduced = cps.reduce();
 
         // The lambda should be eta-reduced: Halt(f)
-        match &reduced {
-            Cps::Halt(val) => {
+        match &reduced.inst {
+            Inst::Halt(val) => {
                 assert_eq!(*val, Value::from(f), "should eta-reduce to f");
             }
             other => panic!("expected Halt(f) after eta-reduction, got {other:?}"),

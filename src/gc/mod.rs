@@ -36,6 +36,7 @@ use crate::{Either, gc::collection::GcHeader};
 
 /// A heap allocated garbage collected smart pointer. Gc requires that `T`
 /// implements the [`Trace`] trait to properly track references.
+#[repr(transparent)]
 pub struct Gc<T: ?Sized> {
     pub(crate) ptr: NonNull<GcInner<T>>,
     pub(crate) marker: PhantomData<GcInner<T>>,

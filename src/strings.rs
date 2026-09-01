@@ -16,6 +16,7 @@ use crate::{
     character::{char_switch_case, to_foldcase},
     exceptions::Exception,
     gc::Trace,
+    lists::iter_list,
     records::{Embeddable, Embedded, Record, RecordTypeDescriptor},
     registry::bridge,
     value::Value,
@@ -236,28 +237,23 @@ impl From<String> for Value {
 }
 
 #[bridge(name = "string?", lib = "(rnrs base builtins (6))")]
-pub fn string_pred(arg: &Value) -> bool {
+pub fn string_pred(arg: Value) -> bool {
     arg.is_a::<Embedded<WideStringInner>>()
 }
 
 #[bridge(name = "make-string", lib = "(rnrs base builtins (6))")]
-pub fn make_string(k: &Value, #[rest_args] chr: &[Value]) -> Result<WideString, Exception> {
-    let chr: char = match chr {
-        [] => '\0',
-        [chr] => chr.clone().try_into()?,
-        x => return Err(Exception::wrong_num_of_args(2, 1 + x.len())),
-    };
+pub fn make_string(k: Value, chr: Option<char>) -> Result<WideString, Exception> {
+    let chr = chr.unwrap_or('\0');
     let k: usize = k.clone().try_into()?;
     Ok(WideString::mutable(std::iter::repeat_n(chr, k)))
 }
 
 #[bridge(name = "string", lib = "(rnrs base builtins (6))")]
-pub fn string(chr: &Value, #[rest_args] chars: &[Value]) -> Result<WideString, Exception> {
+pub fn string(chr: Value, #[rest_args] chars: Value) -> Result<WideString, Exception> {
     Ok(WideString::mutable(
-        [chr]
+        [chr.clone()]
             .into_iter()
-            .chain(chars.iter())
-            .cloned()
+            .chain(iter_list(&chars))
             .map(Value::try_into)
             .collect::<Result<Vec<char>, _>>()?,
     ))
@@ -281,11 +277,11 @@ pub fn string_ref(string: WideString, k: usize) -> Result<char, Exception> {
 #[bridge(name = "string=?", lib = "(rnrs base builtins (6))")]
 pub fn string_eq_pred(
     string_1: WideString,
-    string_2: &Value,
-    #[rest_args] string_n: &[Value],
+    string_2: Value,
+    #[rest_args] string_n: Value,
 ) -> Result<bool, Exception> {
     let string_1_chars = string_1.0.chars.read();
-    for string_n in Some(string_2).into_iter().chain(string_n.iter()).cloned() {
+    for string_n in [string_2.clone()].into_iter().chain(iter_list(&string_n)) {
         let string_n: WideString = string_n.try_into()?;
         if *string_1_chars != *string_n.0.chars.read() {
             return Ok(false);
@@ -297,11 +293,11 @@ pub fn string_eq_pred(
 #[bridge(name = "string<?", lib = "(rnrs base builtins (6))")]
 pub fn string_less_pred(
     string_1: WideString,
-    string_2: &Value,
-    #[rest_args] string_n: &[Value],
+    string_2: Value,
+    #[rest_args] string_n: Value,
 ) -> Result<bool, Exception> {
     let mut prev_string = string_1;
-    for string_n in Some(string_2).into_iter().chain(string_n.iter()).cloned() {
+    for string_n in [string_2.clone()].into_iter().chain(iter_list(&string_n)) {
         let string_n: WideString = string_n.try_into()?;
         {
             let prev_string_read = prev_string.0.chars.read();
@@ -317,11 +313,11 @@ pub fn string_less_pred(
 #[bridge(name = "string>?", lib = "(rnrs base builtins (6))")]
 pub fn string_greater_pred(
     string_1: WideString,
-    string_2: &Value,
-    #[rest_args] string_n: &[Value],
+    string_2: Value,
+    #[rest_args] string_n: Value,
 ) -> Result<bool, Exception> {
     let mut prev_string = string_1;
-    for string_n in Some(string_2).into_iter().chain(string_n.iter()).cloned() {
+    for string_n in [string_2.clone()].into_iter().chain(iter_list(&string_n)) {
         let string_n: WideString = string_n.try_into()?;
         {
             let prev_string_read = prev_string.0.chars.read();
@@ -337,11 +333,11 @@ pub fn string_greater_pred(
 #[bridge(name = "string<=?", lib = "(rnrs base builtins (6))")]
 pub fn string_less_equal_pred(
     string_1: WideString,
-    string_2: &Value,
-    #[rest_args] string_n: &[Value],
+    string_2: Value,
+    #[rest_args] string_n: Value,
 ) -> Result<bool, Exception> {
     let mut prev_string = string_1;
-    for string_n in Some(string_2).into_iter().chain(string_n.iter()).cloned() {
+    for string_n in [string_2.clone()].into_iter().chain(iter_list(&string_n)) {
         let string_n: WideString = string_n.try_into()?;
         {
             let prev_string_read = prev_string.0.chars.read();
@@ -357,11 +353,11 @@ pub fn string_less_equal_pred(
 #[bridge(name = "string>=?", lib = "(rnrs base builtins (6))")]
 pub fn string_greater_equal_pred(
     string_1: WideString,
-    string_2: &Value,
-    #[rest_args] string_n: &[Value],
+    string_2: Value,
+    #[rest_args] string_n: Value,
 ) -> Result<bool, Exception> {
     let mut prev_string = string_1;
-    for string_n in Some(string_2).into_iter().chain(string_n.iter()).cloned() {
+    for string_n in [string_2.clone()].into_iter().chain(iter_list(&string_n)) {
         let string_n: WideString = string_n.try_into()?;
         {
             let prev_string_read = prev_string.0.chars.read();
@@ -386,9 +382,9 @@ pub fn substring(string: WideString, start: usize, end: usize) -> Result<WideStr
 }
 
 #[bridge(name = "string-append", lib = "(rnrs base builtins (6))")]
-pub fn list(#[rest_args] args: &[Value]) -> Result<String, Exception> {
+pub fn list(#[rest_args] args: Value) -> Result<String, Exception> {
     let mut output = String::new();
-    for arg in args.iter().cloned() {
+    for arg in iter_list(&args) {
         let arg: String = arg.try_into()?;
         output += arg.as_str();
     }
@@ -410,22 +406,16 @@ pub fn string_copy(string: WideString) -> WideString {
 }
 
 #[bridge(name = "string->vector", lib = "(rnrs base builtins (6))")]
-pub fn string_to_vector(from: &Value, #[rest_args] range: &[Value]) -> Result<Value, Exception> {
+pub fn string_to_vector(
+    from: Value,
+    start: Option<usize>,
+    end: Option<usize>,
+) -> Result<Value, Exception> {
     let string: WideString = from.clone().try_into()?;
 
     let len = string.0.chars.read().len();
-    let start: usize = range
-        .first()
-        .cloned()
-        .map(Value::try_into)
-        .transpose()?
-        .unwrap_or(0);
-    let end: usize = range
-        .get(1)
-        .cloned()
-        .map(Value::try_into)
-        .transpose()?
-        .unwrap_or(len);
+    let start = start.unwrap_or(0);
+    let end = end.unwrap_or(len);
 
     if end < start {
         return Err(Exception::error(format!(

@@ -99,6 +99,7 @@ pub enum PrimOp {
     Cdr,
     Cons,
     List,
+    Append,
     IsNull,
     IsPair,
 
@@ -146,6 +147,7 @@ impl PrimOp {
             Self::Cdr => PrimOpInfo::new(1, false, true, true),
             Self::Cons => PrimOpInfo::new(2, false, false, true),
             Self::List => PrimOpInfo::new(0, true, false, true),
+            Self::Append => PrimOpInfo::new(0, true, false, true),
             Self::IsNull => PrimOpInfo::new(1, false, false, false),
             Self::IsPair => PrimOpInfo::new(1, false, false, false),
             Self::Add => PrimOpInfo::new(0, true, true, true),
@@ -197,7 +199,23 @@ impl PrimOpInfo {
 }
 
 #[derive(Debug, Clone)]
-pub enum Cps {
+pub struct Cps {
+    pub(crate) inst: Inst,
+    pub(crate) local: Local,
+}
+
+impl Cps {
+    pub fn new(inst: Inst) -> Self {
+        Self::with_local(inst, Local::gensym())
+    }
+
+    pub fn with_local(inst: Inst, local: Local) -> Self {
+        Self { inst, local }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum Inst {
     /// Call to a primitive operator:
     PrimOp(PrimOp, Vec<Value>, Local, Box<Cps>),
 
@@ -282,7 +300,10 @@ impl LambdaArgs {
 impl Cps {
     /// Take ownership of and modify the term, replacing it
     fn update_term(&mut self, updater: impl FnOnce(Cps) -> Cps) {
-        let old_term = std::mem::replace(self, Cps::Halt(Value::from(RuntimeValue::undefined())));
+        let old_term = std::mem::replace(
+            self,
+            Cps::new(Inst::Halt(Value::from(RuntimeValue::undefined()))),
+        );
         *self = (updater)(old_term);
     }
 
@@ -291,44 +312,45 @@ impl Cps {
     // when we clear the uses cache (i.e. return a bool if any substitutions
     // occurred).
     fn substitute(&mut self, substitutions: &HashMap<Local, Value>, uses: &mut Uses) {
-        match self {
-            Self::PrimOp(_, args, val, cexp) => {
+        match &mut self.inst {
+            Inst::PrimOp(_, args, val, cexp) => {
                 substitute_values(args, substitutions);
                 cexp.substitute(substitutions, uses);
                 uses.remove(val);
             }
-            Self::App(value, values) => {
+            Inst::App(value, values) => {
                 substitute_value(value, substitutions);
                 substitute_values(values, substitutions);
             }
-            Self::If(cond, success, failure) => {
+            Inst::If(cond, success, failure) => {
                 substitute_value(cond, substitutions);
                 success.substitute(substitutions, uses);
                 failure.substitute(substitutions, uses);
             }
-            Self::Fix(bindings, cexp) => {
+            Inst::Fix(bindings, cexp) => {
                 for binding in bindings {
                     binding.body.substitute(substitutions, uses);
                     uses.remove(&binding.val);
                 }
                 cexp.substitute(substitutions, uses);
             }
-            Self::Halt(value) => {
+            Inst::Halt(value) => {
                 substitute_value(value, substitutions);
             }
         }
     }
 
     pub(crate) fn pretty_print(&self, indent: usize) {
-        match self {
-            Cps::PrimOp(PrimOp::Set, vals, _, cexp) => {
+        match &self.inst {
+            Inst::PrimOp(PrimOp::Set, vals, _, cexp) => {
                 eprintln!("{:>indent$}(set! {:?} {:?})", "", vals[0], vals[1]);
                 cexp.pretty_print(indent);
             }
-            mut next @ Cps::PrimOp(_, _, _, _) => {
+            Inst::PrimOp(_, _, _, _) => {
+                let mut next = self;
                 eprint!("{:>indent$}(let* (", "");
                 let mut first = true;
-                while let Cps::PrimOp(op, vals, to, cexpr) = next {
+                while let Inst::PrimOp(op, vals, to, cexpr) = &next.inst {
                     if !first {
                         eprint!("\n{:>new_indent$}", "", new_indent = indent + 7);
                     }
@@ -342,7 +364,7 @@ impl Cps {
                 next.pretty_print(indent + 3);
                 eprint!(")");
             }
-            Cps::Fix(bindings, cexp) => {
+            Inst::Fix(bindings, cexp) => {
                 eprint!("{:>indent$}(letrec (", "");
                 for (i, binding) in bindings.iter().enumerate() {
                     if i > 0 {
@@ -381,19 +403,19 @@ impl Cps {
                 cexp.pretty_print(indent + 2);
                 eprint!(")");
             }
-            Cps::If(val, succ, fail) => {
+            Inst::If(val, succ, fail) => {
                 eprintln!("{:>indent$}(if {val:?}", "");
                 succ.pretty_print(indent + 5);
                 eprintln!();
                 fail.pretty_print(indent + 5);
                 eprint!(")");
             }
-            Cps::App(val, args) => {
+            Inst::App(val, args) => {
                 eprint!("{:>indent$}({val:?}", "");
                 pretty_print_values(args);
                 eprint!(")")
             }
-            Cps::Halt(val) => {
+            Inst::Halt(val) => {
                 eprint!("{:>indent$}(Halt {val:?})", "");
             }
         }

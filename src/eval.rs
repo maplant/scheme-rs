@@ -10,32 +10,28 @@ use crate::{
     cps::compile::Compiler,
     env::{Environment, TopLevelEnvironment},
     exceptions::Exception,
-    proc::{Application, ContBarrier},
+    proc::{Application, Args, ContBarrier},
     records::{Embeddable, Embedded, RecordTypeDescriptor, rtd},
-    registry::cps_bridge,
+    registry::bridge,
     runtime::Runtime,
     syntax::{Span, Syntax},
     value::Value,
 };
 
 #[maybe_async]
-#[cps_bridge(def = "eval expression environment", lib = "(rnrs eval (6))")]
+#[bridge(name = "eval", lib = "(rnrs eval (6))")]
 pub fn eval(
-    _env: &[Value],
-    args: &[Value],
-    _rest_args: &[Value],
+    expression: Value,
+    environment: Embedded<Environment>,
     barrier: &mut ContBarrier<'_>,
 ) -> Result<Application, Exception> {
-    let [expression, environment] = args else {
-        unreachable!()
-    };
-    let env = environment.try_to::<Embedded<Environment>>()?;
-    let expr = Syntax::datum_to_syntax(&env.get_scope_set(), expression.clone(), &Span::default());
+    let env = environment;
+    let expr = Syntax::datum_to_syntax(&env.get_scope_set(), expression, &Span::default());
     let ctxt = ParseContext::new(false);
     let mut mutable_vars = HashSet::default();
     let expr = maybe_await!(Expression::parse(&ctxt, expr, &env, &mut mutable_vars))?;
     let result = maybe_await!(Compiler::new(mutable_vars).compile(Runtime::handle(), &expr))?;
-    Ok(barrier.call_cont(result))
+    Ok(barrier.call_cont(Args::pack(result)))
 }
 
 unsafe impl Embeddable for Environment {
@@ -45,16 +41,12 @@ unsafe impl Embeddable for Environment {
 }
 
 #[maybe_async]
-#[cps_bridge(def = "environment . import-spec", lib = "(rnrs eval (6))")]
+#[bridge(name = "environment", lib = "(rnrs eval (6))")]
 pub fn environment(
-    _env: &[Value],
-    _args: &[Value],
-    import_spec: &[Value],
+    #[rest_args] import_spec: Value,
     barrier: &mut ContBarrier<'_>,
 ) -> Result<Application, Exception> {
-    let import_sets = import_spec
-        .iter()
-        .cloned()
+    let import_sets = crate::lists::iter_list(&import_spec)
         .map(|spec| {
             let syntax = Syntax::datum_to_syntax(&BTreeSet::default(), spec, &Span::default());
             ImportSet::parse(discard_for(&syntax))
@@ -65,5 +57,5 @@ pub fn environment(
         maybe_await!(env.import(import_set))?;
     }
     let env = Value::from(env);
-    Ok(barrier.call_cont(vec![env]))
+    Ok(barrier.call_cont(Args::pack([env])))
 }

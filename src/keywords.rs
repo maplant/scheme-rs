@@ -35,7 +35,7 @@ unsafe impl Embeddable for Keyword {
 }
 
 #[bridge(name = "keyword?", lib = "(srfi :88)")]
-pub fn keyword_pred(obj: &Value) -> bool {
+pub fn keyword_pred(obj: Value) -> bool {
     obj.cast::<Embedded<Keyword>>().is_some()
 }
 

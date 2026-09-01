@@ -52,9 +52,9 @@
 
 use crate::{
     gc::Trace,
-    lists::slice_to_list,
+    lists::{Pair, iter_list, slice_to_list},
     ports::{IoDecodingError, IoEncodingError, IoError, IoReadError, IoWriteError},
-    proc::{Application, ContBarrier, ContPtr, DynStackElem, FuncPtr, Procedure},
+    proc::{Application, Args, ContBarrier, DynStackElem, FuncPtr, Procedure, Rest},
     records::{Embeddable, Embedded, RecordTypeDescriptor, rtd},
     registry::bridge,
     runtime::Runtime,
@@ -447,7 +447,7 @@ impl fmt::Debug for SimpleCondition {
 }
 
 #[bridge(name = "condition?", lib = "(rnrs conditions (6))")]
-pub fn condition_pred(obj: &Value) -> bool {
+pub fn condition_pred(obj: Value) -> bool {
     obj.cast::<Embedded<SimpleCondition>>().is_some()
         || obj.cast::<Embedded<CompoundCondition>>().is_some()
 }
@@ -902,16 +902,20 @@ where
 }
 
 #[bridge(name = "condition", lib = "(rnrs conditions (6))")]
-pub fn condition(#[rest_args] conditions: &[Value]) -> Result<Vec<Value>, Exception> {
-    match conditions {
-        // TODO: Check if this is a condition
-        [simple_condition] => Ok(vec![simple_condition.clone()]),
-        conditions => Ok(vec![Value::from(CompoundCondition(conditions.to_vec()))]),
+pub fn condition(#[rest_args] conditions: Value) -> Result<Value, Exception> {
+    // TODO: Check if this is a condition
+    if let Some(pair) = conditions.cast::<Pair>()
+        && pair.cdr().is_null()
+    {
+        return Ok(pair.car());
     }
+    Ok(Value::from(CompoundCondition(
+        iter_list(&conditions).collect(),
+    )))
 }
 
 #[bridge(name = "simple-conditions", lib = "(rnrs conditions (6))")]
-pub fn simple_conditions(condition: &Value) -> Result<Value, Exception> {
+pub fn simple_conditions(condition: Value) -> Result<Value, Exception> {
     Ok(slice_to_list(
         &Exception(condition.clone()).simple_conditions()?,
     ))
@@ -925,11 +929,11 @@ pub fn with_exception_handler(
 ) -> Application {
     barrier.push_dyn_stack(DynStackElem::ExceptionHandler(handler));
     thunk.call_with_cont(
-        &[],
+        Args::pack([]),
         [],
-        |[]: &[Value; 0], args: &[Value], barrier: &mut ContBarrier| {
+        |[]: [Value; 0], args: Rest, barrier: &mut ContBarrier| {
             barrier.pop_dyn_stack();
-            barrier.call_cont(args.to_vec())
+            barrier.call_cont(Args::from_list(args.0))
         },
         barrier,
     )
@@ -937,7 +941,7 @@ pub fn with_exception_handler(
 
 #[doc(hidden)]
 #[bridge(name = "raise", lib = "(rnrs exceptions (6))")]
-pub fn raise_builtin(obj: &Value, barrier: &mut ContBarrier) -> Application {
+pub fn raise_builtin(obj: Value, barrier: &mut ContBarrier) -> Application {
     raise(obj.clone(), barrier)
 }
 
@@ -951,13 +955,8 @@ pub fn raise(raised: Value, barrier: &mut ContBarrier) -> Application {
         raised
     };
 
-    barrier.push_cont(
-        vec![raised],
-        ContPtr::Continuation(unwind_to_exception_handler),
-        0,
-        false,
-    );
-    barrier.call_cont(Vec::new())
+    barrier.push_cont([raised], unwind_to_exception_handler);
+    barrier.call_cont(Args::pack([]))
 }
 
 #[runtime_fn]
@@ -972,66 +971,41 @@ unsafe extern "C" fn raise_rt(
     }
 }
 
-unsafe extern "C" fn unwind_to_exception_handler(
-    env: *const Value,
-    _args: *const Value,
-    barrier: *mut ContBarrier,
-    out: *mut MaybeUninit<Application>,
-) {
-    unsafe {
-        // env[0] is the raised value:
-        let raised = env.as_ref().unwrap().clone();
+fn unwind_to_exception_handler(
+    env: [Value; 1],
+    _args: Rest,
+    barrier: &mut ContBarrier,
+) -> Application {
+    let [raised] = env;
 
-        let barrier = barrier.as_mut().unwrap_unchecked();
-
-        loop {
-            let app = match barrier.pop_dyn_stack() {
-                None => {
-                    // If the stack is empty, we should return the error
-                    Application::halt_err(raised)
-                }
-                Some(DynStackElem::Winder(winder)) => {
-                    // If this is a winder, we should call the out winder while unwinding.
-                    // Variadic: the out thunk's return arity is not under our control.
-                    barrier.push_cont(
-                        vec![raised],
-                        ContPtr::Continuation(unwind_to_exception_handler),
-                        0,
-                        true,
-                    );
-                    Application::new(winder.out_thunk, Vec::new())
-                }
-                Some(DynStackElem::ExceptionHandler(handler)) => {
-                    barrier.push_cont(
-                        vec![raised.clone()],
-                        ContPtr::Continuation(reraise_exception),
-                        0,
-                        true,
-                    );
-                    Application::new(handler, vec![raised])
-                }
-                _ => continue,
-            };
-            (*out).write(app);
-            return;
-        }
+    loop {
+        return match barrier.pop_dyn_stack() {
+            None => {
+                // If the stack is empty, we should return the error
+                Application::halt_err(raised)
+            }
+            Some(DynStackElem::Winder(winder)) => {
+                // If this is a winder, we should call the out winder while
+                // unwinding.
+                barrier.push_cont([raised], unwind_to_exception_handler);
+                Application::new(winder.out_thunk, Args::pack([]))
+            }
+            Some(DynStackElem::ExceptionHandler(handler)) => {
+                barrier.push_cont([], reraise_exception);
+                Application::new(handler, Args::pack([raised]))
+            }
+            _ => continue,
+        };
     }
 }
 
-unsafe extern "C" fn reraise_exception(
-    _env: *const Value,
-    _args: *const Value,
-    _barrier: *mut ContBarrier,
-    out: *mut MaybeUninit<Application>,
-) {
-    unsafe {
-        let exception = Value::from(NonContinuable::default());
+fn reraise_exception(_env: [Value; 0], _args: Rest, _barrier: &mut ContBarrier) -> Application {
+    let exception = Value::from(NonContinuable::default());
 
-        (*out).write(Application::new(
-            Procedure::new(Vec::new(), FuncPtr::Bridge(raise_builtin), 1, false),
-            vec![exception],
-        ));
-    }
+    Application::new(
+        Procedure::new(Vec::new(), FuncPtr::Bridge(raise_builtin), 1, false),
+        Args::pack([exception]),
+    )
 }
 
 /// Raises an exception to the current exception handler and continues with the
@@ -1039,28 +1013,24 @@ unsafe extern "C" fn reraise_exception(
 #[doc(hidden)]
 #[bridge(name = "raise-continuable", lib = "(rnrs exceptions (6))")]
 pub fn raise_continuable(
-    condition: &Value,
+    condition: Value,
     barrier: &mut ContBarrier,
 ) -> Result<Application, Exception> {
     let Some(handler) = barrier.current_exception_handler() else {
         return Ok(Application::halt_err(condition.clone()));
     };
 
-    Ok(Application::new(handler, vec![condition.clone()]))
+    Ok(Application::new(handler, Args::pack([condition.clone()])))
 }
 
 #[bridge(name = "error", lib = "(rnrs base builtins (6))")]
-pub fn error(
-    who: &Value,
-    message: &Value,
-    #[rest_args] irritants: &[Value],
-) -> Result<Vec<Value>, Exception> {
+pub fn error(who: Value, message: Value, #[rest_args] irritants: Value) -> Result<(), Exception> {
     let mut conditions = Vec::new();
     if who.is_true() {
         conditions.push(Value::from(Who::new(who.clone())));
     }
     conditions.push(Value::from(Message::new(message)));
-    conditions.push(Value::from(Irritants::new(slice_to_list(irritants))));
+    conditions.push(Value::from(Irritants::new(irritants)));
     Err(Exception(Value::from(Exception::from(CompoundCondition(
         conditions,
     )))))
@@ -1068,17 +1038,17 @@ pub fn error(
 
 #[bridge(name = "assertion-violation", lib = "(rnrs base builtins (6))")]
 pub fn assertion_violation(
-    who: &Value,
-    message: &Value,
-    #[rest_args] irritants: &[Value],
-) -> Result<Vec<Value>, Exception> {
+    who: Value,
+    message: Value,
+    #[rest_args] irritants: Value,
+) -> Result<(), Exception> {
     let mut conditions = Vec::new();
     conditions.push(Value::from(Assertion::new()));
     if who.is_true() {
         conditions.push(Value::from(Who::new(who.clone())));
     }
     conditions.push(Value::from(Message::new(message)));
-    conditions.push(Value::from(Irritants::new(slice_to_list(irritants))));
+    conditions.push(Value::from(Irritants::new(irritants)));
     Err(Exception(Value::from(Exception::from(CompoundCondition(
         conditions,
     )))))

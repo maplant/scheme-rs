@@ -665,19 +665,27 @@ impl TryFrom<&Value> for Identifier {
     }
 }
 
+impl TryFrom<Value> for Identifier {
+    type Error = Exception;
+
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        Self::try_from(&value)
+    }
+}
+
 #[bridge(name = "syntax->datum", lib = "(rnrs syntax-case builtins (6))")]
-pub fn syntax_to_datum(value: &Value) -> Value {
+pub fn syntax_to_datum(value: Value) -> Value {
     // This is quite slow and could be improved
-    Syntax::syntax_to_datum(value.clone())
+    Syntax::syntax_to_datum(value)
 }
 
 #[bridge(name = "datum->syntax", lib = "(rnrs syntax-case builtins (6))")]
-pub fn datum_to_syntax(template_id: Identifier, datum: &Value) -> Syntax {
-    Syntax::datum_to_syntax(&template_id.scopes, datum.clone(), &Span::default())
+pub fn datum_to_syntax(template_id: Identifier, datum: Value) -> Syntax {
+    Syntax::datum_to_syntax(&template_id.scopes, datum, &Span::default())
 }
 
 #[bridge(name = "identifier?", lib = "(rnrs syntax-case builtins (6))")]
-pub fn identifier_pred(obj: &Value) -> bool {
+pub fn identifier_pred(obj: Value) -> bool {
     obj.cast::<Identifier>().is_some()
 }
 
@@ -692,7 +700,7 @@ pub fn free_identifier_eq_pred(id1: Identifier, id2: Identifier) -> bool {
 }
 
 #[bridge(name = "generate-temporaries", lib = "(rnrs syntax-case builtins (6))")]
-pub fn generate_temporaries(list: &Value) -> Result<Value, Exception> {
+pub fn generate_temporaries(list: Value) -> Result<Value, Exception> {
     let length = if let Syntax::List { list, .. } = Syntax::wrap(list.clone(), &Span::default())
         && list.last().unwrap().is_null()
     {
@@ -718,16 +726,11 @@ pub fn generate_temporaries(list: &Value) -> Result<Value, Exception> {
 
 #[bridge(name = "syntax-violation", lib = "(rnrs base builtins (6))")]
 pub fn syntax_violation(
-    who: &Value,
-    message: &Value,
-    form: &Value,
-    #[rest_args] subform: &[Value],
+    who: Value,
+    message: Value,
+    form: Value,
+    subform: Option<Value>,
 ) -> Result<(), Exception> {
-    let subform = match subform {
-        [] => None,
-        [subform] => Some(subform.clone()),
-        _ => return Err(Exception::wrong_num_of_var_args(3..4, 3 + subform.len())),
-    };
     let mut conditions = Vec::new();
     if who.is_true() {
         conditions.push(Value::from(Who::new(who.clone())));

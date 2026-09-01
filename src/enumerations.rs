@@ -3,13 +3,13 @@
 use std::{fmt, sync::Arc};
 
 use indexmap::IndexSet;
-use scheme_rs_macros::{bridge, cps_bridge};
+use scheme_rs_macros::bridge;
 
 use crate::{
     exceptions::Exception,
     gc::Trace,
     lists::List,
-    proc::{Application, ContBarrier, FuncPtr, Procedure},
+    proc::{Application, Args, ContBarrier, FuncPtr, Procedure},
     records::{Embeddable, Embedded, RecordTypeDescriptor, rtd},
     symbols::Symbol,
     value::Value,
@@ -102,14 +102,12 @@ pub fn enum_set_universe(enum_set: Embedded<EnumerationSet>) -> EnumerationSet {
     }
 }
 
-#[cps_bridge(def = "enum-set-constructor enum-set", lib = "(rnrs enums (6))")]
+#[bridge(name = "enum-set-constructor", lib = "(rnrs enums (6))")]
 pub fn enum_set_constructor(
-    _env: &[Value],
-    args: &[Value],
-    _rest_args: &[Value],
+    enum_set: Embedded<EnumerationSet>,
     barrier: &mut ContBarrier,
 ) -> Result<Application, Exception> {
-    let set = args[0].try_to::<Embedded<EnumerationSet>>()?;
+    let set = enum_set;
     let universe = Value::from(set.enum_type.clone());
     let constructor = Procedure::new(
         vec![universe],
@@ -117,20 +115,16 @@ pub fn enum_set_constructor(
         1,
         false,
     );
-    Ok(barrier.call_cont(vec![Value::from(constructor)]))
+    Ok(barrier.call_cont(Args::pack([Value::from(constructor)])))
 }
 
-#[cps_bridge]
+#[bridge]
 fn enum_set_constructor_fn(
-    env: &[Value],
-    args: &[Value],
-    _rest_args: &[Value],
+    #[env] enum_type: Embedded<EnumerationType>,
+    symbols: List,
     barrier: &mut ContBarrier,
 ) -> Result<Application, Exception> {
-    // env[0] is the universe:
-    let enum_type: Embedded<EnumerationType> = env[0].try_to()?;
-    let set = args[0]
-        .try_to::<List>()?
+    let set = symbols
         .into_iter()
         .map(|symbol| {
             let symbol = symbol.try_to::<Symbol>()?;
@@ -144,7 +138,7 @@ fn enum_set_constructor_fn(
         })
         .collect::<Result<IndexSet<_>, _>>()?;
     let enum_set = EnumerationSet { enum_type, set };
-    Ok(barrier.call_cont(vec![Value::from(enum_set)]))
+    Ok(barrier.call_cont(Args::pack([Value::from(enum_set)])))
 }
 
 #[bridge(name = "enum-set->list", lib = "(rnrs enums (6))")]
@@ -171,12 +165,11 @@ pub fn enum_set_subset_pred(
     enum_set1: Embedded<EnumerationSet>,
     enum_set2: Embedded<EnumerationSet>,
 ) -> bool {
-    let is_subset = enum_set1
+    enum_set1
         .enum_type
         .symbols
         .is_subset(&enum_set2.enum_type.symbols)
-        && enum_set1.set.is_subset(&enum_set2.set);
-    is_subset
+        && enum_set1.set.is_subset(&enum_set2.set)
 }
 
 #[bridge(name = "enum-set=?", lib = "(rnrs enums (6))")]

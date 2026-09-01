@@ -34,7 +34,6 @@ use parking_lot::RwLock;
 pub use scheme_rs_macros::bridge;
 /// Define and register a Scheme function in Rust written in continuation
 /// passing style.
-pub use scheme_rs_macros::cps_bridge;
 use scheme_rs_macros::{maybe_async, maybe_await};
 
 pub(crate) mod error {

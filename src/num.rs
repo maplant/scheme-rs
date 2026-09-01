@@ -25,6 +25,7 @@
 use crate::{
     exceptions::Exception,
     gc::Trace,
+    lists::iter_list,
     ports::{BufferMode, Port, Transcoder},
     registry::bridge,
     strings::WideString,
@@ -1936,52 +1937,52 @@ impl_op_for_number!(Div, div);
 // Numerical built-ins:
 
 #[bridge(name = "number?", lib = "(rnrs base builtins (6))")]
-pub fn is_number(arg: &Value) -> bool {
+pub fn is_number(arg: Value) -> bool {
     arg.type_of() == ValueType::Number
 }
 
 #[bridge(name = "complex?", lib = "(rnrs base builtins (6))")]
-pub fn is_complex(arg: &Value) -> bool {
+pub fn is_complex(arg: Value) -> bool {
     arg.cast::<Number>()
         .as_ref()
         .is_some_and(Number::is_complex)
 }
 
 #[bridge(name = "real?", lib = "(rnrs base builtins (6))")]
-pub fn is_real(arg: &Value) -> bool {
+pub fn is_real(arg: Value) -> bool {
     arg.cast::<Number>().as_ref().is_some_and(Number::is_real)
 }
 
 #[bridge(name = "rational?", lib = "(rnrs base builtins (6))")]
-pub fn is_rational(arg: &Value) -> bool {
+pub fn is_rational(arg: Value) -> bool {
     arg.cast::<Number>()
         .as_ref()
         .is_some_and(Number::is_rational)
 }
 
 #[bridge(name = "integer?", lib = "(rnrs base builtins (6))")]
-pub fn is_integer(arg: &Value) -> bool {
+pub fn is_integer(arg: Value) -> bool {
     arg.cast::<Number>()
         .as_ref()
         .is_some_and(Number::is_integer)
 }
 
 #[bridge(name = "real-valued?", lib = "(rnrs base builtins (6))")]
-pub fn real_valued_pred(arg: &Value) -> bool {
+pub fn real_valued_pred(arg: Value) -> bool {
     arg.cast::<Number>()
         .as_ref()
         .is_some_and(Number::is_real_valued)
 }
 
 #[bridge(name = "rational-valued?", lib = "(rnrs base builtins (6))")]
-pub fn rational_valued_pred(arg: &Value) -> bool {
+pub fn rational_valued_pred(arg: Value) -> bool {
     arg.cast::<Number>()
         .as_ref()
         .is_some_and(Number::is_rational_valued)
 }
 
 #[bridge(name = "integer-valued?", lib = "(rnrs base builtins (6))")]
-pub fn integer_valued_pred(arg: &Value) -> bool {
+pub fn integer_valued_pred(arg: Value) -> bool {
     arg.cast::<Number>()
         .as_ref()
         .is_some_and(Number::is_integer_valued)
@@ -2008,14 +2009,15 @@ pub fn exact(z: Number) -> Number {
 }
 
 #[bridge(name = "=", lib = "(rnrs base builtins (6))")]
-pub fn equal(#[rest_args] args: &[Value]) -> Result<bool, Exception> {
-    equal_prim(args)
+pub fn equal(#[rest_args] args: Value) -> Result<bool, Exception> {
+    equal_prim(iter_list(&args))
 }
 
-pub(crate) fn equal_prim(vals: &[Value]) -> Result<bool, Exception> {
-    if let Some((first, rest)) = vals.split_first() {
+pub(crate) fn equal_prim(vals: impl IntoIterator<Item = Value>) -> Result<bool, Exception> {
+    let mut vals = vals.into_iter();
+    if let Some(first) = vals.next() {
         let first: Number = first.try_to()?;
-        for next in rest {
+        for next in vals {
             let next: Number = next.try_to()?;
             if !(first == next) {
                 return Ok(false);
@@ -2026,14 +2028,15 @@ pub(crate) fn equal_prim(vals: &[Value]) -> Result<bool, Exception> {
 }
 
 #[bridge(name = "<", lib = "(rnrs base builtins (6))")]
-pub fn lesser(#[rest_args] args: &[Value]) -> Result<bool, Exception> {
-    lesser_prim(args)
+pub fn lesser(#[rest_args] args: Value) -> Result<bool, Exception> {
+    lesser_prim(iter_list(&args))
 }
 
-pub(crate) fn lesser_prim(vals: &[Value]) -> Result<bool, Exception> {
-    if let Some((head, rest)) = vals.split_first() {
-        let mut prev = head.clone();
-        for next in rest {
+pub(crate) fn lesser_prim(vals: impl IntoIterator<Item = Value>) -> Result<bool, Exception> {
+    let mut vals = vals.into_iter();
+    if let Some(head) = vals.next() {
+        let mut prev = head;
+        for next in vals {
             let prev_num: Number = prev.try_to()?;
             let next_num: Number = next.try_to()?;
             if !prev_num.is_real() {
@@ -2045,21 +2048,22 @@ pub(crate) fn lesser_prim(vals: &[Value]) -> Result<bool, Exception> {
             if !matches!(prev_num.partial_cmp(&next_num), Some(Ordering::Less)) {
                 return Ok(false);
             }
-            prev = next.clone();
+            prev = next;
         }
     }
     Ok(true)
 }
 
 #[bridge(name = ">", lib = "(rnrs base builtins (6))")]
-pub fn greater(#[rest_args] args: &[Value]) -> Result<bool, Exception> {
-    greater_prim(args)
+pub fn greater(#[rest_args] args: Value) -> Result<bool, Exception> {
+    greater_prim(iter_list(&args))
 }
 
-pub(crate) fn greater_prim(vals: &[Value]) -> Result<bool, Exception> {
-    if let Some((head, rest)) = vals.split_first() {
-        let mut prev = head.clone();
-        for next in rest {
+pub(crate) fn greater_prim(vals: impl IntoIterator<Item = Value>) -> Result<bool, Exception> {
+    let mut vals = vals.into_iter();
+    if let Some(head) = vals.next() {
+        let mut prev = head;
+        for next in vals {
             let prev_num: Number = prev.try_to()?;
             let next_num: Number = next.try_to()?;
             // This is somewhat less efficient for small numbers but avoids
@@ -2073,21 +2077,22 @@ pub(crate) fn greater_prim(vals: &[Value]) -> Result<bool, Exception> {
             if !matches!(prev_num.partial_cmp(&next_num), Some(Ordering::Greater)) {
                 return Ok(false);
             }
-            prev = next.clone();
+            prev = next;
         }
     }
     Ok(true)
 }
 
 #[bridge(name = "<=", lib = "(rnrs base builtins (6))")]
-pub fn lesser_equal(#[rest_args] args: &[Value]) -> Result<bool, Exception> {
-    lesser_equal_prim(args)
+pub fn lesser_equal(#[rest_args] args: Value) -> Result<bool, Exception> {
+    lesser_equal_prim(iter_list(&args))
 }
 
-pub(crate) fn lesser_equal_prim(vals: &[Value]) -> Result<bool, Exception> {
-    if let Some((head, rest)) = vals.split_first() {
-        let mut prev = head.clone();
-        for next in rest {
+pub(crate) fn lesser_equal_prim(vals: impl IntoIterator<Item = Value>) -> Result<bool, Exception> {
+    let mut vals = vals.into_iter();
+    if let Some(head) = vals.next() {
+        let mut prev = head;
+        for next in vals {
             let prev_num: Number = prev.try_to()?;
             let next_num: Number = next.try_to()?;
             if !prev_num.is_real() {
@@ -2102,21 +2107,22 @@ pub(crate) fn lesser_equal_prim(vals: &[Value]) -> Result<bool, Exception> {
             ) {
                 return Ok(false);
             }
-            prev = next.clone();
+            prev = next;
         }
     }
     Ok(true)
 }
 
 #[bridge(name = ">=", lib = "(rnrs base builtins (6))")]
-pub fn greater_equal(#[rest_args] args: &[Value]) -> Result<bool, Exception> {
-    greater_equal_prim(args)
+pub fn greater_equal(#[rest_args] args: Value) -> Result<bool, Exception> {
+    greater_equal_prim(iter_list(&args))
 }
 
-pub(crate) fn greater_equal_prim(vals: &[Value]) -> Result<bool, Exception> {
-    if let Some((head, rest)) = vals.split_first() {
-        let mut prev = head.clone();
-        for next in rest {
+pub(crate) fn greater_equal_prim(vals: impl IntoIterator<Item = Value>) -> Result<bool, Exception> {
+    let mut vals = vals.into_iter();
+    if let Some(head) = vals.next() {
+        let mut prev = head;
+        for next in vals {
             let prev_num: Number = prev.try_to()?;
             let next_num: Number = next.try_to()?;
             if !prev_num.is_real() {
@@ -2131,7 +2137,7 @@ pub(crate) fn greater_equal_prim(vals: &[Value]) -> Result<bool, Exception> {
             ) {
                 return Ok(false);
             }
-            prev = next.clone();
+            prev = next;
         }
     }
     Ok(true)
@@ -2168,11 +2174,11 @@ pub fn is_nan(num: SimpleNumber) -> bool {
 }
 
 #[bridge(name = "+", lib = "(rnrs base builtins (6))")]
-pub fn add(#[rest_args] args: &[Value]) -> Result<Number, Exception> {
-    add_prim(args)
+pub fn add(#[rest_args] args: Value) -> Result<Number, Exception> {
+    add_prim(iter_list(&args))
 }
 
-pub(crate) fn add_prim(vals: &[Value]) -> Result<Number, Exception> {
+pub(crate) fn add_prim(vals: impl IntoIterator<Item = Value>) -> Result<Number, Exception> {
     let mut result = Number::from(0i64);
     for val in vals {
         let num: Number = val.try_to()?;
@@ -2182,11 +2188,11 @@ pub(crate) fn add_prim(vals: &[Value]) -> Result<Number, Exception> {
 }
 
 #[bridge(name = "*", lib = "(rnrs base builtins (6))")]
-pub fn mul(#[rest_args] args: &[Value]) -> Result<Number, Exception> {
-    mul_prim(args)
+pub fn mul(#[rest_args] args: Value) -> Result<Number, Exception> {
+    mul_prim(iter_list(&args))
 }
 
-pub(crate) fn mul_prim(vals: &[Value]) -> Result<Number, Exception> {
+pub(crate) fn mul_prim(vals: impl IntoIterator<Item = Value>) -> Result<Number, Exception> {
     let mut result = Number::from(1i64);
     for val in vals {
         let num: Number = val.try_to()?;
@@ -2196,14 +2202,17 @@ pub(crate) fn mul_prim(vals: &[Value]) -> Result<Number, Exception> {
 }
 
 #[bridge(name = "-", lib = "(rnrs base builtins (6))")]
-pub fn sub(arg1: &Value, #[rest_args] args: &[Value]) -> Result<Number, Exception> {
-    sub_prim(arg1, args)
+pub fn sub(arg1: Value, #[rest_args] args: Value) -> Result<Number, Exception> {
+    sub_prim(&arg1, iter_list(&args))
 }
 
-pub(crate) fn sub_prim(val1: &Value, vals: &[Value]) -> Result<Number, Exception> {
-    let val1: Number = val1.try_to()?;
-    let mut val1 = val1.clone();
-    if vals.is_empty() {
+pub(crate) fn sub_prim(
+    val1: &Value,
+    vals: impl IntoIterator<Item = Value>,
+) -> Result<Number, Exception> {
+    let mut val1: Number = val1.try_to()?;
+    let mut vals = vals.into_iter().peekable();
+    if vals.peek().is_none() {
         Ok(-val1)
     } else {
         for val in vals {
@@ -2215,13 +2224,17 @@ pub(crate) fn sub_prim(val1: &Value, vals: &[Value]) -> Result<Number, Exception
 }
 
 #[bridge(name = "/", lib = "(rnrs base builtins (6))")]
-pub fn div(arg1: &Value, #[rest_args] args: &[Value]) -> Result<Number, Exception> {
-    div_prim(arg1, args)
+pub fn div(arg1: Value, #[rest_args] args: Value) -> Result<Number, Exception> {
+    div_prim(&arg1, iter_list(&args))
 }
 
-pub(crate) fn div_prim(val1: &Value, vals: &[Value]) -> Result<Number, Exception> {
+pub(crate) fn div_prim(
+    val1: &Value,
+    vals: impl IntoIterator<Item = Value>,
+) -> Result<Number, Exception> {
     let val1: Number = val1.try_to()?;
-    if vals.is_empty() {
+    let mut vals = vals.into_iter().peekable();
+    if vals.peek().is_none() {
         if val1.is_zero() && val1.is_exact() {
             return Err(Exception::error("division by zero"));
         }
@@ -2348,12 +2361,7 @@ pub fn exp(z: Number) -> Number {
 }
 
 #[bridge(name = "log", lib = "(rnrs base builtins (6))")]
-pub fn log(z: &Value, #[rest_args] base: &[Value]) -> Result<f64, Exception> {
-    let base = match base {
-        [] => None,
-        [base] => Some(base.try_to::<f64>()?),
-        _ => return Err(Exception::error("too many arguments")),
-    };
+pub fn log(z: Value, base: Option<f64>) -> Result<f64, Exception> {
     let num = match z.try_to::<SimpleNumber>()? {
         SimpleNumber::FixedInteger(i) => i as f64,
         SimpleNumber::BigInteger(i) => f64::rounding_from(&i, RoundingMode::Nearest).0,
@@ -2458,13 +2466,12 @@ pub fn angle(z: ComplexNumber) -> SimpleNumber {
 }
 
 #[bridge(name = "number->string", lib = "(rnrs base builtins (6))")]
-pub fn number_to_string(z: ComplexNumber, #[rest_args] rest_args: &[Value]) -> Result<String, Exception> {
-    let (radix, precision) = match rest_args {
-        [] => (10, None),
-        [radix] => (radix.try_to::<u32>()?, None),
-        [radix, precision] => (radix.try_to::<u32>()?, Some(precision.try_to::<usize>()?)),
-        _ => return Err(Exception::wrong_num_of_var_args(2..3, 1 + rest_args.len())),
-    };
+pub fn number_to_string(
+    z: ComplexNumber,
+    radix: Option<u32>,
+    precision: Option<usize>,
+) -> Result<String, Exception> {
+    let radix = radix.unwrap_or(10);
     if !matches!(radix, 2 | 8 | 10 | 16) {
         return Err(Exception::error(format!(
             "invalid radix ({radix}) must be 2, 8, 10 or 16"
@@ -2477,10 +2484,10 @@ pub fn number_to_string(z: ComplexNumber, #[rest_args] rest_args: &[Value]) -> R
 
 #[maybe_async]
 #[bridge(name = "string->number", lib = "(rnrs base builtins (6))")]
-pub fn string_to_number(s: WideString, #[rest_args] rest_args: &[Value]) -> Result<Value, Exception> {
-    let radix = match rest_args {
-        [] => 10,
-        [radix] => match radix.try_to::<u32>()? {
+pub fn string_to_number(s: WideString, radix: Option<u32>) -> Result<Value, Exception> {
+    let radix = match radix {
+        None => 10,
+        Some(radix) => match radix {
             radix @ (2 | 8 | 10 | 16) => radix,
             radix => {
                 return Err(Exception::error(format!(
@@ -2488,7 +2495,6 @@ pub fn string_to_number(s: WideString, #[rest_args] rest_args: &[Value]) -> Resu
                 )));
             }
         },
-        _ => return Err(Exception::wrong_num_of_var_args(1..2, 1 + rest_args.len())),
     };
 
     // TODO: This is not ideal
@@ -2548,7 +2554,7 @@ impl TryFrom<&Value> for Fixnum {
 }
 
 #[bridge(name = "fixnum?", lib = "(rnrs arithmetic fixnums (6))")]
-pub fn fixnum_pred(obj: &Value) -> bool {
+pub fn fixnum_pred(obj: Value) -> bool {
     obj.cast::<Fixnum>().is_some()
 }
 
@@ -2599,6 +2605,6 @@ impl TryFrom<&Value> for Flonum {
 }
 
 #[bridge(name = "flonum?", lib = "(rnrs arithmetic flonums (6))")]
-pub fn flonum_pred(obj: &Value) -> bool {
+pub fn flonum_pred(obj: Value) -> bool {
     obj.cast::<Flonum>().is_some()
 }

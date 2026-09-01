@@ -73,18 +73,18 @@ impl From<&str> for Symbol {
 pub fn symbol_equal_pred(
     symbol1: Symbol,
     symbol2: Symbol,
-    #[rest_args] symboln: &[Value],
-) -> Result<Vec<Value>, Exception> {
+    #[rest_args] symboln: Value,
+) -> Result<bool, Exception> {
     if symbol1 != symbol2 {
-        return Ok(vec![Value::from(false)]);
+        return Ok(false);
     }
-    for symboln in symboln {
+    for symboln in crate::lists::iter_list(&symboln) {
         let symboln = symboln.try_to::<Symbol>()?;
         if symbol1 != symboln {
-            return Ok(vec![Value::from(false)]);
+            return Ok(false);
         }
     }
-    Ok(vec![Value::from(true)])
+    Ok(true)
 }
 
 #[bridge(name = "string->symbol", lib = "(rnrs base builtins (6))")]

@@ -91,7 +91,7 @@ use crate::{
     gc::{Gc, GcInner, Trace},
     lists::{self, Pair, PairInner},
     num::{ComplexNumber, Number, NumberInner, NumberRepr, SimpleNumber},
-    proc::{Procedure, ProcedureInner},
+    proc::{ContBarrier, Procedure, ProcedureInner},
     records::{Embedded, Record, RecordInner, RecordTypeDescriptor},
     registry::bridge,
     strings::WideString,
@@ -1107,6 +1107,13 @@ impl From<Infallible> for Value {
     }
 }
 
+impl TryFrom<&Value> for Value {
+    type Error = Exception;
+
+    fn try_from(v: &Value) -> Result<Self, Self::Error> {
+        Ok(v.clone())
+    }
+}
 
 impl From<Cell> for UnpackedValue {
     fn from(cell: Cell) -> Self {
@@ -1172,22 +1179,6 @@ impl_try_from_value_for!(Procedure, Procedure, "procedure");
 impl_try_from_value_for!(Pair, Pair, "pair");
 impl_try_from_value_for!(Record, Record, "record");
 impl_try_from_value_for!(Arc<RecordTypeDescriptor>, RecordTypeDescriptor, "rt");
-
-macro_rules! impl_from_wrapped_for {
-    ($ty:ty, $variant:ident, $wrapper:expr_2021) => {
-        impl From<$ty> for UnpackedValue {
-            fn from(v: $ty) -> Self {
-                Self::$variant(($wrapper)(v))
-            }
-        }
-
-        impl From<$ty> for Value {
-            fn from(v: $ty) -> Self {
-                UnpackedValue::from(v).into_value()
-            }
-        }
-    };
-}
 
 impl From<UnpackedValue> for Option<(Value, Value)> {
     fn from(val: UnpackedValue) -> Self {
@@ -1407,55 +1398,56 @@ pub(crate) fn write_value(
 }
 
 #[bridge(name = "not", lib = "(rnrs base builtins (6))")]
-pub fn not(a: &Value) -> bool {
+pub fn not(a: Value, _: &mut ContBarrier) -> bool {
     a.0 as usize == FALSE_VALUE
 }
 
 #[bridge(name = "eq?", lib = "(rnrs base builtins (6))")]
-pub fn eq(a: &Value, b: &Value) -> bool {
-    a.eq(b)
+pub fn eq(a: Value, b: Value) -> bool {
+    a.eq(&b)
 }
+
 #[bridge(name = "eqv?", lib = "(rnrs base builtins (6))")]
-pub fn eqv(a: &Value, b: &Value) -> bool {
-    a.eqv(b)
+pub fn eqv(a: Value, b: Value) -> bool {
+    a.eqv(&b)
 }
 
 #[bridge(name = "equal?", lib = "(rnrs base builtins (6))")]
-pub fn equal_pred(a: &Value, b: &Value) -> bool {
-    a.equal(b)
+pub fn equal_pred(a: Value, b: Value) -> bool {
+    a.equal(&b)
 }
 
 #[bridge(name = "boolean?", lib = "(rnrs base builtins (6))")]
-pub fn boolean_pred(arg: &Value) -> bool {
+pub fn boolean_pred(arg: Value) -> bool {
     arg.type_of() == ValueType::Boolean
 }
 
 #[bridge(name = "boolean=?", lib = "(rnrs base builtins (6))")]
-pub fn boolean_eq_pred(a: &Value, #[rest_args] args: &[Value]) -> bool {
-    a.type_of() == ValueType::Boolean && args.iter().all(|arg| arg == a)
+pub fn boolean_eq_pred(a: Value, #[rest_args] args: Value) -> bool {
+    a.type_of() == ValueType::Boolean && lists::iter_list(&args).all(|arg| arg == a)
 }
 
 #[bridge(name = "symbol?", lib = "(rnrs base builtins (6))")]
-pub fn symbol_pred(arg: &Value) -> bool {
+pub fn symbol_pred(arg: Value) -> bool {
     arg.type_of() == ValueType::Symbol
 }
 
 #[bridge(name = "char?", lib = "(rnrs base builtins (6))")]
-pub fn char_pred(arg: &Value) -> bool {
+pub fn char_pred(arg: Value) -> bool {
     arg.type_of() == ValueType::Character
 }
 
 #[bridge(name = "null?", lib = "(rnrs base builtins (6))")]
-pub fn null_pred(arg: &Value) -> bool {
+pub fn null_pred(arg: Value, _: &mut ContBarrier) -> bool {
     arg.type_of() == ValueType::Null
 }
 
 #[bridge(name = "pair?", lib = "(rnrs base builtins (6))")]
-pub fn pair_pred(arg: &Value) -> bool {
+pub fn pair_pred(arg: Value, _: &mut ContBarrier) -> bool {
     arg.type_of() == ValueType::Pair
 }
 
 #[bridge(name = "procedure?", lib = "(rnrs base builtins (6))")]
-pub fn procedure_pred(arg: &Value) -> bool {
+pub fn procedure_pred(arg: Value) -> bool {
     arg.type_of() == ValueType::Procedure
 }

@@ -1,4 +1,4 @@
-use crate::{Either, exceptions::Exception, registry::bridge, value::Value};
+use crate::{Either, exceptions::Exception, lists::iter_list, registry::bridge, value::Value};
 use unicode_categories::UnicodeCategories;
 
 mod unicode;
@@ -42,22 +42,14 @@ macro_rules! impl_char_operator {
         $cmp_function:ident)),* $(,)?
     ) => {
         $(#[bridge(name = $bridge_name, lib = "(rnrs base builtins (6))")]
-        pub fn $function_name(req_lhs: &Value, req_rhs: &Value, #[rest_args] opt_chars: &[Value]) -> Result<bool, Exception> {
-            for window in [req_lhs, req_rhs]
-                .into_iter()
-                .chain(opt_chars)
-                .map(|ch| {
-                    ch.clone().try_into()
-                })
-                .collect::<Result<Vec<char>, Exception>>()?
-                .windows(2) {
-
-                if !window.first()
-                    .and_then(|lhs| Some((lhs, window.get(1)?)))
-                    .map(|(lhs, rhs)| lhs.$cmp_function(rhs))
-                    .unwrap_or(true) {
+        pub fn $function_name(req_lhs: Value, req_rhs: Value, #[rest_args] opt_chars: Value) -> Result<bool, Exception> {
+            let mut prev: char = req_lhs.clone().try_into()?;
+            for next in [req_rhs.clone()].into_iter().chain(iter_list(&opt_chars)) {
+                let next: char = next.try_into()?;
+                if !prev.$cmp_function(&next) {
                     return Ok(false);
                 }
+                prev = next;
             }
 
             Ok(true)
@@ -80,23 +72,18 @@ macro_rules! impl_char_ci_operator {
         $cmp_function:ident)),* $(,)?
     ) => {
         $(#[bridge(name = $bridge_name, lib = "(rnrs base builtins (6))")]
-        pub fn $function_name(req_lhs: &Value, req_rhs: &Value, #[rest_args] opt_chars: &[Value]) -> Result<bool, Exception> {
-            for window in [req_lhs, req_rhs]
-                .into_iter()
-                .chain(opt_chars)
-                .map(|ch| {
-                    let ch: char = ch.clone().try_into()?;
-                    Ok(char_switch_case(ch, to_foldcase).left_or(ch))
-                })
-                .collect::<Result<Vec<char>, Exception>>()?
-                .windows(2) {
-
-                if !window.first()
-                    .and_then(|lhs| Some((lhs, window.get(1)?)))
-                    .map(|(lhs, rhs)| lhs.$cmp_function(rhs))
-                    .unwrap_or(true) {
+        pub fn $function_name(req_lhs: Value, req_rhs: Value, #[rest_args] opt_chars: Value) -> Result<bool, Exception> {
+            let foldcase = |ch: Value| -> Result<char, Exception> {
+                let ch: char = ch.try_into()?;
+                Ok(char_switch_case(ch, to_foldcase).left_or(ch))
+            };
+            let mut prev = foldcase(req_lhs.clone())?;
+            for next in [req_rhs.clone()].into_iter().chain(iter_list(&opt_chars)) {
+                let next = foldcase(next)?;
+                if !prev.$cmp_function(&next) {
                     return Ok(false);
                 }
+                prev = next;
             }
 
             Ok(true)

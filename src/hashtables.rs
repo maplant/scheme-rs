@@ -403,27 +403,22 @@ impl TryFrom<&Value> for HashTable {
 
 #[bridge(name = "make-hashtable", lib = "(rnrs hashtables builtins (6))")]
 pub fn make_hashtable(
-    hash_function: &Value,
-    equiv: &Value,
-    #[rest_args] rest: &[Value],
-) -> Result<Vec<Value>, Exception> {
+    hash_function: Value,
+    equiv: Value,
+    k: Option<usize>,
+) -> Result<Value, Exception> {
     let hash: Procedure = hash_function.clone().try_into()?;
     let equiv: Procedure = equiv.clone().try_into()?;
-    let k = match rest {
-        [] => None,
-        [k] => Some(k.try_into()?),
-        x => return Err(Exception::wrong_num_of_args(3, 2 + x.len())),
-    };
     let hashtable = if let Some(k) = k {
         HashTable::with_capacity(hash, equiv, k)
     } else {
         HashTable::new(hash, equiv)
     };
-    Ok(vec![Value::from(hashtable)])
+    Ok(Value::from(hashtable))
 }
 
 #[bridge(name = "hashtable?", lib = "(rnrs hashtables builtins (6))")]
-pub fn hashtable_pred(obj: &Value) -> bool {
+pub fn hashtable_pred(obj: Value) -> bool {
     obj.is_a::<Embedded<HashTableInner>>()
 }
 
@@ -433,61 +428,47 @@ pub fn hashtable_size(hashtable: HashTable) -> usize {
 }
 
 #[bridge(name = "hashtable-ref", lib = "(rnrs hashtables builtins (6))")]
-pub fn hashtable_ref(
-    hashtable: HashTable,
-    key: &Value,
-    default: &Value,
-) -> Result<Value, Exception> {
-    hashtable.get(key, default)
+pub fn hashtable_ref(hashtable: HashTable, key: Value, default: Value) -> Result<Value, Exception> {
+    hashtable.get(&key, &default)
 }
 
 #[bridge(name = "hashtable-set!", lib = "(rnrs hashtables builtins (6))")]
-pub fn hashtable_set_bang(hashtable: HashTable, key: &Value, obj: &Value) -> Result<(), Exception> {
-    hashtable.set(key, obj)?;
+pub fn hashtable_set_bang(hashtable: HashTable, key: Value, obj: Value) -> Result<(), Exception> {
+    hashtable.set(&key, &obj)?;
     Ok(())
 }
 
 #[bridge(name = "hashtable-delete!", lib = "(rnrs hashtables builtins (6))")]
-pub fn hashtable_delete_bang(hashtable: HashTable, key: &Value) -> Result<(), Exception> {
-    hashtable.delete(key)?;
+pub fn hashtable_delete_bang(hashtable: HashTable, key: Value) -> Result<(), Exception> {
+    hashtable.delete(&key)?;
     Ok(())
 }
 
 #[bridge(name = "hashtable-contains?", lib = "(rnrs hashtables builtins (6))")]
-pub fn hashtable_contains_pred(hashtable: HashTable, key: &Value) -> Result<bool, Exception> {
-    Ok(hashtable.contains(key)?)
+pub fn hashtable_contains_pred(hashtable: HashTable, key: Value) -> Result<bool, Exception> {
+    Ok(hashtable.contains(&key)?)
 }
 
 #[bridge(name = "hashtable-update!", lib = "(rnrs hashtables builtins (6))")]
 pub fn hashtable_update_bang(
     hashtable: HashTable,
-    key: &Value,
+    key: Value,
     proc: Procedure,
-    default: &Value,
-) -> Result<Vec<Value>, Exception> {
-    hashtable.update(key, &proc, default)?;
-    Ok(Vec::new())
+    default: Value,
+) -> Result<(), Exception> {
+    hashtable.update(&key, &proc, &default)?;
+    Ok(())
 }
 
 #[bridge(name = "hashtable-copy", lib = "(rnrs hashtables builtins (6))")]
-pub fn hashtable_copy(hashtable: HashTable, #[rest_args] rest: &[Value]) -> Result<Vec<Value>, Exception> {
-    let mutable = match rest {
-        [] => false,
-        [mutable] => mutable.is_true(),
-        x => return Err(Exception::wrong_num_of_args(2, 1 + x.len())),
-    };
+pub fn hashtable_copy(hashtable: HashTable, mutable: Option<bool>) -> Result<Value, Exception> {
+    let mutable = mutable.unwrap_or(false);
     let new_hashtable = hashtable.copy(mutable);
-    Ok(vec![Value::from(new_hashtable)])
+    Ok(Value::from(new_hashtable))
 }
 
 #[bridge(name = "hashtable-clear!", lib = "(rnrs hashtables builtins (6))")]
-pub fn hashtable_clear_bang(hashtable: HashTable, #[rest_args] rest: &[Value]) -> Result<Vec<Value>, Exception> {
-    let k = match rest {
-        [] => None,
-        [k] => Some(k.try_into()?),
-        x => return Err(Exception::wrong_num_of_args(3, 2 + x.len())),
-    };
-
+pub fn hashtable_clear_bang(hashtable: HashTable, k: Option<usize>) -> Result<(), Exception> {
     hashtable.clear()?;
 
     if let Some(k) = k {
@@ -499,7 +480,7 @@ pub fn hashtable_clear_bang(hashtable: HashTable, #[rest_args] rest: &[Value]) -
         }
     }
 
-    Ok(Vec::new())
+    Ok(())
 }
 
 #[bridge(name = "hashtable-keys", lib = "(rnrs hashtables builtins (6))")]
@@ -535,21 +516,21 @@ pub fn hashtable_mutable_pred(hashtable: HashTable) -> bool {
 }
 
 #[bridge(name = "eq-hash", lib = "(rnrs hashtables builtins (6))")]
-pub fn eq_hash(obj: &Value) -> u64 {
+pub fn eq_hash(obj: Value) -> u64 {
     let mut hasher = DefaultHasher::new();
     obj.eq_hash(&mut hasher);
     hasher.finish()
 }
 
 #[bridge(name = "eqv-hash", lib = "(rnrs hashtables builtins (6))")]
-pub fn eqv_hash(obj: &Value) -> u64 {
+pub fn eqv_hash(obj: Value) -> u64 {
     let mut hasher = DefaultHasher::new();
     obj.eqv_hash(&mut hasher);
     hasher.finish()
 }
 
 #[bridge(name = "equal-hash", lib = "(rnrs hashtables builtins (6))")]
-pub fn equal_hash(obj: &Value) -> u64 {
+pub fn equal_hash(obj: Value) -> u64 {
     let mut hasher = DefaultHasher::new();
     obj.equal_hash(&mut IndexSet::default(), &mut hasher);
     hasher.finish()
