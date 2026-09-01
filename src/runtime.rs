@@ -146,15 +146,6 @@ impl Runtime {
             .await
     }
 
-    /// # Safety
-    ///
-    /// See [`Registry::load_plugin`].
-    #[cfg(feature = "plugins")]
-    #[maybe_async]
-    pub unsafe fn load_plugin(&self, library: libloading::Library) -> Result<(), Exception> {
-        unsafe { maybe_await!(self.get_registry().load_plugin(library)) }
-    }
-
     pub(crate) fn get_registry(&self) -> Registry {
         self.0.registry.clone()
     }
@@ -405,7 +396,9 @@ unsafe extern "C" fn alloc_cell() -> *const () {
     Value::into_raw(Value::from(Cell(Gc::new(RwLock::new(Value::undefined())))))
 }
 
-/// Read the value of a Cell
+/// Read the value of a Cell. The returned pointer is borrowed from the cell and
+/// is not counted: callers that keep it alive past the next store to that cell
+/// have to clone it first.
 #[runtime_fn]
 unsafe extern "C" fn read_cell(cell: *const ()) -> *const () {
     unsafe {
