@@ -42,7 +42,7 @@ macro_rules! impl_char_operator {
         $cmp_function:ident)),* $(,)?
     ) => {
         $(#[bridge(name = $bridge_name, lib = "(rnrs base builtins (6))")]
-        pub fn $function_name(req_lhs: &Value, req_rhs: &Value, opt_chars: &[Value]) -> Result<bool, Exception> {
+        pub fn $function_name(req_lhs: &Value, req_rhs: &Value, #[rest_args] opt_chars: &[Value]) -> Result<bool, Exception> {
             for window in [req_lhs, req_rhs]
                 .into_iter()
                 .chain(opt_chars)
@@ -80,7 +80,7 @@ macro_rules! impl_char_ci_operator {
         $cmp_function:ident)),* $(,)?
     ) => {
         $(#[bridge(name = $bridge_name, lib = "(rnrs base builtins (6))")]
-        pub fn $function_name(req_lhs: &Value, req_rhs: &Value, opt_chars: &[Value]) -> Result<bool, Exception> {
+        pub fn $function_name(req_lhs: &Value, req_rhs: &Value, #[rest_args] opt_chars: &[Value]) -> Result<bool, Exception> {
             for window in [req_lhs, req_rhs]
                 .into_iter()
                 .chain(opt_chars)

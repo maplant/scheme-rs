@@ -73,7 +73,7 @@ impl From<&str> for Symbol {
 pub fn symbol_equal_pred(
     symbol1: Symbol,
     symbol2: Symbol,
-    symboln: &[Value],
+    #[rest_args] symboln: &[Value],
 ) -> Result<Vec<Value>, Exception> {
     if symbol1 != symbol2 {
         return Ok(vec![Value::from(false)]);

@@ -1431,7 +1431,7 @@ pub fn boolean_pred(arg: &Value) -> bool {
 }
 
 #[bridge(name = "boolean=?", lib = "(rnrs base builtins (6))")]
-pub fn boolean_eq_pred(a: &Value, args: &[Value]) -> bool {
+pub fn boolean_eq_pred(a: &Value, #[rest_args] args: &[Value]) -> bool {
     a.type_of() == ValueType::Boolean && args.iter().all(|arg| arg == a)
 }
 

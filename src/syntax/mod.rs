@@ -721,7 +721,7 @@ pub fn syntax_violation(
     who: &Value,
     message: &Value,
     form: &Value,
-    subform: &[Value],
+    #[rest_args] subform: &[Value],
 ) -> Result<(), Exception> {
     let subform = match subform {
         [] => None,

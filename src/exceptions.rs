@@ -902,7 +902,7 @@ where
 }
 
 #[bridge(name = "condition", lib = "(rnrs conditions (6))")]
-pub fn condition(conditions: &[Value]) -> Result<Vec<Value>, Exception> {
+pub fn condition(#[rest_args] conditions: &[Value]) -> Result<Vec<Value>, Exception> {
     match conditions {
         // TODO: Check if this is a condition
         [simple_condition] => Ok(vec![simple_condition.clone()]),
@@ -1050,7 +1050,11 @@ pub fn raise_continuable(
 }
 
 #[bridge(name = "error", lib = "(rnrs base builtins (6))")]
-pub fn error(who: &Value, message: &Value, irritants: &[Value]) -> Result<Vec<Value>, Exception> {
+pub fn error(
+    who: &Value,
+    message: &Value,
+    #[rest_args] irritants: &[Value],
+) -> Result<Vec<Value>, Exception> {
     let mut conditions = Vec::new();
     if who.is_true() {
         conditions.push(Value::from(Who::new(who.clone())));
@@ -1066,7 +1070,7 @@ pub fn error(who: &Value, message: &Value, irritants: &[Value]) -> Result<Vec<Va
 pub fn assertion_violation(
     who: &Value,
     message: &Value,
-    irritants: &[Value],
+    #[rest_args] irritants: &[Value],
 ) -> Result<Vec<Value>, Exception> {
     let mut conditions = Vec::new();
     conditions.push(Value::from(Assertion::new()));

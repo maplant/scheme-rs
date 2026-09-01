@@ -306,7 +306,7 @@ pub fn native_transcoder() -> Result<Vec<Value>, Exception> {
 #[bridge(name = "make-transcoder", lib = "(rnrs io builtins (6))")]
 pub fn make_transcoder(
     codec: Embedded<Codec>,
-    remaining: &[Value],
+    #[rest_args] remaining: &[Value],
 ) -> Result<Vec<Value>, Exception> {
     let (eol_type, error_handling_mode) = match remaining {
         [] => (EolStyle::None, ErrorHandlingMode::Replace),
@@ -3653,7 +3653,7 @@ pub fn port_eof_pred(port: Port) -> Result<bool, Exception> {
 
 #[maybe_async]
 #[bridge(name = "open-file-input-port", lib = "(rnrs io builtins (6))")]
-pub fn open_file_input_port(filename: &Value, rest_args: &[Value]) -> Result<Port, Exception> {
+pub fn open_file_input_port(filename: &Value, #[rest_args] rest_args: &[Value]) -> Result<Port, Exception> {
     maybe_await!(open_file_port(filename, rest_args, PortKind::Read))
 }
 
@@ -3898,7 +3898,7 @@ pub fn output_port_buffer_mode(output_port: Port) -> Symbol {
 
 #[maybe_async]
 #[bridge(name = "open-file-output-port", lib = "(rnrs io builtins (6))")]
-pub fn open_file_output_port(filename: &Value, rest_args: &[Value]) -> Result<Port, Exception> {
+pub fn open_file_output_port(filename: &Value, #[rest_args] rest_args: &[Value]) -> Result<Port, Exception> {
     maybe_await!(open_file_port(filename, rest_args, PortKind::Write))
 }
 
@@ -4003,7 +4003,7 @@ pub fn put_u8(port: Port, octet: u8) -> Result<(), Exception> {
 pub fn put_bytevector(
     port: Port,
     bytevector: ByteVector,
-    start_count: &[Value],
+    #[rest_args] start_count: &[Value],
 ) -> Result<(), Exception> {
     let bytevector = bytevector.as_slice();
     let slice = match start_count {
@@ -4084,7 +4084,7 @@ pub fn put_char(port: Port, chr: char) -> Result<(), Exception> {
 
 #[cfg(not(feature = "async"))]
 #[bridge(name = "put-string", lib = "(rnrs io builtins (6))")]
-pub fn put_string(port: Port, string: WideString, start_count: &[Value]) -> Result<(), Exception> {
+pub fn put_string(port: Port, string: WideString, #[rest_args] start_count: &[Value]) -> Result<(), Exception> {
     let string = string.as_slice();
     let slice = match start_count {
         [] => &string[..],
@@ -4166,7 +4166,7 @@ pub fn put_datum(port: Port, datum: &Value) -> Result<(), Exception> {
 #[bridge(name = "open-file-input/output-port", lib = "(rnrs io builtins (6))")]
 pub fn open_file_input_output_port(
     filename: &Value,
-    rest_args: &[Value],
+    #[rest_args] rest_args: &[Value],
 ) -> Result<Port, Exception> {
     maybe_await!(open_file_port(filename, rest_args, PortKind::ReadWrite))
 }

@@ -312,7 +312,7 @@ pub fn list_pred(arg: &Value) -> bool {
 }
 
 #[bridge(name = "list", lib = "(rnrs base builtins (6))")]
-pub fn list(args: &[Value]) -> Value {
+pub fn list(#[rest_args] args: &[Value]) -> Value {
     // Construct the list in reverse
     let mut cdr = Value::null();
     for arg in args.iter().rev() {
@@ -384,7 +384,7 @@ pub fn list_to_string(List { items, .. }: List) -> Result<WideString, Exception>
 }
 
 #[bridge(name = "append", lib = "(rnrs base builtins (6))")]
-pub fn append(lists: &[Value]) -> Result<Value, Exception> {
+pub fn append(#[rest_args] lists: &[Value]) -> Result<Value, Exception> {
     if lists.is_empty() {
         return Ok(Value::null());
     }
@@ -500,7 +500,7 @@ unsafe extern "C" fn map_k(
 }
 
 #[bridge(name = "zip", lib = "(rnrs base builtins (6))")]
-pub fn zip(list1: &Value, listn: &[Value]) -> Result<Value, Exception> {
+pub fn zip(list1: &Value, #[rest_args]  listn: &[Value]) -> Result<Value, Exception> {
     let mut output: Option<Vec<Value>> = None;
     for list in Some(list1).into_iter().chain(listn.iter()).rev() {
         let List { items, .. } = list.try_to()?;

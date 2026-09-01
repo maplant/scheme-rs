@@ -241,7 +241,7 @@ pub fn string_pred(arg: &Value) -> bool {
 }
 
 #[bridge(name = "make-string", lib = "(rnrs base builtins (6))")]
-pub fn make_string(k: &Value, chr: &[Value]) -> Result<WideString, Exception> {
+pub fn make_string(k: &Value, #[rest_args] chr: &[Value]) -> Result<WideString, Exception> {
     let chr: char = match chr {
         [] => '\0',
         [chr] => chr.clone().try_into()?,
@@ -252,7 +252,7 @@ pub fn make_string(k: &Value, chr: &[Value]) -> Result<WideString, Exception> {
 }
 
 #[bridge(name = "string", lib = "(rnrs base builtins (6))")]
-pub fn string(chr: &Value, chars: &[Value]) -> Result<WideString, Exception> {
+pub fn string(chr: &Value, #[rest_args] chars: &[Value]) -> Result<WideString, Exception> {
     Ok(WideString::mutable(
         [chr]
             .into_iter()
@@ -282,7 +282,7 @@ pub fn string_ref(string: WideString, k: usize) -> Result<char, Exception> {
 pub fn string_eq_pred(
     string_1: WideString,
     string_2: &Value,
-    string_n: &[Value],
+    #[rest_args] string_n: &[Value],
 ) -> Result<bool, Exception> {
     let string_1_chars = string_1.0.chars.read();
     for string_n in Some(string_2).into_iter().chain(string_n.iter()).cloned() {
@@ -298,7 +298,7 @@ pub fn string_eq_pred(
 pub fn string_less_pred(
     string_1: WideString,
     string_2: &Value,
-    string_n: &[Value],
+    #[rest_args] string_n: &[Value],
 ) -> Result<bool, Exception> {
     let mut prev_string = string_1;
     for string_n in Some(string_2).into_iter().chain(string_n.iter()).cloned() {
@@ -318,7 +318,7 @@ pub fn string_less_pred(
 pub fn string_greater_pred(
     string_1: WideString,
     string_2: &Value,
-    string_n: &[Value],
+    #[rest_args] string_n: &[Value],
 ) -> Result<bool, Exception> {
     let mut prev_string = string_1;
     for string_n in Some(string_2).into_iter().chain(string_n.iter()).cloned() {
@@ -338,7 +338,7 @@ pub fn string_greater_pred(
 pub fn string_less_equal_pred(
     string_1: WideString,
     string_2: &Value,
-    string_n: &[Value],
+    #[rest_args] string_n: &[Value],
 ) -> Result<bool, Exception> {
     let mut prev_string = string_1;
     for string_n in Some(string_2).into_iter().chain(string_n.iter()).cloned() {
@@ -358,7 +358,7 @@ pub fn string_less_equal_pred(
 pub fn string_greater_equal_pred(
     string_1: WideString,
     string_2: &Value,
-    string_n: &[Value],
+    #[rest_args] string_n: &[Value],
 ) -> Result<bool, Exception> {
     let mut prev_string = string_1;
     for string_n in Some(string_2).into_iter().chain(string_n.iter()).cloned() {
@@ -386,7 +386,7 @@ pub fn substring(string: WideString, start: usize, end: usize) -> Result<WideStr
 }
 
 #[bridge(name = "string-append", lib = "(rnrs base builtins (6))")]
-pub fn list(args: &[Value]) -> Result<String, Exception> {
+pub fn list(#[rest_args] args: &[Value]) -> Result<String, Exception> {
     let mut output = String::new();
     for arg in args.iter().cloned() {
         let arg: String = arg.try_into()?;
@@ -410,7 +410,7 @@ pub fn string_copy(string: WideString) -> WideString {
 }
 
 #[bridge(name = "string->vector", lib = "(rnrs base builtins (6))")]
-pub fn string_to_vector(from: &Value, range: &[Value]) -> Result<Value, Exception> {
+pub fn string_to_vector(from: &Value, #[rest_args] range: &[Value]) -> Result<Value, Exception> {
     let string: WideString = from.clone().try_into()?;
 
     let len = string.0.chars.read().len();

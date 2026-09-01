@@ -2008,7 +2008,7 @@ pub fn exact(z: Number) -> Number {
 }
 
 #[bridge(name = "=", lib = "(rnrs base builtins (6))")]
-pub fn equal(args: &[Value]) -> Result<bool, Exception> {
+pub fn equal(#[rest_args] args: &[Value]) -> Result<bool, Exception> {
     equal_prim(args)
 }
 
@@ -2026,7 +2026,7 @@ pub(crate) fn equal_prim(vals: &[Value]) -> Result<bool, Exception> {
 }
 
 #[bridge(name = "<", lib = "(rnrs base builtins (6))")]
-pub fn lesser(args: &[Value]) -> Result<bool, Exception> {
+pub fn lesser(#[rest_args] args: &[Value]) -> Result<bool, Exception> {
     lesser_prim(args)
 }
 
@@ -2052,7 +2052,7 @@ pub(crate) fn lesser_prim(vals: &[Value]) -> Result<bool, Exception> {
 }
 
 #[bridge(name = ">", lib = "(rnrs base builtins (6))")]
-pub fn greater(args: &[Value]) -> Result<bool, Exception> {
+pub fn greater(#[rest_args] args: &[Value]) -> Result<bool, Exception> {
     greater_prim(args)
 }
 
@@ -2080,7 +2080,7 @@ pub(crate) fn greater_prim(vals: &[Value]) -> Result<bool, Exception> {
 }
 
 #[bridge(name = "<=", lib = "(rnrs base builtins (6))")]
-pub fn lesser_equal(args: &[Value]) -> Result<bool, Exception> {
+pub fn lesser_equal(#[rest_args] args: &[Value]) -> Result<bool, Exception> {
     lesser_equal_prim(args)
 }
 
@@ -2109,7 +2109,7 @@ pub(crate) fn lesser_equal_prim(vals: &[Value]) -> Result<bool, Exception> {
 }
 
 #[bridge(name = ">=", lib = "(rnrs base builtins (6))")]
-pub fn greater_equal(args: &[Value]) -> Result<bool, Exception> {
+pub fn greater_equal(#[rest_args] args: &[Value]) -> Result<bool, Exception> {
     greater_equal_prim(args)
 }
 
@@ -2168,7 +2168,7 @@ pub fn is_nan(num: SimpleNumber) -> bool {
 }
 
 #[bridge(name = "+", lib = "(rnrs base builtins (6))")]
-pub fn add(args: &[Value]) -> Result<Number, Exception> {
+pub fn add(#[rest_args] args: &[Value]) -> Result<Number, Exception> {
     add_prim(args)
 }
 
@@ -2182,7 +2182,7 @@ pub(crate) fn add_prim(vals: &[Value]) -> Result<Number, Exception> {
 }
 
 #[bridge(name = "*", lib = "(rnrs base builtins (6))")]
-pub fn mul(args: &[Value]) -> Result<Number, Exception> {
+pub fn mul(#[rest_args] args: &[Value]) -> Result<Number, Exception> {
     mul_prim(args)
 }
 
@@ -2196,7 +2196,7 @@ pub(crate) fn mul_prim(vals: &[Value]) -> Result<Number, Exception> {
 }
 
 #[bridge(name = "-", lib = "(rnrs base builtins (6))")]
-pub fn sub(arg1: &Value, args: &[Value]) -> Result<Number, Exception> {
+pub fn sub(arg1: &Value, #[rest_args] args: &[Value]) -> Result<Number, Exception> {
     sub_prim(arg1, args)
 }
 
@@ -2215,7 +2215,7 @@ pub(crate) fn sub_prim(val1: &Value, vals: &[Value]) -> Result<Number, Exception
 }
 
 #[bridge(name = "/", lib = "(rnrs base builtins (6))")]
-pub fn div(arg1: &Value, args: &[Value]) -> Result<Number, Exception> {
+pub fn div(arg1: &Value, #[rest_args] args: &[Value]) -> Result<Number, Exception> {
     div_prim(arg1, args)
 }
 
@@ -2348,7 +2348,7 @@ pub fn exp(z: Number) -> Number {
 }
 
 #[bridge(name = "log", lib = "(rnrs base builtins (6))")]
-pub fn log(z: &Value, base: &[Value]) -> Result<f64, Exception> {
+pub fn log(z: &Value, #[rest_args] base: &[Value]) -> Result<f64, Exception> {
     let base = match base {
         [] => None,
         [base] => Some(base.try_to::<f64>()?),
@@ -2458,7 +2458,7 @@ pub fn angle(z: ComplexNumber) -> SimpleNumber {
 }
 
 #[bridge(name = "number->string", lib = "(rnrs base builtins (6))")]
-pub fn number_to_string(z: ComplexNumber, rest_args: &[Value]) -> Result<String, Exception> {
+pub fn number_to_string(z: ComplexNumber, #[rest_args] rest_args: &[Value]) -> Result<String, Exception> {
     let (radix, precision) = match rest_args {
         [] => (10, None),
         [radix] => (radix.try_to::<u32>()?, None),
@@ -2477,7 +2477,7 @@ pub fn number_to_string(z: ComplexNumber, rest_args: &[Value]) -> Result<String,
 
 #[maybe_async]
 #[bridge(name = "string->number", lib = "(rnrs base builtins (6))")]
-pub fn string_to_number(s: WideString, rest_args: &[Value]) -> Result<Value, Exception> {
+pub fn string_to_number(s: WideString, #[rest_args] rest_args: &[Value]) -> Result<Value, Exception> {
     let radix = match rest_args {
         [] => 10,
         [radix] => match radix.try_to::<u32>()? {

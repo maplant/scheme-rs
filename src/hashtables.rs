@@ -405,7 +405,7 @@ impl TryFrom<&Value> for HashTable {
 pub fn make_hashtable(
     hash_function: &Value,
     equiv: &Value,
-    rest: &[Value],
+    #[rest_args] rest: &[Value],
 ) -> Result<Vec<Value>, Exception> {
     let hash: Procedure = hash_function.clone().try_into()?;
     let equiv: Procedure = equiv.clone().try_into()?;
@@ -470,7 +470,7 @@ pub fn hashtable_update_bang(
 }
 
 #[bridge(name = "hashtable-copy", lib = "(rnrs hashtables builtins (6))")]
-pub fn hashtable_copy(hashtable: HashTable, rest: &[Value]) -> Result<Vec<Value>, Exception> {
+pub fn hashtable_copy(hashtable: HashTable, #[rest_args] rest: &[Value]) -> Result<Vec<Value>, Exception> {
     let mutable = match rest {
         [] => false,
         [mutable] => mutable.is_true(),
@@ -481,7 +481,7 @@ pub fn hashtable_copy(hashtable: HashTable, rest: &[Value]) -> Result<Vec<Value>
 }
 
 #[bridge(name = "hashtable-clear!", lib = "(rnrs hashtables builtins (6))")]
-pub fn hashtable_clear_bang(hashtable: HashTable, rest: &[Value]) -> Result<Vec<Value>, Exception> {
+pub fn hashtable_clear_bang(hashtable: HashTable, #[rest_args] rest: &[Value]) -> Result<Vec<Value>, Exception> {
     let k = match rest {
         [] => None,
         [k] => Some(k.try_into()?),

@@ -31,6 +31,13 @@ use syn::{
 /// scheme code with the library, in that case bridge functions will need to be
 /// made public by putting them in the `export` spec.
 ///
+/// # Capturing the environment
+///
+/// Procedures that capture their environment (known as closures) can be
+/// specified by attaching the `#[env]` attribute to arguments. Procedures that
+/// have env arguments will not be registered and therefor must not take a `lib`
+/// attribute.
+///
 /// # Known functions
 ///
 /// If there is no `rest_args` (variadic) parameter and the function takes three
@@ -65,23 +72,14 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
 
     parse_macro_input!(args with bridge_attr_parser);
 
-    let Some(name) = name.map(|x| x.value()) else {
-        return Error::new(Span::call_site(), "name attribute is required")
-            .into_compile_error()
-            .into();
-    };
-    let Some(lib) = lib.map(|x| x.value()) else {
-        return Error::new(Span::call_site(), "lib attribute is required")
-            .into_compile_error()
-            .into();
-    };
-    let bridge = parse_macro_input!(item as ItemFn);
+    let mut bridge = parse_macro_input!(item as ItemFn);
     let docs = doc_string(&bridge.attrs);
 
     let impl_name = bridge.sig.ident.clone();
     let wrapper_name = impl_name.to_string();
     let wrapper_name = Ident::new(&wrapper_name, Span::call_site());
 
+    /*
     let (rest_args, is_variadic) = if let Some(last_arg) = bridge.sig.inputs.last()
         && is_slice(&last_arg)
     {
@@ -89,7 +87,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
     } else {
         (quote!(), false)
     };
-
+*/
 
     /*
     let num_args = if is_variadic {
@@ -115,12 +113,63 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
     let mut arg_names = Vec::new();
     let mut args = Vec::new();
     let mut has_cont_barrier = false;
+    let mut env_var_idx = 0;
+    let mut is_variadic = false;
+    //  let num_args = bridge.sig.inputs.len();
+ 
+    for (i, arg) in bridge.sig.inputs.iter_mut().enumerate() {
 
-    for (i, arg) in bridge.sig.inputs.iter().enumerate() {
-        if i == bridge.sig.inputs.len() - 1 && is_variadic {
+        /*
+        if i ==  num_args - 1 && is_variadic {
             break;
         }
+         */
+        
+        let FnArg::Typed(arg) = arg else {
+            return Error::new(
+                arg.span(),
+                "methods cannot be bridge functions"
+            )
+                .into_compile_error()
+                .into();
+        };
 
+        let mut is_env_var = false;
+        let mut is_rest_args = false;
+
+        arg.attrs.retain(|attr| {
+            if attr.path().is_ident("env") && !is_env_var && !is_rest_args {
+                    args.push(quote!{
+                        match (&env[#env_var_idx]).try_into() {
+                            Ok(ok) => ok,
+                            Err(err) => {
+                                return ::scheme_rs::exceptions::raise(
+                                    err.into(),
+                                    barrier,
+                                )
+                            }
+                        },
+                    });
+                is_env_var = true;
+                env_var_idx += 1;
+                false
+            } else if attr.path().is_ident("rest_args") && !is_env_var && !is_rest_args && !is_variadic {
+                args.push(quote! {
+                    rest_args,
+                });
+                is_rest_args = true;
+                is_variadic = true;
+                false
+            } else {
+                    true
+                }
+            }
+        );
+
+        if is_env_var {
+            continue;
+        }
+        
         if is_cont_barrier(arg) {
             if has_cont_barrier {
                 return Error::new(
@@ -136,10 +185,10 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 barrier,
             });
         } else {
-            let i = i - has_cont_barrier as usize;
+            let i = i - has_cont_barrier as usize - env_var_idx;
 
             arg_names.push(
-                if let FnArg::Typed(PatType { pat, .. }) = arg
+                if let PatType { pat, .. } = arg
                     && let Pat::Ident(PatIdent { ident, .. }) = pat.as_ref()
                 {
                     ident.to_string()
@@ -147,6 +196,10 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                     format!("arg{i}")
                 },
             );
+
+            if  is_rest_args {
+                continue;
+            }
 
             args.push(quote! {
                 match (&args[#i]).try_into() {
@@ -166,19 +219,44 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
 
     let visibility = bridge.vis.clone();
 
+    if name.is_none() && env_var_idx == 0 {
+        return Error::new(Span::call_site(), "name attribute is required")
+            .into_compile_error()
+            .into();
+    };
+
+    if name.is_some() && env_var_idx > 0 {
+        return Error::new(Span::call_site(), "name attribute is not allowed with env arguments")
+            .into_compile_error()
+            .into();
+    }
+    
+    if lib.is_none() && env_var_idx == 0 {
+        return Error::new(Span::call_site(), "lib attribute is required")
+            .into_compile_error()
+            .into();
+    }
+
+    if lib.is_some() && env_var_idx > 0 {
+        return Error::new(Span::call_site(), "lib attribute is not allowed with env arguments")
+            .into_compile_error()
+            .into();
+    }
+
     if bridge.sig.asyncness.is_none()
         && !is_variadic
         && (1..=3).contains(&num_args)
         // TODO: we will eventually allow known functions to take the cont
         // barrier
         && !has_cont_barrier
+        && env_var_idx == 0
         && let Some(known_ret_type) = is_return_type_known(&bridge.sig.output)
     {
         return codegen_known_bridge(
             &bridge,
             known_ret_type,
-            &name,
-            &lib,
+            &name.unwrap().value(),
+            &lib.unwrap().value(),
             num_args,
             visibility,
             wrapper_name,
@@ -203,66 +281,65 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
         );
     }
 
-    if bridge.sig.asyncness.is_some() {
+    let func = if bridge.sig.asyncness.is_some() {
         quote! {
             #visibility fn #wrapper_name<'a>(
-                _env: &'a [::scheme_rs::value::Value],
+                #[allow(unused)]
+                env: &'a [::scheme_rs::value::Value],
                 args: &'a [::scheme_rs::value::Value],
                 rest_args: &'a [::scheme_rs::value::Value],
                 barrier: &'a mut ::scheme_rs::proc::ContBarrier,
             ) -> futures::future::BoxFuture<'a, scheme_rs::proc::Application> {
+                use ::scheme_rs::proc::IntoApplication;
+
                 #bridge
 
                 Box::pin(
                     async move {
-                        use ::scheme_rs::proc::IntoApplication;
-
                         let result = #impl_name(
                             #( #args )*
-
-                            /*
-                            #(
-                                match (&args[#arg_indices]).try_into() {
-                                    Ok(ok) => ok,
-                                    Err(err) => {
-                                        return ::scheme_rs::exceptions::raise(
-                                            err.into(),
-                                            barrier,
-                                        )
-                                    }
-                                },
-                            )*
-                            */
-
-                            #rest_args
                         ).await;
-
-                        /*
-                        // If the function returned an error, we want to raise
-                        // it.
-                        let result = match result {
-                            Err(err) => return ::scheme_rs::exceptions::raise(
-                                err.into(),
-                                barrier,
-                            ),
-                            Ok(result) => result,
-                        };
-
-                        barrier.call_cont(result)
-                         */
-
                         result.into_application(barrier)
                     }
                 )
             }
+        }
+    } else {
+        quote! {
+            #visibility fn #wrapper_name(
+                #[allow(unused)]
+                env: &[::scheme_rs::value::Value],
+                args: &[::scheme_rs::value::Value],
+                rest_args: &[::scheme_rs::value::Value],
+                barrier: &mut ::scheme_rs::proc::ContBarrier,
+            ) -> scheme_rs::proc::Application {
+                use ::scheme_rs::proc::IntoApplication;
 
+                #bridge
+
+                let result = #impl_name(
+                    #( #args )*
+                );
+
+                result.into_application(barrier)
+            }
+        }
+    };
+
+    let registration = if let Some(name) = name && let Some(lib) = lib {
+        let bridge_ty = if bridge.sig.asyncness.is_some() {
+            quote!(Async)
+        } else {
+            quote!(Sync)
+        };
+        quote! {
             ::scheme_rs::registry::inventory::submit! {
                 ::scheme_rs::registry::BridgeFn::new(
                     #name,
                     #lib,
                     #num_args,
                     #is_variadic,
-                    ::scheme_rs::registry::Bridge::Async(#wrapper_name),
+                    ::scheme_rs::registry::Bridge::#bridge_ty(#wrapper_name),
                     ::scheme_rs::registry::BridgeFnDebugInfo::new(
                         ::std::file!(),
                         ::std::line!(),
@@ -275,73 +352,13 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
             }
         }
     } else {
-        quote! {
-            #visibility fn #wrapper_name(
-                _env: &[::scheme_rs::value::Value],
-                args: &[::scheme_rs::value::Value],
-                rest_args: &[::scheme_rs::value::Value],
-                barrier: &mut ::scheme_rs::proc::ContBarrier,
-            ) -> scheme_rs::proc::Application {
-                use ::scheme_rs::proc::IntoApplication;
+        quote!()
+    };
 
-                #bridge
-
-                let result = #impl_name(
-                    #( #args )*
-                    /*
-                    #(
-                        match (&args[#arg_indices]).try_into() {
-                            Ok(ok) => ok,
-                            Err(err) => {
-                                return ::scheme_rs::exceptions::raise(
-                                    err.into(),
-                                    barrier,
-                                )
-                            }
-                        },
-                    )*
-                    */
-
-                    #rest_args
-                );
-
-                result.into_application(barrier)
-                /*
-
-                // If the function returned an error, we want to raise
-                // it.
-                let result = match result {
-                    Err(err) => return ::scheme_rs::exceptions::raise(
-                        err.into(),
-                        barrier,
-                    ),
-                    Ok(result) => result,
-                };
-
-                barrier.call_cont(result)
-                */
-            }
-
-            ::scheme_rs::registry::inventory::submit! {
-                ::scheme_rs::registry::BridgeFn::new(
-                    #name,
-                    #lib,
-                    #num_args,
-                    #is_variadic,
-                    ::scheme_rs::registry::Bridge::Sync(#wrapper_name),
-                    ::scheme_rs::registry::BridgeFnDebugInfo::new(
-                        ::std::file!(),
-                        ::std::line!(),
-                        ::std::column!(),
-                        0,
-                        &[ #( #arg_names, )* ],
-                        #docs,
-                    )
-                )
-            }
-        }
-    }
-    .into()
+    quote!{
+        #func
+        #registration
+    }.into()
 }
 
 #[derive(Clone)]
@@ -405,8 +422,7 @@ fn is_unit(ty: &Type) -> bool {
     matches!(ty, Type::Tuple(t) if t.elems.is_empty())
 }
 
-fn is_cont_barrier(arg: &FnArg) -> bool {
-    if let FnArg::Typed(PatType { ty, .. }) = arg {
+fn is_cont_barrier(PatType { ty, .. }: &PatType) -> bool {
         if let Type::Reference(TypeReference {
             mutability: Some(_),
             elem,
@@ -421,7 +437,6 @@ fn is_cont_barrier(arg: &FnArg) -> bool {
                     .unwrap_or(false);
             }
         }
-    }
     false
 }
 
