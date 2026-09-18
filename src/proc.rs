@@ -849,8 +849,13 @@ const fn assert_non_capturing<F>() {
 /// Create a function from a type. Has the effect of converting a `impl Fn`
 /// into a callable function. This code is taken from the rust stdlib nightly
 /// feature `conjure_zst`.
+///
+/// # Safety
+///
+/// Generally incredibly unsafe and should only be used in this particular
+/// context.
 #[allow(clippy::uninit_assumed_init)]
-fn conjure<F>() -> F {
+unsafe fn conjure<F>() -> F {
     const { assert_non_capturing::<F>() };
     unsafe { std::mem::MaybeUninit::<F>::uninit().assume_init() }
 }
@@ -870,7 +875,7 @@ where
             if !args.0[0].is_undefined() {
                 return raise(Exception::wrong_num_of_args(0, args.len()).into(), barrier);
             }
-            (conjure::<F>())(env, barrier).into_application(barrier)
+            (unsafe { conjure::<F>() })(env, barrier).into_application(barrier)
         })
     }
 }
@@ -887,7 +892,8 @@ where
     fn into_rust_cont(self) -> RustContinuation {
         RustContinuation(|args, barrier: &mut ContBarrier<'_>| {
             let env = barrier.pop_env_n::<N>();
-            (conjure::<F>())(env, Rest(args.into_list()), barrier).into_application(barrier)
+            (unsafe { conjure::<F>() })(env, Rest(args.into_list()), barrier)
+                .into_application(barrier)
         })
     }
 }
@@ -1001,7 +1007,7 @@ macro_rules! impl_rust_cont {
                     let env = barrier.pop_env_n::<N>();
                     let values = direct_args!(args, barrier; $( $arg )*);
                     let mut values = values.into_iter();
-                    (conjure::<F>())(
+                    (unsafe { conjure::<F>() })(
                         env,
                         $(
                             match <Value as TryInto<$arg>>::try_into(values.next().unwrap()) {
@@ -1033,7 +1039,7 @@ macro_rules! impl_rust_cont {
                     let env = barrier.pop_env_n::<N>();
                     let (values, rest) = direct_args_rest!(args, barrier; $( $arg )*);
                     let mut values = values.into_iter();
-                    (conjure::<F>())(
+                    (unsafe { conjure::<F>() })(
                         env,
                         $(
                             match <Value as TryInto<$arg>>::try_into(values.next().unwrap()) {
@@ -1761,7 +1767,7 @@ pub fn call_with_prompt(
 
     barrier.push_dyn_stack(DynStackElem::Prompt(Prompt {
         tag,
-        handler: handler.clone().try_into().unwrap(),
+        handler,
         barrier_id,
     }));
 
