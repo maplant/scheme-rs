@@ -1425,8 +1425,10 @@ impl CompilationUnit<'_, '_> {
         deferred_procs: &mut Vec<ProcedureBundle>,
         deferred_local_conts: &mut Vec<ProcedureBundle>,
     ) {
-        // Collect local_cont and proc bundles
+        // Collect the function, escaping continuation and local continuation
+        // bundles.
         let mut proc_bundles = Vec::new();
+        let mut escaping_cont_bundles = Vec::new();
         let mut local_cont_bundles = Vec::new();
         for binding in bindings.into_iter() {
             let is_func = binding.is_func();
@@ -1443,43 +1445,48 @@ impl CompilationUnit<'_, '_> {
                 proc_bundles.push(bundle);
             } else if self.escaping.contains(binding.val) {
                 self.continuations.insert(binding.val);
-                proc_bundles.push(bundle);
+                escaping_cont_bundles.push(bundle);
             } else {
-                let cont_block = self.builder.create_block();
-                self.local_cont_blocks.insert(bundle.val, cont_block);
-                self.local_cont_scopes.insert(bundle.val, self.live.clone());
                 local_cont_bundles.push(bundle);
             }
         }
 
-        // The set of vals bound in this Fix (that are not continuations).
-        // A binding's body may reference any of these, including itself, so we
-        // cannot resolve them until after all of the procedures have been
-        // allocated.
-        let fix_vals = proc_bundles
-            .iter()
-            .filter(|b| b.args.continuation.is_some())
-            .map(|b| b.val)
-            .collect::<HashSet<_>>();
+        // The set of functions bound in this Fix. A binding's body may
+        // reference any of these, including itself, so we cannot resolve them
+        // until after all of the functions have been allocated.
+        let fix_vals = proc_bundles.iter().map(|b| b.val).collect::<HashSet<_>>();
 
-        // Allocate all of the procedures. The procedures are rooted and thus we
+        // Allocate all of the functions. The functions are rooted and thus we
         // have exclusive mutable access to them.
         for bundle in &proc_bundles {
             self.alloc_procedure_codegen(bundle, &fix_vals);
         }
 
-        // Patch any procedures that were created by the fix primitive into the
-        // environment of the procedures.
+        // Patch any functions that were created by the fix primitive into the
+        // environment of the functions.
         for bundle in &proc_bundles {
             self.patch_env_codegen(bundle, &fix_vals);
         }
 
-        // Now that we no longer need mutable access, unroot the procedures.
+        // Now that we no longer need mutable access, unroot the functions.
         for bundle in &proc_bundles {
             self.unroot_proc_codegen(bundle);
         }
 
+        // Alloc escaping continuations after the procedures because the
+        // former can reference the latter.
+        for bundle in &escaping_cont_bundles {
+            self.alloc_procedure_codegen(bundle, &HashSet::default());
+        }
+
+        for bundle in &local_cont_bundles {
+            let cont_block = self.builder.create_block();
+            self.local_cont_blocks.insert(bundle.val, cont_block);
+            self.local_cont_scopes.insert(bundle.val, self.live.clone());
+        }
+
         deferred_procs.extend(proc_bundles);
+        deferred_procs.extend(escaping_cont_bundles);
         deferred_local_conts.extend(local_cont_bundles);
 
         self.cps_codegen(cexp, deferred_procs, deferred_local_conts);
@@ -1520,12 +1527,12 @@ impl CompilationUnit<'_, '_> {
     }
 
     fn alloc_procedure_codegen(&mut self, bundle: &ProcedureBundle, fix_vals: &HashSet<Local>) {
-        // Construct the env array. Recursive references get a placeholder that
-        // will be overwritten once every procedure in the group has been
-        // allocated.
+        // Construct the env array. Recursive references between functions get
+        // a placeholder that will be overwritten once every function in the
+        // group has been allocated.
         let env = self.alloc_array(bundle.env.len());
         for (i, env_var) in bundle.env.iter().enumerate() {
-            let val = if fix_vals.contains(env_var) {
+            let val = if bundle.args.continuation.is_some() && fix_vals.contains(env_var) {
                 // Undefined
                 self.builder.ins().iconst(types::I64, Tag::Record as i64)
             } else {

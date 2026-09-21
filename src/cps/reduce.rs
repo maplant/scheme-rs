@@ -180,6 +180,7 @@ impl Cps {
 
     /// Eta-reduction optimization steps. Replaces lambdas that forward their
     /// arguments to another lambda with the body lambda.
+    #[stacksafe::stacksafe]
     fn eta_reduction(self, uses: &mut Uses, modified: &mut bool) -> Self {
         let Cps { inst, local } = self;
         match inst {

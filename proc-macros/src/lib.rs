@@ -367,9 +367,6 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
         bindings.push(no_extra);
     }
 
-    // Bridges with optional arguments are registered as variadic with only
-    // their required count, since the registry has no notion of optional
-    // arguments.
     let reg_variadic = is_variadic || num_optional > 0;
 
     let func = if bridge.sig.asyncness.is_some() {
@@ -506,16 +503,6 @@ fn too_many_args_error(
     }
 }
 
-fn is_option(ty: &Type) -> bool {
-    if let Type::Path(TypePath { qself: None, path }) = ty
-        && let Some(last) = path.segments.last()
-    {
-        last.ident == "Option"
-    } else {
-        false
-    }
-}
-
 #[derive(Clone)]
 struct KnownReturnType {
     is_unit: bool,
@@ -542,6 +529,7 @@ fn is_return_type_known(ret_type: &ReturnType) -> Option<KnownReturnType> {
             && args.args.len() == 2
             && let Some(syn::GenericArgument::Type(ok_ty)) = args.args.first()
             && !is_multiple_return_values(ok_ty)
+            && !is_application(ok_ty)
         {
             Some(KnownReturnType {
                 is_unit: is_unit(ok_ty),
@@ -550,8 +538,9 @@ fn is_return_type_known(ret_type: &ReturnType) -> Option<KnownReturnType> {
         } else {
             None
         }
-    } else if is_multiple_return_values(ty) {
-        // Non-result is known if it is not multiple return values
+    } else if is_multiple_return_values(ty) || is_application(ty) {
+        // Non-result is known if it is not multiple return values or an
+        // application
         None
     } else {
         Some(KnownReturnType {
@@ -567,6 +556,27 @@ fn is_multiple_return_values(ty: &Type) -> bool {
 
 fn is_unit(ty: &Type) -> bool {
     matches!(ty, Type::Tuple(t) if t.elems.is_empty())
+}
+
+fn is_option(ty: &Type) -> bool {
+    if let Type::Path(TypePath { qself: None, path }) = ty
+        && let Some(last) = path.segments.last()
+    {
+        last.ident == "Option"
+    } else {
+        false
+    }
+
+}
+
+fn is_application(ty: &Type) -> bool {
+    if let Type::Path(TypePath { qself: None, path }) = ty
+        && let Some(last) = path.segments.last()
+    {
+        last.ident == "Application"
+    } else {
+        false
+    }
 }
 
 fn is_cont_barrier(PatType { ty, .. }: &PatType) -> bool {
@@ -643,7 +653,7 @@ fn codegen_known_bridge(
         #[allow(clippy::needless_question_mark)]
         #visibility extern "C" fn #wrapper_name(
             #( #args: ::scheme_rs::value::Value, )*
-            error: &mut Value
+            error: &mut ::scheme_rs::value::Value
         ) -> ::scheme_rs::value::Value {
             #bridge
             #call_inner
