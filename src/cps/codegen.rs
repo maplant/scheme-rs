@@ -1462,21 +1462,26 @@ impl CompilationUnit<'_, '_> {
             .map(|b| b.val)
             .collect::<HashSet<_>>();
 
-        // Allocate all of the procedures. The procedures are rooted and thus we
-        // have exclusive mutable access to them.
-        for bundle in &proc_bundles {
+        // Allocate user functions first (with placeholders for mutual refs).
+        for bundle in proc_bundles.iter().filter(|b| b.args.continuation.is_some()) {
             self.alloc_procedure_codegen(bundle, &fix_vals);
         }
 
-        // Patch any procedures that were created by the fix primitive into the
-        // environment of the procedures.
-        for bundle in &proc_bundles {
+        // Patch mutual references in user function environments.
+        for bundle in proc_bundles.iter().filter(|b| b.args.continuation.is_some()) {
             self.patch_env_codegen(bundle, &fix_vals);
         }
 
-        // Now that we no longer need mutable access, unroot the procedures.
-        for bundle in &proc_bundles {
+        // Unroot user functions (values remain live in self.live).
+        for bundle in proc_bundles.iter().filter(|b| b.args.continuation.is_some()) {
             self.unroot_proc_codegen(bundle);
+        }
+
+        // Allocate escaping continuations after user functions are live,
+        // so their environments resolve directly instead of using placeholders.
+        let no_placeholders = HashSet::default();
+        for bundle in proc_bundles.iter().filter(|b| b.args.continuation.is_none()) {
+            self.alloc_procedure_codegen(bundle, &no_placeholders);
         }
 
         deferred_procs.extend(proc_bundles);
