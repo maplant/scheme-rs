@@ -1,17 +1,21 @@
 //! Cranelift Codegen from CPS.
 
 use cranelift::{
-    codegen::ir::{BlockArg, StackSlot, entities::Value},
+    codegen::{
+        ir::{BlockArg, MemFlagsData, StackSlot, entities::Value},
+        isa::CallConv,
+    },
     prelude::*,
 };
 use cranelift_jit::JITModule;
 use cranelift_module::{FuncId, Linkage, Module};
+use indexmap::IndexMap;
 use std::sync::Arc;
 
 use crate::{
     cps::{
         Value as CpsValue,
-        analysis::{Escaping, FreeVariables},
+        analysis::{Escaping, FreeVariables, Liveness},
     },
     proc::{ContinuationPtr, ProcDebugInfo, Procedure},
     runtime::{DebugInfo, Runtime},
@@ -26,28 +30,57 @@ use super::*;
 #[derive(Copy, Clone, Debug)]
 enum IrValue {
     Cell(Value),
-    Value(Value),
+    Ref(Value),
+    Owned(Value),
+    Dead,
 }
 
-struct Rebinds {
-    rebinds: HashMap<Local, IrValue>,
+#[derive(Clone)]
+struct LiveValues {
+    frames: Vec<IndexMap<Local, IrValue>>,
 }
 
-impl Rebinds {
-    fn rebind(&mut self, old_var: Local, new_var: IrValue) {
-        self.rebinds.insert(old_var, new_var);
+impl LiveValues {
+    fn new() -> Self {
+        Self {
+            frames: vec![IndexMap::default()],
+        }
     }
 
-    fn fetch_bind(&self, var: &Local) -> &IrValue {
-        self.rebinds
-            .get(var)
+    fn bind(&mut self, var: Local, value: IrValue) {
+        self.frames.last_mut().unwrap().insert(var, value);
+    }
+
+    fn kill(&mut self, var: Local) {
+        self.bind(var, IrValue::Dead);
+    }
+
+    fn fetch(&self, var: &Local) -> &IrValue {
+        self.frames
+            .iter()
+            .rev()
+            .find_map(|frame| frame.get(var))
             .unwrap_or_else(|| panic!("could not find {var:?}"))
     }
 
-    fn new() -> Self {
-        Self {
-            rebinds: HashMap::default(),
-        }
+    fn push_frame(&mut self) {
+        self.frames.push(IndexMap::default());
+    }
+
+    fn pop_frame(&mut self) {
+        self.frames.pop().unwrap();
+    }
+
+    fn owned(&self) -> impl Iterator<Item = (Local, Value)> + use<> {
+        self.frames
+            .iter()
+            .flat_map(|frame| frame.iter().map(|(&var, &value)| (var, value)))
+            .collect::<IndexMap<_, _>>()
+            .into_iter()
+            .filter_map(|(var, value)| match value {
+                IrValue::Owned(val) | IrValue::Cell(val) => Some((var, val)),
+                IrValue::Ref(_) | IrValue::Dead => None,
+            })
     }
 }
 
@@ -56,8 +89,13 @@ pub(crate) struct RuntimeFunctions {
     apply: FuncId,
     halt: FuncId,
     make_user: FuncId,
+    raise_wrong_num_args: FuncId,
+    tail_callable: FuncId,
+    proc_env: FuncId,
+    pop_env: FuncId,
     push_continuation: FuncId,
     call_continuation: FuncId,
+    pop_jit_continuation: FuncId,
     patch_env_slot: FuncId,
     unroot_proc: FuncId,
     alloc_cell: FuncId,
@@ -68,15 +106,6 @@ pub(crate) struct RuntimeFunctions {
     dropv: FuncId,
     raise_rt: FuncId,
 
-    // Known function operations:
-    call_known_0x1: FuncId,
-    call_known_1x0: FuncId,
-    call_known_1x1: FuncId,
-    call_known_2x0: FuncId,
-    call_known_2x1: FuncId,
-    call_known_3x0: FuncId,
-    call_known_3x1: FuncId,
-
     // Syntax primops:
     matches: FuncId,
     expand_template: FuncId,
@@ -85,6 +114,7 @@ pub(crate) struct RuntimeFunctions {
     // List primops:
     cons: FuncId,
     list: FuncId,
+    append: FuncId,
     car: FuncId,
     cdr: FuncId,
 
@@ -110,6 +140,30 @@ pub(crate) struct RuntimeFunctions {
     lesser_equal: FuncId,
 }
 
+fn rust_entry_codegen(module: &mut JITModule, body: FuncId, entry: FuncId) {
+    let mut ctx = module.make_context();
+    ctx.func.signature = module
+        .declarations()
+        .get_function_decl(entry)
+        .signature
+        .clone();
+    let mut builder_context = FunctionBuilderContext::new();
+    let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_context);
+    let block = builder.create_block();
+    builder.append_block_params_for_function_params(block);
+    builder.switch_to_block(block);
+    builder.seal_block(block);
+
+    let params = builder.block_params(block).to_vec();
+    let body = module.declare_func_in_func(body, builder.func);
+    builder.ins().call(body, &params);
+    builder.ins().return_(&[]);
+    builder.finalize(module.target_config());
+
+    module.define_function(entry, &mut ctx).unwrap();
+    module.clear_context(&mut ctx);
+}
+
 impl Cps {
     pub(crate) fn compile(
         self,
@@ -118,42 +172,43 @@ impl Cps {
         debug_info: &mut DebugInfo,
     ) -> ContinuationPtr {
         if std::env::var("SCHEME_RS_DEBUG").is_ok() {
-            eprintln!("Compiling:");
+            eprintln!(
+                "- Compiling: -------------------------------------------------------------------"
+            );
             self.pretty_print(0);
-            eprintln!();
+            eprintln!(
+                "--------------------------------------------------------------------------------"
+            );
         }
 
         // Collect free variables
-        let mut free_vars = FreeVariables::default();
-        free_vars.find_free_vars(&self);
+        let free_vars = FreeVariables::analyze(&self);
 
         // Collect escaping functions
         let mut lambda_bindings = HashMap::default();
         self.collect_bindings(&mut lambda_bindings);
         let escaping = Escaping::find_escaping(&self, &lambda_bindings, &free_vars);
+        let liveness = Liveness::analyze(&self, &free_vars, &escaping);
 
         let mut cells = HashSet::default();
         self.cells(&mut cells);
         let mut builder_context = FunctionBuilderContext::new();
         let mut ctx = module.make_context();
-
-        make_sig(&mut ctx.func.signature);
+        ctx.func.signature = cont_sig();
 
         let val = Local::gensym();
         let name = val.get_func_name();
         let entry_func = module
             .declare_function(&name, Linkage::Export, &ctx.func.signature)
             .unwrap();
+        let native_entry = module
+            .declare_function(
+                &format!("{name}_entry"),
+                Linkage::Export,
+                &rust_entry_sig(module, &ctx.func.signature),
+            )
+            .unwrap();
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_context);
-
-        let mut allocs_at_local_conts = HashMap::default();
-        let max_allocs = self.max_allocs(0, &escaping, &mut allocs_at_local_conts);
-
-        let vals = builder.create_sized_stack_slot(StackSlotData::new(
-            StackSlotKind::ExplicitSlot,
-            max_allocs as u32 * 8,
-            0,
-        ));
 
         let entry_block = builder.create_block();
         builder.append_block_params_for_function_params(entry_block);
@@ -162,25 +217,27 @@ impl Cps {
 
         let params = {
             let block_params = builder.block_params(entry_block);
-            [block_params[CONT_BARRIER_PARAM], block_params[OUT_PARAM]]
+            [
+                block_params[CONT_BARRIER_PARAM],
+                block_params[CONT_OUT_PARAM],
+            ]
         };
 
         let mut continuations = HashSet::default();
 
         let mut cu = CompilationUnit {
             builder,
-            // Top level cannot inherit environmental variables, by defintion.
-            rebinds: Rebinds::new(),
-            allocs: vals,
-            curr_allocs: 0,
+            live: LiveValues::new(),
             runtime_funcs,
             params,
             continuations: &mut continuations,
             module,
-            allocs_at_local_cont: &allocs_at_local_conts,
+            local_cont_scopes: HashMap::default(),
             local_cont_blocks: HashMap::default(),
-            free_vars: &mut free_vars,
+            free_vars: &free_vars,
             escaping: &escaping,
+            liveness: &liveness,
+            proc_local: None,
             debug_info,
         };
 
@@ -197,18 +254,20 @@ impl Cps {
             cu.builder.seal_block(*block);
         }
 
-        cu.builder.finalize();
+        cu.builder.finalize(module.target_config());
 
         module.define_function(entry_func, &mut ctx).unwrap();
         module.clear_context(&mut ctx);
+        rust_entry_codegen(module, entry_func, native_entry);
 
         while let Some(next) = deferred_procs.pop() {
             next.codegen(
                 runtime_funcs,
                 &cells,
                 &escaping,
+                &liveness,
                 &mut continuations,
-                &mut free_vars,
+                &free_vars,
                 module,
                 debug_info,
                 &mut deferred_procs,
@@ -219,7 +278,7 @@ impl Cps {
 
         unsafe {
             std::mem::transmute::<*const u8, ContinuationPtr>(
-                module.get_finalized_function(entry_func),
+                module.get_finalized_function(native_entry),
             )
         }
     }
@@ -227,28 +286,21 @@ impl Cps {
 
 struct CompilationUnit<'m, 'a> {
     builder: FunctionBuilder<'m>,
-    rebinds: Rebinds,
-    allocs: StackSlot,
-    curr_allocs: usize,
-    allocs_at_local_cont: &'a HashMap<Local, usize>,
+    live: LiveValues,
+    local_cont_scopes: HashMap<Local, LiveValues>,
+    liveness: &'a Liveness,
+    proc_local: Option<Local>,
     local_cont_blocks: HashMap<Local, Block>,
     runtime_funcs: &'a RuntimeFunctions,
     params: [Value; 2],
     continuations: &'a mut HashSet<Local>,
-    free_vars: &'a mut FreeVariables,
+    free_vars: &'a FreeVariables,
     escaping: &'a Escaping,
     module: &'a mut JITModule,
     debug_info: &'a mut DebugInfo,
 }
 
 impl CompilationUnit<'_, '_> {
-    fn push_alloc(&mut self, val: Value) {
-        self.builder
-            .ins()
-            .stack_store(val, self.allocs, self.curr_allocs as i32 * 8);
-        self.curr_allocs += 1;
-    }
-
     fn get_barrier(&self) -> Value {
         self.params[0]
     }
@@ -263,8 +315,10 @@ impl CompilationUnit<'_, '_> {
         deferred_procs: &mut Vec<ProcedureBundle>,
         deferred_local_conts: &mut Vec<ProcedureBundle>,
     ) {
-        match cps {
-            Cps::If(cond, success, failure) => {
+        let liveness = self.liveness;
+        self.drop_dead_codegen(liveness.live_in(cps.local));
+        match cps.inst {
+            Inst::If(cond, success, failure) => {
                 self.if_codegen(
                     &cond,
                     *success,
@@ -273,8 +327,8 @@ impl CompilationUnit<'_, '_> {
                     deferred_local_conts,
                 );
             }
-            Cps::App(operator, args) => self.app_codegen(&operator, &args),
-            Cps::PrimOp(PrimOp::Set, args, _, cexpr) => {
+            Inst::App(operator, args) => self.app_codegen(&operator, &args),
+            Inst::PrimOp(PrimOp::Set, args, _, cexpr) => {
                 self.store_codegen(
                     &args[1],
                     &args[0],
@@ -283,10 +337,10 @@ impl CompilationUnit<'_, '_> {
                     deferred_local_conts,
                 );
             }
-            Cps::PrimOp(PrimOp::AllocCell, _, into, cexpr) => {
+            Inst::PrimOp(PrimOp::AllocCell, _, into, cexpr) => {
                 self.alloc_cell_codegen(into, *cexpr, deferred_procs, deferred_local_conts);
             }
-            Cps::PrimOp(PrimOp::Read, args, result, cexpr) => {
+            Inst::PrimOp(PrimOp::Read, args, result, cexpr) => {
                 self.read_codegen(
                     &args[0],
                     result,
@@ -295,7 +349,7 @@ impl CompilationUnit<'_, '_> {
                     deferred_local_conts,
                 );
             }
-            Cps::PrimOp(PrimOp::Matches, args, bind_to, cexpr) => {
+            Inst::PrimOp(PrimOp::Matches, args, bind_to, cexpr) => {
                 let [pattern, expr] = args.as_slice() else {
                     unreachable!()
                 };
@@ -308,7 +362,7 @@ impl CompilationUnit<'_, '_> {
                     deferred_local_conts,
                 );
             }
-            Cps::PrimOp(PrimOp::ExpandTemplate, args, expand_to, cexpr) => {
+            Inst::PrimOp(PrimOp::ExpandTemplate, args, expand_to, cexpr) => {
                 let [template, expansion_combiner, expansions @ ..] = args.as_slice() else {
                     unreachable!()
                 };
@@ -322,11 +376,11 @@ impl CompilationUnit<'_, '_> {
                     deferred_local_conts,
                 );
             }
-            Cps::PrimOp(PrimOp::ErrorNoPatternsMatch, _, _, _) => {
+            Inst::PrimOp(PrimOp::ErrorNoPatternsMatch, _, _, _) => {
                 self.error_no_patterns_match_codegen();
             }
             #[cfg(feature = "continuation-marks")]
-            Cps::PrimOp(PrimOp::GetFrame, args, dest, cexpr) => {
+            Inst::PrimOp(PrimOp::GetFrame, args, dest, cexpr) => {
                 let [op, span] = args.as_slice() else {
                     unreachable!()
                 };
@@ -340,14 +394,14 @@ impl CompilationUnit<'_, '_> {
                 );
             }
             #[cfg(feature = "continuation-marks")]
-            Cps::PrimOp(PrimOp::SetContinuationMark, args, _, cexpr) => {
+            Inst::PrimOp(PrimOp::SetContinuationMark, args, _, cexpr) => {
                 let [tag, val] = args.as_slice() else {
                     unreachable!()
                 };
                 self.set_continuation_mark_codegen(tag, val);
                 self.cps_codegen(*cexpr, deferred_procs, deferred_local_conts);
             }
-            Cps::PrimOp(
+            Inst::PrimOp(
                 primop @ (PrimOp::Not | PrimOp::IsNull | PrimOp::IsPair),
                 args,
                 result,
@@ -365,7 +419,7 @@ impl CompilationUnit<'_, '_> {
                     deferred_local_conts,
                 );
             }
-            Cps::PrimOp(primop, vals, result, cexpr) => {
+            Inst::PrimOp(primop, vals, result, cexpr) => {
                 self.value_primop_codegen(
                     primop,
                     &vals,
@@ -375,19 +429,20 @@ impl CompilationUnit<'_, '_> {
                     deferred_local_conts,
                 );
             }
-            Cps::Fix(bindings, cexp) => {
+            Inst::Fix(bindings, cexp) => {
                 self.fix_codegen(bindings, *cexp, deferred_procs, deferred_local_conts);
             }
-            Cps::Halt(value) => self.halt_codegen(&value),
+            Inst::Halt(value) => self.halt_codegen(&value),
         }
     }
 
     fn value_codegen(&mut self, value: &CpsValue) -> Value {
         let (cell, symbol) = match value {
             CpsValue::Var(Var::Local(var)) => {
-                let cell = match *self.rebinds.fetch_bind(var) {
+                let cell = match *self.live.fetch(var) {
                     IrValue::Cell(cell) => cell,
-                    IrValue::Value(int) => return int,
+                    IrValue::Ref(val) | IrValue::Owned(val) => return val,
+                    IrValue::Dead => unreachable!("{var:?} is dead"),
                 };
                 let symbol = if let Some(sym) = var.name {
                     sym.0
@@ -433,7 +488,7 @@ impl CompilationUnit<'_, '_> {
         let cond = self
             .builder
             .ins()
-            .icmp_imm(IntCC::Equal, cell_value, UNDEFINED_VALUE as i64);
+            .icmp_imm_s(IntCC::Equal, cell_value, UNDEFINED_VALUE as i64);
 
         let undefined_block = self.builder.create_block();
         let defined_block = self.builder.create_block();
@@ -461,6 +516,13 @@ impl CompilationUnit<'_, '_> {
         cell_value
     }
 
+    fn drop_value_codegen(&mut self, val: Value) {
+        let dropv = self
+            .module
+            .declare_func_in_func(self.runtime_funcs.dropv, self.builder.func);
+        self.builder.ins().call(dropv, &[val]);
+    }
+
     fn matches_codegen(
         &mut self,
         pattern: &CpsValue,
@@ -477,8 +539,7 @@ impl CompilationUnit<'_, '_> {
             .declare_func_in_func(self.runtime_funcs.matches, self.builder.func);
         let call = self.builder.ins().call(matches, &[pattern, expr]);
         let match_result = self.builder.inst_results(call)[0];
-        self.rebinds.rebind(binds, IrValue::Value(match_result));
-        self.push_alloc(match_result);
+        self.live.bind(binds, IrValue::Owned(match_result));
         self.cps_codegen(cexpr, deferred_procs, deferred_local_conts);
     }
 
@@ -533,7 +594,7 @@ impl CompilationUnit<'_, '_> {
         let cond = self
             .builder
             .ins()
-            .icmp_imm(IntCC::Equal, expanded, UNDEFINED_VALUE as i64);
+            .icmp_imm_s(IntCC::Equal, expanded, UNDEFINED_VALUE as i64);
         let failure_block = self.builder.create_block();
         let success_block = self.builder.create_block();
         self.builder
@@ -548,9 +609,7 @@ impl CompilationUnit<'_, '_> {
 
         self.builder.switch_to_block(success_block);
         self.builder.seal_block(success_block);
-
-        self.rebinds.rebind(dest, IrValue::Value(expanded));
-        self.push_alloc(expanded);
+        self.live.bind(dest, IrValue::Owned(expanded));
         self.cps_codegen(cexpr, deferred_procs, deferred_local_conts);
     }
 
@@ -568,21 +627,21 @@ impl CompilationUnit<'_, '_> {
             PrimOp::Not => self
                 .builder
                 .ins()
-                .icmp_imm(IntCC::Equal, arg, FALSE_VALUE as i64),
+                .icmp_imm_s(IntCC::Equal, arg, FALSE_VALUE as i64),
             PrimOp::IsNull => self
                 .builder
                 .ins()
-                .icmp_imm(IntCC::Equal, arg, NULL_VALUE as i64),
+                .icmp_imm_s(IntCC::Equal, arg, NULL_VALUE as i64),
             PrimOp::IsPair => {
-                let tag = self.builder.ins().band_imm(arg, TAG as i64);
-                let is_pair_tag = self
-                    .builder
-                    .ins()
-                    .icmp_imm(IntCC::Equal, tag, Tag::Pair as i64);
+                let tag = self.builder.ins().band_imm_s(arg, TAG as i64);
+                let is_pair_tag =
+                    self.builder
+                        .ins()
+                        .icmp_imm_s(IntCC::Equal, tag, Tag::Pair as i64);
                 let is_not_null =
                     self.builder
                         .ins()
-                        .icmp_imm(IntCC::NotEqual, arg, NULL_VALUE as i64);
+                        .icmp_imm_s(IntCC::NotEqual, arg, NULL_VALUE as i64);
                 self.builder.ins().band(is_pair_tag, is_not_null)
             }
             _ => unreachable!(),
@@ -590,7 +649,7 @@ impl CompilationUnit<'_, '_> {
         let true_val = self.builder.ins().iconst(types::I64, TRUE_VALUE as i64);
         let false_val = self.builder.ins().iconst(types::I64, FALSE_VALUE as i64);
         let result = self.builder.ins().select(cond, true_val, false_val);
-        self.rebinds.rebind(dest, IrValue::Value(result));
+        self.live.bind(dest, IrValue::Ref(result));
         self.cps_codegen(cexpr, deferred_procs, deferred_local_conts);
     }
 
@@ -630,13 +689,23 @@ impl CompilationUnit<'_, '_> {
                 deferred_local_conts,
             );
         } else {
+            let arg_vals = if matches!(primop, PrimOp::CallKnown0 | PrimOp::CallKnown1) {
+                let liveness = self.liveness;
+                let live_after = liveness.live_in(cexpr.local);
+                let mut owned = vec![arg_vals[0]];
+                owned.extend(self.take_args(&vals[1..], &arg_vals[1..], live_after));
+                owned
+            } else {
+                arg_vals
+            };
             let result = self.slow_value_primop_codegen(primop, &arg_vals);
 
-            self.rebinds.rebind(dest, IrValue::Value(result));
-
-            if primop.info().needs_drop {
-                self.push_alloc(result);
-            }
+            let bind = if primop.info().needs_drop {
+                IrValue::Owned(result)
+            } else {
+                IrValue::Ref(result)
+            };
+            self.live.bind(dest, bind);
 
             self.cps_codegen(cexpr, deferred_procs, deferred_local_conts);
         }
@@ -645,7 +714,11 @@ impl CompilationUnit<'_, '_> {
     fn slow_value_primop_codegen(&mut self, primop: PrimOp, arg_vals: &[Value]) -> Value {
         let primop_info = primop.info();
 
-        let mut args = if primop_info.variadic {
+        let is_known = matches!(primop, PrimOp::CallKnown0 | PrimOp::CallKnown1);
+
+        let mut args = if is_known {
+            arg_vals[1..].to_vec()
+        } else if primop_info.variadic {
             // Put the values into an array:
             let array = self.alloc_array(arg_vals.len());
 
@@ -660,52 +733,61 @@ impl CompilationUnit<'_, '_> {
             arg_vals.to_vec()
         };
 
-        // Call the respective runtime function:
+        // The runtime function to call, unless this is a known call:
         let runtime_func = match primop {
-            PrimOp::Add => self.runtime_funcs.add,
-            PrimOp::Sub => self.runtime_funcs.sub,
-            PrimOp::Mul => self.runtime_funcs.mul,
-            PrimOp::Div => self.runtime_funcs.div,
-            PrimOp::Equal => self.runtime_funcs.equal,
-            PrimOp::Greater => self.runtime_funcs.greater,
-            PrimOp::GreaterEqual => self.runtime_funcs.greater_equal,
-            PrimOp::Lesser => self.runtime_funcs.lesser,
-            PrimOp::LesserEqual => self.runtime_funcs.lesser_equal,
-            PrimOp::Cons => self.runtime_funcs.cons,
-            PrimOp::List => self.runtime_funcs.list,
-            PrimOp::Car => self.runtime_funcs.car,
-            PrimOp::Cdr => self.runtime_funcs.cdr,
-            PrimOp::CallKnown0 => match arg_vals.len() {
-                2 => self.runtime_funcs.call_known_1x0,
-                3 => self.runtime_funcs.call_known_2x0,
-                4 => self.runtime_funcs.call_known_3x0,
-                _ => unreachable!(),
-            },
-            PrimOp::CallKnown1 => match arg_vals.len() {
-                1 => self.runtime_funcs.call_known_0x1,
-                2 => self.runtime_funcs.call_known_1x1,
-                3 => self.runtime_funcs.call_known_2x1,
-                4 => self.runtime_funcs.call_known_3x1,
-                _ => unreachable!(),
-            },
+            PrimOp::Add => Some(self.runtime_funcs.add),
+            PrimOp::Sub => Some(self.runtime_funcs.sub),
+            PrimOp::Mul => Some(self.runtime_funcs.mul),
+            PrimOp::Div => Some(self.runtime_funcs.div),
+            PrimOp::Equal => Some(self.runtime_funcs.equal),
+            PrimOp::Greater => Some(self.runtime_funcs.greater),
+            PrimOp::GreaterEqual => Some(self.runtime_funcs.greater_equal),
+            PrimOp::Lesser => Some(self.runtime_funcs.lesser),
+            PrimOp::LesserEqual => Some(self.runtime_funcs.lesser_equal),
+            PrimOp::Cons => Some(self.runtime_funcs.cons),
+            PrimOp::List => Some(self.runtime_funcs.list),
+            PrimOp::Append => Some(self.runtime_funcs.append),
+            PrimOp::Car => Some(self.runtime_funcs.car),
+            PrimOp::Cdr => Some(self.runtime_funcs.cdr),
+            PrimOp::CallKnown0 | PrimOp::CallKnown1 => None,
             _ => unreachable!(),
         };
-
-        let runtime_func = self
-            .module
-            .declare_func_in_func(runtime_func, self.builder.func);
 
         // TODO: Having multiple of these is redundant.
         // Add a slot for the error if this function can error:
         let error_slot = primop_info.can_error.then(|| {
             let error_slot = self.alloc_array(1);
+            if is_known {
+                let undefined = self
+                    .builder
+                    .ins()
+                    .iconst(types::I64, UNDEFINED_VALUE as i64);
+                self.array_store(error_slot, 0, undefined);
+            }
             let error_addr = self.builder.ins().stack_addr(types::I64, error_slot, 0);
             args.push(error_addr);
             error_slot
         });
 
         // Call the function:
-        let primop_call = self.builder.ins().call(runtime_func, args.as_slice());
+        let primop_call = if let Some(runtime_func) = runtime_func {
+            let runtime_func = self
+                .module
+                .declare_func_in_func(runtime_func, self.builder.func);
+            self.builder.ins().call(runtime_func, args.as_slice())
+        } else {
+            let known_sig = {
+                let mut sig = self.module.make_signature();
+                for _ in 0..args.len() {
+                    sig.params.push(AbiParam::new(types::I64));
+                }
+                sig.returns.push(AbiParam::new(types::I64));
+                self.builder.import_signature(sig)
+            };
+            self.builder
+                .ins()
+                .call_indirect(known_sig, arg_vals[0], &args)
+        };
         let result = self.builder.inst_results(primop_call)[0];
 
         // Check for error if we need to:
@@ -714,7 +796,7 @@ impl CompilationUnit<'_, '_> {
             let cond = self
                 .builder
                 .ins()
-                .icmp_imm(IntCC::Equal, result, UNDEFINED_VALUE as i64);
+                .icmp_imm_s(IntCC::Equal, result, UNDEFINED_VALUE as i64);
 
             let failure_block = self.builder.create_block();
             let success_block = self.builder.create_block();
@@ -752,8 +834,8 @@ impl CompilationUnit<'_, '_> {
     ) {
         // Both operands are fixnums iff the low bit of their bitwise-and is set.
         let anded = self.builder.ins().band(lhs, rhs);
-        let low_bit = self.builder.ins().band_imm(anded, 1);
-        let both_fixnums = self.builder.ins().icmp_imm(IntCC::Equal, low_bit, 1);
+        let low_bit = self.builder.ins().band_imm_s(anded, 1);
+        let both_fixnums = self.builder.ins().icmp_imm_s(IntCC::Equal, low_bit, 1);
 
         let fast_block = self.builder.create_block();
         let slow_block = self.builder.create_block();
@@ -792,8 +874,8 @@ impl CompilationUnit<'_, '_> {
                     .jump(merge_block, &[BlockArg::Value(result)]);
             }
             PrimOp::Add | PrimOp::Sub => {
-                let lhs = self.builder.ins().sshr_imm(lhs, 1);
-                let rhs = self.builder.ins().sshr_imm(rhs, 1);
+                let lhs = self.builder.ins().sshr_imm_s(lhs, 1);
+                let rhs = self.builder.ins().sshr_imm_s(rhs, 1);
                 let value = match primop {
                     PrimOp::Add => self.builder.ins().iadd(lhs, rhs),
                     PrimOp::Sub => self.builder.ins().isub(lhs, rhs),
@@ -801,14 +883,15 @@ impl CompilationUnit<'_, '_> {
                 };
 
                 // Check if we're in range of an i64
-                let ge_min =
-                    self.builder
-                        .ins()
-                        .icmp_imm(IntCC::SignedGreaterThanOrEqual, value, FIXNUM_MIN);
+                let ge_min = self.builder.ins().icmp_imm_s(
+                    IntCC::SignedGreaterThanOrEqual,
+                    value,
+                    FIXNUM_MIN,
+                );
                 let le_max =
                     self.builder
                         .ins()
-                        .icmp_imm(IntCC::SignedLessThanOrEqual, value, FIXNUM_MAX);
+                        .icmp_imm_s(IntCC::SignedLessThanOrEqual, value, FIXNUM_MAX);
                 let in_range = self.builder.ins().band(ge_min, le_max);
 
                 let encode_block = self.builder.create_block();
@@ -820,8 +903,8 @@ impl CompilationUnit<'_, '_> {
                 // Convert back to a Value
                 self.builder.switch_to_block(encode_block);
                 self.builder.seal_block(encode_block);
-                let shifted = self.builder.ins().ishl_imm(value, 1);
-                let result = self.builder.ins().bor_imm(shifted, 1);
+                let shifted = self.builder.ins().ishl_imm_s(value, 1);
+                let result = self.builder.ins().bor_imm_s(shifted, 1);
                 self.builder
                     .ins()
                     .jump(merge_block, &[BlockArg::Value(result)]);
@@ -839,22 +922,23 @@ impl CompilationUnit<'_, '_> {
                     .jump(merge_block, &[BlockArg::Value(result)]);
             }
             PrimOp::Mul => {
-                let lhs = self.builder.ins().sshr_imm(lhs, 1);
-                let rhs = self.builder.ins().sshr_imm(rhs, 1);
+                let lhs = self.builder.ins().sshr_imm_s(lhs, 1);
+                let rhs = self.builder.ins().sshr_imm_s(rhs, 1);
 
                 let value = self.builder.ins().imul(lhs, rhs);
                 let hi = self.builder.ins().smulhi(lhs, rhs);
-                let sign = self.builder.ins().sshr_imm(value, 63);
+                let sign = self.builder.ins().sshr_imm_s(value, 63);
                 let fits_i64 = self.builder.ins().icmp(IntCC::Equal, hi, sign);
 
-                let ge_min =
-                    self.builder
-                        .ins()
-                        .icmp_imm(IntCC::SignedGreaterThanOrEqual, value, FIXNUM_MIN);
+                let ge_min = self.builder.ins().icmp_imm_s(
+                    IntCC::SignedGreaterThanOrEqual,
+                    value,
+                    FIXNUM_MIN,
+                );
                 let le_max =
                     self.builder
                         .ins()
-                        .icmp_imm(IntCC::SignedLessThanOrEqual, value, FIXNUM_MAX);
+                        .icmp_imm_s(IntCC::SignedLessThanOrEqual, value, FIXNUM_MAX);
                 let in_fixnum = self.builder.ins().band(ge_min, le_max);
                 let in_range = self.builder.ins().band(fits_i64, in_fixnum);
 
@@ -866,8 +950,8 @@ impl CompilationUnit<'_, '_> {
 
                 self.builder.switch_to_block(encode_block);
                 self.builder.seal_block(encode_block);
-                let shifted = self.builder.ins().ishl_imm(value, 1);
-                let result = self.builder.ins().bor_imm(shifted, 1);
+                let shifted = self.builder.ins().ishl_imm_s(value, 1);
+                let result = self.builder.ins().bor_imm_s(shifted, 1);
                 self.builder
                     .ins()
                     .jump(merge_block, &[BlockArg::Value(result)]);
@@ -899,11 +983,12 @@ impl CompilationUnit<'_, '_> {
         self.builder.seal_block(merge_block);
         let result = self.builder.block_params(merge_block)[0];
 
-        self.rebinds.rebind(dest, IrValue::Value(result));
-
-        if primop.info().needs_drop {
-            self.push_alloc(result);
-        }
+        let bind = if primop.info().needs_drop {
+            IrValue::Owned(result)
+        } else {
+            IrValue::Ref(result)
+        };
+        self.live.bind(dest, bind);
 
         self.cps_codegen(cexpr, deferred_procs, deferred_local_conts);
     }
@@ -925,8 +1010,7 @@ impl CompilationUnit<'_, '_> {
             .declare_func_in_func(self.runtime_funcs.get_frame, self.builder.func);
         let get_frame_call = self.builder.ins().call(get_frame_func, &[op, span]);
         let result = self.builder.inst_results(get_frame_call)[0];
-        self.rebinds.rebind(dest, IrValue::Value(result));
-        self.push_alloc(result);
+        self.live.bind(dest, IrValue::Owned(result));
         self.cps_codegen(cexpr, deferred_procs, deferred_local_conts);
     }
 
@@ -966,8 +1050,7 @@ impl CompilationUnit<'_, '_> {
             .declare_func_in_func(self.runtime_funcs.alloc_cell, self.builder.func);
         let call = self.builder.ins().call(alloc_cell, &[]);
         let cell = self.builder.inst_results(call)[0];
-        self.rebinds.rebind(var, IrValue::Cell(cell));
-        self.push_alloc(cell);
+        self.live.bind(var, IrValue::Cell(cell));
         self.cps_codegen(cexpr, deferred_procs, deferred_local_conts);
     }
 
@@ -985,70 +1068,169 @@ impl CompilationUnit<'_, '_> {
             .declare_func_in_func(self.runtime_funcs.clonev, self.builder.func);
         let call = self.builder.ins().call(clonev, &[value]);
         let value = self.builder.inst_results(call)[0];
-        self.rebinds.rebind(result, IrValue::Value(value));
-        self.push_alloc(value);
+        self.live.bind(result, IrValue::Owned(value));
         self.cps_codegen(cexpr, deferred_procs, deferred_local_conts);
     }
 
     fn drop_all_codegen(&mut self) {
-        if self.curr_allocs > 0 {
-            let vals = self.builder.ins().stack_addr(types::I64, self.allocs, 0);
-            let num_vals = self
-                .builder
-                .ins()
-                .iconst(types::I32, self.curr_allocs as i64);
-            let dropv = self
-                .module
-                .declare_func_in_func(self.runtime_funcs.dropv, self.builder.func);
-            self.builder.ins().call(dropv, &[vals, num_vals]);
+        for (_, val) in self.live.owned() {
+            self.drop_value_codegen(val);
         }
     }
 
-    fn drop_n_codegen(&mut self, n: usize) {
-        if n > 0 {
-            let vals = self.builder.ins().stack_addr(
-                types::I64,
-                self.allocs,
-                (self.curr_allocs - n) as i32 * 8,
-            );
-            let num_vals = self.builder.ins().iconst(types::I32, n as i64);
-            let dropv = self
-                .module
-                .declare_func_in_func(self.runtime_funcs.dropv, self.builder.func);
-            self.builder.ins().call(dropv, &[vals, num_vals]);
+    fn drop_dead_codegen(&mut self, live: &HashSet<Local>) {
+        for (var, val) in self.live.owned() {
+            if !live.contains(&var) && Some(var) != self.proc_local {
+                self.drop_value_codegen(val);
+                self.live.kill(var);
+            }
         }
+    }
+
+    fn clone_value_codegen(&mut self, val: Value) -> Value {
+        let clonev = self
+            .module
+            .declare_func_in_func(self.runtime_funcs.clonev, self.builder.func);
+        let call = self.builder.ins().call(clonev, &[val]);
+        self.builder.inst_results(call)[0]
+    }
+
+    fn take_args(
+        &mut self,
+        args: &[CpsValue],
+        vals: &[Value],
+        live_after: &HashSet<Local>,
+    ) -> Vec<Value> {
+        let mut seen = HashSet::default();
+        let mut moves = vec![false; args.len()];
+        for (i, arg) in args.iter().enumerate().rev() {
+            if let Some(local) = arg.to_local()
+                && seen.insert(local)
+                && !live_after.contains(&local)
+                && matches!(self.live.fetch(&local), IrValue::Owned(_))
+            {
+                moves[i] = true;
+            }
+        }
+        args.iter()
+            .zip(vals)
+            .zip(moves)
+            .map(|((arg, val), moved)| {
+                if moved {
+                    self.live.kill(arg.to_local().unwrap());
+                    *val
+                } else {
+                    self.clone_value_codegen(*val)
+                }
+            })
+            .collect()
+    }
+
+    fn arg_slots_codegen(
+        &mut self,
+        args: &[CpsValue],
+        live_after: &HashSet<Local>,
+    ) -> [Value; NUM_ARG_SLOTS] {
+        // Evaluate the arguments:
+        let direct = args
+            .iter()
+            .take(NUM_ARG_SLOTS - 1)
+            .map(|arg| self.value_codegen(arg))
+            .collect::<Vec<_>>();
+
+        // Store any remaining argument values in an array; they will be made
+        // into a list.
+        let extra_args = &args[args.len().min(NUM_ARG_SLOTS - 1)..];
+        let extras_slot = if !extra_args.is_empty() {
+            let extras_slot = self.alloc_array(extra_args.len());
+            for (i, arg) in extra_args.iter().enumerate() {
+                let val = self.value_codegen(arg);
+                self.array_store(extras_slot, i, val);
+            }
+            Some(extras_slot)
+        } else {
+            None
+        };
+
+        let undefined = self
+            .builder
+            .ins()
+            .iconst(types::I64, UNDEFINED_VALUE as i64);
+        let null = self.builder.ins().iconst(types::I64, NULL_VALUE as i64);
+        let mut slots = [undefined, undefined, undefined, undefined, null];
+        let direct_args = &args[..direct.len()];
+        let taken = self.take_args(direct_args, &direct, live_after);
+        for (slot, val) in slots.iter_mut().zip(taken) {
+            *slot = val;
+        }
+
+        if let Some(extras_slot) = extras_slot {
+            let extras_addr = self.builder.ins().stack_addr(types::I64, extras_slot, 0);
+            let extras_len = self
+                .builder
+                .ins()
+                .iconst(types::I32, extra_args.len() as i64);
+            let list = self
+                .module
+                .declare_func_in_func(self.runtime_funcs.list, self.builder.func);
+            let call = self.builder.ins().call(list, &[extras_addr, extras_len]);
+            slots[NUM_ARG_SLOTS - 1] = self.builder.inst_results(call)[0];
+        }
+
+        slots
     }
 
     fn app_codegen(&mut self, operator: &CpsValue, args: &[CpsValue]) {
         if let Some(local) = operator.to_local()
-            && let Some(num_allocs_at_dest) = self.allocs_at_local_cont.get(&local)
+            && let Some(&block) = self.local_cont_blocks.get(&local)
         {
             // Operator is a local continuation
-            self.jump_codegen(self.local_cont_blocks[&local], *num_allocs_at_dest, args);
+            self.jump_codegen(block, local, args);
         } else if let Some(local) = operator.to_local()
             && self.continuations.contains(&local)
         {
             // Operator is a regular continuation
-            let barrier = self.get_barrier();
-            let args_slot = self.alloc_array(args.len());
-            for (i, arg) in args.iter().enumerate() {
-                let val = self.value_codegen(arg);
-                self.array_store(args_slot, i, val);
-            }
-            let args_addr = self.builder.ins().stack_addr(types::I64, args_slot, 0);
-            let args_len = self.builder.ins().iconst(types::I32, args.len() as i64);
+            let mut args = self.arg_slots_codegen(args, &HashSet::default()).to_vec();
+            self.drop_all_codegen();
+
+            // Check if this is a JIT continuation, and if it is, tail call it.
+            let ret_to_tramp_block = self.builder.create_block();
+            let tail_call_block = self.builder.create_block();
+
             let out = self.get_out();
+            let barrier = self.get_barrier();
+            args.push(barrier);
+            args.push(out);
+            let pop_jit_cont = self
+                .module
+                .declare_func_in_func(self.runtime_funcs.pop_jit_continuation, self.builder.func);
+            let call = self.builder.ins().call(pop_jit_cont, &[barrier]);
+            let jit_cont = self.builder.inst_results(call)[0];
+
+            // If jit_cont is null, we need to return to the trampoline
+            self.builder
+                .ins()
+                .brif(jit_cont, tail_call_block, &[], ret_to_tramp_block, &[]);
+
+            self.builder.switch_to_block(tail_call_block);
+            self.builder.seal_block(tail_call_block);
+            let sig = self.builder.import_signature(cont_sig());
+            self.builder
+                .ins()
+                .return_call_indirect(sig, jit_cont, &args);
+
+            self.builder.switch_to_block(ret_to_tramp_block);
+            self.builder.seal_block(ret_to_tramp_block);
+
             let call_cont = self
                 .module
                 .declare_func_in_func(self.runtime_funcs.call_continuation, self.builder.func);
-            self.builder
-                .ins()
-                .call(call_cont, &[args_addr, args_len, barrier, out]);
-            self.drop_all_codegen();
+            self.builder.ins().call(call_cont, &args);
             self.builder.ins().return_(&[]);
         } else {
+            // Operator is a function
             let barrier = self.get_barrier();
-            let operator = self.value_codegen(operator);
+            let op = self.value_codegen(operator);
 
             let args = if let Some(first) = args.first()
                 && let Some(local) = first.to_local()
@@ -1059,45 +1241,72 @@ impl CompilationUnit<'_, '_> {
                 args
             };
 
-            // Allocate space for the args to be passed to make_application
-            let args_slot = self.alloc_array(args.len());
-            for (i, arg) in args.iter().enumerate() {
-                let val = self.value_codegen(arg);
-                self.array_store(args_slot, i, val);
-            }
-
-            let args_addr = self.builder.ins().stack_addr(types::I64, args_slot, 0);
-            let args_len = self.builder.ins().iconst(types::I32, args.len() as i64);
+            let [arg1, arg2, arg3, arg4, argn] = self.arg_slots_codegen(args, &HashSet::default());
             let out = self.get_out();
+
+            // Check if the operator can be tail called:
+            let tail_callable = self
+                .module
+                .declare_func_in_func(self.runtime_funcs.tail_callable, self.builder.func);
+            let call = self.builder.ins().call(tail_callable, &[op]);
+            let func_ptr = self.builder.inst_results(call)[0];
+
+            let tail_call_block = self.builder.create_block();
+            let return_to_tramp_block = self.builder.create_block();
+            self.builder
+                .ins()
+                .brif(func_ptr, tail_call_block, &[], return_to_tramp_block, &[]);
+
+            self.builder.switch_to_block(return_to_tramp_block);
+            self.builder.seal_block(return_to_tramp_block);
             let apply = self
                 .module
                 .declare_func_in_func(self.runtime_funcs.apply, self.builder.func);
             self.builder
                 .ins()
-                .call(apply, &[operator, args_addr, args_len, barrier, out]);
+                .call(apply, &[op, arg1, arg2, arg3, arg4, argn, barrier, out]);
             self.drop_all_codegen();
             self.builder.ins().return_(&[]);
+
+            self.builder.switch_to_block(tail_call_block);
+            self.builder.seal_block(tail_call_block);
+            let op_owned = if let Some(local) = operator.to_local()
+                && matches!(self.live.fetch(&local), IrValue::Owned(_))
+            {
+                self.live.kill(local);
+                op
+            } else {
+                self.clone_value_codegen(op)
+            };
+            let op_owned = self.builder.ins().band_imm_s(op_owned, !(TAG as i64));
+            self.drop_all_codegen();
+            let sig = self.builder.import_signature(user_sig());
+            self.builder.ins().return_call_indirect(
+                sig,
+                func_ptr,
+                &[op_owned, arg1, arg2, arg3, arg4, argn, barrier, out],
+            );
         }
     }
 
-    fn jump_codegen(&mut self, to: Block, num_allocs_at_dest: usize, args: &[CpsValue]) {
-        assert!(
-            self.curr_allocs >= num_allocs_at_dest,
-            "cannot jump to a continuation with more allocations"
-        );
-        let clone = self
-            .module
-            .declare_func_in_func(self.runtime_funcs.clonev, self.builder.func);
-        let mut cloned_args = Vec::new();
-        for arg in args {
-            let arg_val = self.value_codegen(arg);
-            let clone_call = self.builder.ins().call(clone, &[arg_val]);
-            cloned_args.push(BlockArg::Value(self.builder.inst_results(clone_call)[0]));
-        }
-        // Drop any allocations that are not present in the continuation we're
-        // jumping to
-        self.drop_n_codegen(self.curr_allocs - num_allocs_at_dest);
-        self.builder.ins().jump(to, &cloned_args);
+    fn jump_codegen(&mut self, to: Block, local: Local, args: &[CpsValue]) {
+        let live_after = self.liveness.live_after_jump(local);
+
+        let vals = args
+            .iter()
+            .map(|arg| self.value_codegen(arg))
+            .collect::<Vec<_>>();
+
+        // Transfer or clone the arguments.
+        let block_args = self
+            .take_args(args, &vals, live_after)
+            .into_iter()
+            .map(BlockArg::Value)
+            .collect::<Vec<_>>();
+
+        // Drop the values that do not survive the jump.
+        self.drop_dead_codegen(live_after);
+        self.builder.ins().jump(to, &block_args);
     }
 
     fn halt_codegen(&mut self, args: &CpsValue) {
@@ -1123,7 +1332,7 @@ impl CompilationUnit<'_, '_> {
         let cond = self
             .builder
             .ins()
-            .icmp_imm(IntCC::NotEqual, cond, FALSE_VALUE as i64);
+            .icmp_imm_s(IntCC::NotEqual, cond, FALSE_VALUE as i64);
 
         // Because our compiler is not particularly sophisticated right now, we
         // can guarantee that both branches terminate. Thus, no merge basic
@@ -1135,17 +1344,17 @@ impl CompilationUnit<'_, '_> {
             .ins()
             .brif(cond, success_block, &[], failure_block, &[]);
 
-        // Generate success block:
-        let num_allocs = self.curr_allocs;
+        self.live.push_frame();
         self.builder.switch_to_block(success_block);
         self.builder.seal_block(success_block);
         self.cps_codegen(success, deferred_procs, deferred_local_conts);
+        self.live.pop_frame();
 
-        // Generate failure block:
-        self.curr_allocs = num_allocs;
+        self.live.push_frame();
         self.builder.switch_to_block(failure_block);
         self.builder.seal_block(failure_block);
         self.cps_codegen(failure, deferred_procs, deferred_local_conts);
+        self.live.pop_frame();
     }
 
     fn raise_codegen(&mut self, val: Value) {
@@ -1176,7 +1385,7 @@ impl CompilationUnit<'_, '_> {
                     SchemeValue::as_raw(&SchemeValue::from(global.val.clone())) as i64,
                 )
             }
-            CpsValue::Var(Var::Local(local)) => match self.rebinds.fetch_bind(local) {
+            CpsValue::Var(Var::Local(local)) => match self.live.fetch(local) {
                 IrValue::Cell(to) => *to,
                 _ => panic!("{to:?} is not a pointer"),
             },
@@ -1198,13 +1407,15 @@ impl CompilationUnit<'_, '_> {
     }
 
     fn array_store(&mut self, slot: StackSlot, i: usize, val: Value) {
-        self.builder.ins().stack_store(val, slot, i as i32 * 8);
+        self.builder
+            .ins()
+            .stack_store(types::I64, val, slot, i as i32 * 8);
     }
 
     fn array_load(&mut self, slot: StackSlot, i: usize) -> Value {
         self.builder
             .ins()
-            .stack_load(types::I64, slot, i as i32 * 8)
+            .stack_load(types::I64, types::I64, slot, i as i32 * 8)
     }
 
     fn fix_codegen(
@@ -1214,8 +1425,10 @@ impl CompilationUnit<'_, '_> {
         deferred_procs: &mut Vec<ProcedureBundle>,
         deferred_local_conts: &mut Vec<ProcedureBundle>,
     ) {
-        // Collect local_cont and proc bundles
+        // Collect the function, escaping continuation and local continuation
+        // bundles.
         let mut proc_bundles = Vec::new();
+        let mut escaping_cont_bundles = Vec::new();
         let mut local_cont_bundles = Vec::new();
         for binding in bindings.into_iter() {
             let is_func = binding.is_func();
@@ -1232,42 +1445,48 @@ impl CompilationUnit<'_, '_> {
                 proc_bundles.push(bundle);
             } else if self.escaping.contains(binding.val) {
                 self.continuations.insert(binding.val);
-                proc_bundles.push(bundle);
+                escaping_cont_bundles.push(bundle);
             } else {
-                let cont_block = self.builder.create_block();
-                self.local_cont_blocks.insert(bundle.val, cont_block);
                 local_cont_bundles.push(bundle);
             }
         }
 
-        // The set of vals bound in this Fix (that are not continuations).
-        // A binding's body may reference any of these, including itself, so we
-        // cannot resolve them until after all of the procedures have been
-        // allocated.
-        let fix_vals = proc_bundles
-            .iter()
-            .filter(|b| b.args.continuation.is_some())
-            .map(|b| b.val)
-            .collect::<HashSet<_>>();
+        // The set of functions bound in this Fix. A binding's body may
+        // reference any of these, including itself, so we cannot resolve them
+        // until after all of the functions have been allocated.
+        let fix_vals = proc_bundles.iter().map(|b| b.val).collect::<HashSet<_>>();
 
-        // Allocate all of the procedures. The procedures are rooted and thus we
+        // Allocate all of the functions. The functions are rooted and thus we
         // have exclusive mutable access to them.
         for bundle in &proc_bundles {
             self.alloc_procedure_codegen(bundle, &fix_vals);
         }
 
-        // Patch any procedures that were created by the fix primitive into the
-        // environment of the procedures.
+        // Patch any functions that were created by the fix primitive into the
+        // environment of the functions.
         for bundle in &proc_bundles {
             self.patch_env_codegen(bundle, &fix_vals);
         }
 
-        // Now that we no longer need mutable access, unroot the procedures.
+        // Now that we no longer need mutable access, unroot the functions.
         for bundle in &proc_bundles {
             self.unroot_proc_codegen(bundle);
         }
 
+        // Alloc escaping continuations after the procedures because the
+        // former can reference the latter.
+        for bundle in &escaping_cont_bundles {
+            self.alloc_procedure_codegen(bundle, &HashSet::default());
+        }
+
+        for bundle in &local_cont_bundles {
+            let cont_block = self.builder.create_block();
+            self.local_cont_blocks.insert(bundle.val, cont_block);
+            self.local_cont_scopes.insert(bundle.val, self.live.clone());
+        }
+
         deferred_procs.extend(proc_bundles);
+        deferred_procs.extend(escaping_cont_bundles);
         deferred_local_conts.extend(local_cont_bundles);
 
         self.cps_codegen(cexp, deferred_procs, deferred_local_conts);
@@ -1282,18 +1501,25 @@ impl CompilationUnit<'_, '_> {
         let cont_block = self.local_cont_blocks[&bundle.val];
         self.builder.switch_to_block(cont_block);
 
-        // Reset curr_allocs to whatever
-        self.curr_allocs = self.allocs_at_local_cont[&bundle.val];
+        // Restore the live values to their state at the continuation's
+        // definition:
+        self.live = self.local_cont_scopes[&bundle.val].clone();
+        let liveness = self.liveness;
+        let live_in = liveness.live_in(bundle.body.local);
+        for (var, _) in self.live.owned() {
+            if !live_in.contains(&var) && Some(var) != self.proc_local {
+                self.live.kill(var);
+            }
+        }
 
         let mut param_vals = Vec::new();
         for arg in &bundle.args.args {
             let value = self.builder.append_block_param(cont_block, types::I64);
-            param_vals.push(value);
-            self.rebinds.rebind(*arg, IrValue::Value(value));
+            param_vals.push((*arg, value));
         }
 
-        for param_val in param_vals {
-            self.push_alloc(param_val);
+        for (arg, param_val) in param_vals {
+            self.live.bind(arg, IrValue::Owned(param_val));
         }
 
         // No need to rebind env variables, they are already present
@@ -1301,18 +1527,19 @@ impl CompilationUnit<'_, '_> {
     }
 
     fn alloc_procedure_codegen(&mut self, bundle: &ProcedureBundle, fix_vals: &HashSet<Local>) {
-        // Construct the env array. Recursive references get a placeholder that
-        // will be overwritten once every procedure in the group has been
-        // allocated.
+        // Construct the env array. Recursive references between functions get
+        // a placeholder that will be overwritten once every function in the
+        // group has been allocated.
         let env = self.alloc_array(bundle.env.len());
         for (i, env_var) in bundle.env.iter().enumerate() {
-            let val = if fix_vals.contains(env_var) {
+            let val = if bundle.args.continuation.is_some() && fix_vals.contains(env_var) {
                 // Undefined
                 self.builder.ins().iconst(types::I64, Tag::Record as i64)
             } else {
-                match *self.rebinds.fetch_bind(env_var) {
+                match *self.live.fetch(env_var) {
                     IrValue::Cell(ptr) => ptr,
-                    IrValue::Value(val) => val,
+                    IrValue::Ref(val) | IrValue::Owned(val) => val,
+                    IrValue::Dead => unreachable!("{env_var:?} is dead"),
                 }
             };
             self.array_store(env, i, val);
@@ -1322,6 +1549,10 @@ impl CompilationUnit<'_, '_> {
             .module
             .declare_func_in_func(bundle.func_id, self.builder.func);
         let func_ptr = self.builder.ins().func_addr(types::I64, func_ref);
+        let entry_ref = self
+            .module
+            .declare_func_in_func(bundle.rust_entry_id, self.builder.func);
+        let entry_ptr = self.builder.ins().func_addr(types::I64, entry_ref);
         let env_addr = self.builder.ins().stack_addr(types::I64, env, 0);
         let env_len = self
             .builder
@@ -1337,7 +1568,14 @@ impl CompilationUnit<'_, '_> {
             .iconst(types::I8, bundle.args.variadic as i64);
         assert_eq!(std::mem::size_of::<bool>(), 1);
 
-        let mut args = vec![func_ptr, env_addr, env_len, num_required, is_variadic];
+        let mut args = vec![
+            func_ptr,
+            entry_ptr,
+            env_addr,
+            env_len,
+            num_required,
+            is_variadic,
+        ];
 
         if bundle.args.continuation.is_some() {
             args.push(if let Some(ref loc) = bundle.loc {
@@ -1357,8 +1595,7 @@ impl CompilationUnit<'_, '_> {
                 .declare_func_in_func(self.runtime_funcs.make_user, self.builder.func);
             let call = self.builder.ins().call(make_user, &args);
             let proc = self.builder.inst_results(call)[0];
-            self.rebinds.rebind(bundle.val, IrValue::Value(proc));
-            self.push_alloc(proc);
+            self.live.bind(bundle.val, IrValue::Owned(proc));
         } else {
             args.push(self.get_barrier());
             let push_cont = self
@@ -1374,7 +1611,7 @@ impl CompilationUnit<'_, '_> {
             return;
         }
 
-        let IrValue::Value(proc) = self.rebinds.fetch_bind(&bundle.val) else {
+        let (IrValue::Ref(proc) | IrValue::Owned(proc)) = self.live.fetch(&bundle.val) else {
             unreachable!();
         };
 
@@ -1386,7 +1623,7 @@ impl CompilationUnit<'_, '_> {
             if !fix_vals.contains(env_var) {
                 continue;
             }
-            let IrValue::Value(target) = self.rebinds.fetch_bind(env_var) else {
+            let (IrValue::Ref(target) | IrValue::Owned(target)) = self.live.fetch(env_var) else {
                 unreachable!();
             };
             let target = *target;
@@ -1402,7 +1639,7 @@ impl CompilationUnit<'_, '_> {
             return;
         }
 
-        let IrValue::Value(proc) = self.rebinds.fetch_bind(&bundle.val) else {
+        let (IrValue::Ref(proc) | IrValue::Owned(proc)) = self.live.fetch(&bundle.val) else {
             unreachable!();
         };
 
@@ -1416,6 +1653,7 @@ impl CompilationUnit<'_, '_> {
 
 pub struct ProcedureBundle {
     func_id: FuncId,
+    rust_entry_id: FuncId,
     val: Local,
     env: Vec<Local>,
     args: LambdaArgs,
@@ -1423,16 +1661,40 @@ pub struct ProcedureBundle {
     loc: Option<Span>,
 }
 
-const ENV_PARAM: usize = 0;
-const ARGS_PARAM: usize = 1;
-const CONT_BARRIER_PARAM: usize = 2;
-const OUT_PARAM: usize = 3;
+const NUM_ARG_SLOTS: usize = crate::proc::MAX_DIRECT_ARGS + 1;
 
-fn make_sig(sig: &mut Signature) {
-    sig.params.push(AbiParam::new(types::I64)); // Env
-    sig.params.push(AbiParam::new(types::I64)); // Args
+const PROC_PARAM: usize = 0;
+const USER_ARG1_PARAM: usize = PROC_PARAM + 1;
+const USER_BARRIER_PARAM: usize = USER_ARG1_PARAM + NUM_ARG_SLOTS;
+const USER_OUT_PARAM: usize = USER_BARRIER_PARAM + 1;
+
+fn user_sig() -> Signature {
+    let mut sig = Signature::new(CallConv::Tail);
+    sig.params.push(AbiParam::new(types::I64)); // Owned procedure value
+    sig.params
+        .extend((0..NUM_ARG_SLOTS).map(|_| AbiParam::new(types::I64))); // Arg1..Arg4, Argn
     sig.params.push(AbiParam::new(types::I64)); // ContBarrier
     sig.params.push(AbiParam::new(types::I64)); // Application out-pointer
+    sig
+}
+
+const CONT_ARG1_PARAM: usize = 0;
+const CONT_BARRIER_PARAM: usize = CONT_ARG1_PARAM + NUM_ARG_SLOTS;
+const CONT_OUT_PARAM: usize = CONT_BARRIER_PARAM + 1;
+
+fn cont_sig() -> Signature {
+    let mut sig = Signature::new(CallConv::Tail);
+    sig.params
+        .extend((0..NUM_ARG_SLOTS).map(|_| AbiParam::new(types::I64))); // Arg1..Arg4, Argn
+    sig.params.push(AbiParam::new(types::I64)); // ContBarrier
+    sig.params.push(AbiParam::new(types::I64)); // Application out-pointer
+    sig
+}
+
+fn rust_entry_sig(module: &JITModule, body: &Signature) -> Signature {
+    let mut sig = module.make_signature();
+    sig.params = body.params.clone();
+    sig
 }
 
 impl ProcedureBundle {
@@ -1443,17 +1705,19 @@ impl ProcedureBundle {
         body: Cps,
         loc: Option<Span>,
         continuations: &HashSet<Local>,
-        free_vars_cache: &mut FreeVariables,
+        free_vars: &FreeVariables,
         module: &mut JITModule,
     ) -> Self {
-        let mut sig = module.make_signature();
-        make_sig(&mut sig);
+        let sig = Self::sig(&args);
         let func_id = module
             .declare_anonymous_function(&sig)
             .expect("Could not declare function");
+        let rust_entry_id = module
+            .declare_anonymous_function(&rust_entry_sig(module, &sig))
+            .expect("Could not declare function");
 
-        let env = free_vars_cache
-            .find_free_vars(&body)
+        let env = free_vars
+            .free_in(body.local)
             .difference(&args.iter().cloned().collect::<HashSet<_>>())
             .cloned()
             .filter(|var| !continuations.contains(var))
@@ -1461,11 +1725,27 @@ impl ProcedureBundle {
 
         Self {
             func_id,
+            rust_entry_id,
             val,
             env,
             args,
             body,
             loc,
+        }
+    }
+
+    /// A lambda with a continuation parameter is a user function; one
+    /// without is a continuation.
+    fn is_user(args: &LambdaArgs) -> bool {
+        args.continuation.is_some()
+    }
+
+    /// The signature of the generated function.
+    fn sig(args: &LambdaArgs) -> Signature {
+        if Self::is_user(args) {
+            user_sig()
+        } else {
+            cont_sig()
         }
     }
 
@@ -1475,27 +1755,26 @@ impl ProcedureBundle {
         runtime_funcs: &RuntimeFunctions,
         cells: &HashSet<Local>,
         escaping: &Escaping,
+        liveness: &Liveness,
         continuations: &mut HashSet<Local>,
-        free_vars: &mut FreeVariables,
+        free_vars: &FreeVariables,
         module: &mut JITModule,
         debug_info: &mut DebugInfo,
         deferred_procs: &mut Vec<Self>,
     ) {
         let mut builder_context = FunctionBuilderContext::new();
         let mut ctx = module.make_context();
-        make_sig(&mut ctx.func.signature);
+        let is_user = Self::is_user(&self.args);
+        ctx.func.signature = Self::sig(&self.args);
+
+        let (arg1_param, barrier_param, out_param) = if is_user {
+            (USER_ARG1_PARAM, USER_BARRIER_PARAM, USER_OUT_PARAM)
+        } else {
+            (CONT_ARG1_PARAM, CONT_BARRIER_PARAM, CONT_OUT_PARAM)
+        };
+
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_context);
-
-        let mut allocs_at_local_conts = HashMap::default();
-        let max_allocs = self
-            .body
-            .max_allocs(0, escaping, &mut allocs_at_local_conts);
-
-        let allocs = builder.create_sized_stack_slot(StackSlotData::new(
-            StackSlotKind::ExplicitSlot,
-            max_allocs as u32 * 8,
-            0,
-        ));
+        let mut live = LiveValues::new();
 
         let entry_block = builder.create_block();
         builder.append_block_params_for_function_params(entry_block);
@@ -1504,46 +1783,319 @@ impl ProcedureBundle {
 
         let params = {
             let block_params = builder.block_params(entry_block);
-            [block_params[CONT_BARRIER_PARAM], block_params[OUT_PARAM]]
+            [block_params[barrier_param], block_params[out_param]]
         };
 
-        let mut rebinds = Rebinds::new();
-
         // Load environment:
-        let env_param = builder.block_params(entry_block)[ENV_PARAM];
-        for (i, env_var) in self.env.into_iter().enumerate() {
-            let var = builder
-                .ins()
-                .load(types::I64, MemFlags::new(), env_param, (i * 8) as i32);
-            let var = if cells.contains(&env_var) {
-                IrValue::Cell(var)
-            } else {
-                IrValue::Value(var)
-            };
-            rebinds.rebind(env_var, var);
-        }
+        let proc_local = if is_user {
+            // Load the environment from the self (proc) parameter:
+            let proc = builder.block_params(entry_block)[PROC_PARAM];
+            let proc = builder.ins().bor_imm_s(proc, Tag::Procedure as i64);
+            let proc_local = Local::gensym();
+            live.bind(proc_local, IrValue::Owned(proc));
+            if !self.env.is_empty() {
+                let proc_env = module.declare_func_in_func(runtime_funcs.proc_env, builder.func);
+                let call = builder.ins().call(proc_env, &[proc]);
+                let env_ptr = builder.inst_results(call)[0];
+                for (i, env_var) in self.env.iter().enumerate() {
+                    let var = builder.ins().load(
+                        types::I64,
+                        MemFlagsData::new(),
+                        env_ptr,
+                        (i * 8) as i32,
+                    );
+                    let var = if cells.contains(env_var) {
+                        IrValue::Cell(var)
+                    } else {
+                        IrValue::Ref(var)
+                    };
+                    live.bind(*env_var, var);
+                }
+            }
 
-        // Load args. The continuation is passed as a separate parameter (see
-        // below), so only the regular arguments live in the args array.
-        let args_param = builder.block_params(entry_block)[ARGS_PARAM];
-        for (i, arg) in self.args.args.iter().enumerate() {
-            let var = builder
-                .ins()
-                .load(types::I64, MemFlags::new(), args_param, (i * 8) as i32);
-            rebinds.rebind(*arg, IrValue::Value(var));
+            Some(proc_local)
+        } else {
+            // Load the environment by repeatedly calling pop_env:
+            let pop_env = module.declare_func_in_func(runtime_funcs.pop_env, builder.func);
+            let mut vals = Vec::with_capacity(self.env.len());
+            for _ in 0..self.env.len() {
+                let call = builder.ins().call(pop_env, &[params[0]]);
+                vals.push(builder.inst_results(call)[0]);
+            }
+            for (env_var, var) in self.env.iter().zip(vals.into_iter().rev()) {
+                let var = if cells.contains(env_var) {
+                    IrValue::Cell(var)
+                } else {
+                    IrValue::Owned(var)
+                };
+                live.bind(*env_var, var);
+            }
+
+            None
+        };
+
+        // Function prologue: check and unpack the arguments
+        let arg_slots: [Value; NUM_ARG_SLOTS] = {
+            let block_params = builder.block_params(entry_block);
+            std::array::from_fn(|i| block_params[arg1_param + i])
+        };
+
+        let num_required = self.args.num_required();
+        let variadic = self.args.variadic;
+
+        if num_required <= crate::proc::MAX_DIRECT_ARGS {
+            // Fast path: no argument touches the argn list.
+            let mut err_block: Option<Block> = None;
+            let mut check = |cond: Value, builder: &mut FunctionBuilder| {
+                let err = *err_block.get_or_insert_with(|| builder.create_block());
+                let ok = builder.create_block();
+                builder.ins().brif(cond, ok, &[], err, &[]);
+                builder.switch_to_block(ok);
+                builder.seal_block(ok);
+            };
+
+            for slot in arg_slots.iter().take(num_required) {
+                let defined =
+                    builder
+                        .ins()
+                        .icmp_imm_s(IntCC::NotEqual, *slot, UNDEFINED_VALUE as i64);
+                check(defined, &mut builder);
+            }
+
+            if !variadic {
+                let no_extra = if num_required < crate::proc::MAX_DIRECT_ARGS {
+                    builder.ins().icmp_imm_s(
+                        IntCC::Equal,
+                        arg_slots[num_required],
+                        UNDEFINED_VALUE as i64,
+                    )
+                } else {
+                    builder.ins().icmp_imm_s(
+                        IntCC::Equal,
+                        arg_slots[crate::proc::MAX_DIRECT_ARGS],
+                        NULL_VALUE as i64,
+                    )
+                };
+                check(no_extra, &mut builder);
+            }
+
+            if let Some(err_block) = err_block {
+                let ok_block = builder.current_block().unwrap();
+                builder.switch_to_block(err_block);
+                builder.seal_block(err_block);
+                builder.set_cold_block(err_block);
+                let dropv = module.declare_func_in_func(runtime_funcs.dropv, builder.func);
+                for (_, val) in live.owned() {
+                    builder.ins().call(dropv, &[val]);
+                }
+                let num_required_v = builder.ins().iconst(types::I32, num_required as i64);
+                let raise_wrong_num_args =
+                    module.declare_func_in_func(runtime_funcs.raise_wrong_num_args, builder.func);
+                builder.ins().call(
+                    raise_wrong_num_args,
+                    &[
+                        arg_slots[0],
+                        arg_slots[1],
+                        arg_slots[2],
+                        arg_slots[3],
+                        arg_slots[4],
+                        num_required_v,
+                        params[0],
+                        params[1],
+                    ],
+                );
+                builder.ins().return_(&[]);
+
+                builder.switch_to_block(ok_block);
+            }
+
+            for (i, arg) in self.args.args.iter().take(num_required).enumerate() {
+                live.bind(*arg, IrValue::Owned(arg_slots[i]));
+            }
+
+            if variadic {
+                // Collect the rest args into a list:
+                let cons = module.declare_func_in_func(runtime_funcs.cons, builder.func);
+                let dropv = module.declare_func_in_func(runtime_funcs.dropv, builder.func);
+
+                let mut rest = arg_slots[crate::proc::MAX_DIRECT_ARGS];
+                for i in (num_required..crate::proc::MAX_DIRECT_ARGS).rev() {
+                    let slot = arg_slots[i];
+                    let is_undef =
+                        builder
+                            .ins()
+                            .icmp_imm_s(IntCC::Equal, slot, UNDEFINED_VALUE as i64);
+                    let cons_block = builder.create_block();
+                    let cont_block = builder.create_block();
+                    builder.append_block_param(cont_block, types::I64);
+                    builder.ins().brif(
+                        is_undef,
+                        cont_block,
+                        &[BlockArg::Value(rest)],
+                        cons_block,
+                        &[],
+                    );
+
+                    builder.switch_to_block(cons_block);
+                    builder.seal_block(cons_block);
+                    let call = builder.ins().call(cons, &[slot, rest]);
+                    let consed = builder.inst_results(call)[0];
+                    builder.ins().call(dropv, &[slot]);
+                    builder.ins().call(dropv, &[rest]);
+                    builder.ins().jump(cont_block, &[BlockArg::Value(consed)]);
+
+                    builder.switch_to_block(cont_block);
+                    builder.seal_block(cont_block);
+                    rest = builder.block_params(cont_block)[0];
+                }
+
+                live.bind(self.args.args[num_required], IrValue::Owned(rest));
+            }
+        } else {
+            // Slow path: some required arguments live in the argn list.
+            // TODO: car/cdr functions that do not error.
+            let car = module.declare_func_in_func(runtime_funcs.car, builder.func);
+            let cdr = module.declare_func_in_func(runtime_funcs.cdr, builder.func);
+            let clonev = module.declare_func_in_func(runtime_funcs.clonev, builder.func);
+            let dropv = module.declare_func_in_func(runtime_funcs.dropv, builder.func);
+
+            let scratch_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                8,
+                0,
+            ));
+            let scratch_addr = builder.ins().stack_addr(types::I64, scratch_slot, 0);
+
+            let raise_block = builder.create_block();
+
+            // Check every direct slot for undefined:
+            for slot in arg_slots.iter().take(crate::proc::MAX_DIRECT_ARGS) {
+                let defined =
+                    builder
+                        .ins()
+                        .icmp_imm_s(IntCC::NotEqual, *slot, UNDEFINED_VALUE as i64);
+                let ok_block = builder.create_block();
+                builder.ins().brif(defined, ok_block, &[], raise_block, &[]);
+                builder.switch_to_block(ok_block);
+                builder.seal_block(ok_block);
+            }
+
+            // Extract the required arguments from the argn list
+            let argn = arg_slots[crate::proc::MAX_DIRECT_ARGS];
+            let mut extracted = Vec::new();
+            let clone_call = builder.ins().call(clonev, &[argn]);
+            let mut cur = builder.inst_results(clone_call)[0];
+            for _ in crate::proc::MAX_DIRECT_ARGS..num_required {
+                let is_null = builder
+                    .ins()
+                    .icmp_imm_s(IntCC::Equal, cur, NULL_VALUE as i64);
+                let err_block = builder.create_block();
+                let cont_block = builder.create_block();
+                builder.ins().brif(is_null, err_block, &[], cont_block, &[]);
+
+                // Too few arguments: drop the values extracted so far.
+                builder.switch_to_block(err_block);
+                builder.seal_block(err_block);
+                builder.set_cold_block(err_block);
+                for val in &extracted {
+                    builder.ins().call(dropv, &[*val]);
+                }
+                builder.ins().jump(raise_block, &[]);
+
+                builder.switch_to_block(cont_block);
+                builder.seal_block(cont_block);
+                let call = builder.ins().call(car, &[cur, scratch_addr]);
+                extracted.push(builder.inst_results(call)[0]);
+                let call = builder.ins().call(cdr, &[cur, scratch_addr]);
+                let next = builder.inst_results(call)[0];
+                builder.ins().call(dropv, &[cur]);
+                cur = next;
+            }
+
+            let rest = if variadic {
+                // The remainder of the list is the rest argument.
+                Some(cur)
+            } else {
+                // The list must be exhausted if the function is not variadic
+                let is_null = builder
+                    .ins()
+                    .icmp_imm_s(IntCC::Equal, cur, NULL_VALUE as i64);
+                let err_block = builder.create_block();
+                let done_block = builder.create_block();
+                builder.ins().brif(is_null, done_block, &[], err_block, &[]);
+
+                // Too many arguments: drop the rest of the list and the
+                // extracted values, and raise.
+                builder.switch_to_block(err_block);
+                builder.seal_block(err_block);
+                builder.set_cold_block(err_block);
+                builder.ins().call(dropv, &[cur]);
+                for val in &extracted {
+                    builder.ins().call(dropv, &[*val]);
+                }
+                builder.ins().jump(raise_block, &[]);
+
+                builder.switch_to_block(done_block);
+                builder.seal_block(done_block);
+                None
+            };
+
+            let body_block = builder.create_block();
+            builder.ins().jump(body_block, &[]);
+
+            builder.switch_to_block(raise_block);
+            builder.seal_block(raise_block);
+            builder.set_cold_block(raise_block);
+            for (_, val) in live.owned() {
+                builder.ins().call(dropv, &[val]);
+            }
+            let num_required_v = builder.ins().iconst(types::I32, num_required as i64);
+            let raise_wrong_num_args =
+                module.declare_func_in_func(runtime_funcs.raise_wrong_num_args, builder.func);
+            builder.ins().call(
+                raise_wrong_num_args,
+                &[
+                    arg_slots[0],
+                    arg_slots[1],
+                    arg_slots[2],
+                    arg_slots[3],
+                    arg_slots[4],
+                    num_required_v,
+                    params[0],
+                    params[1],
+                ],
+            );
+            builder.ins().return_(&[]);
+
+            builder.switch_to_block(body_block);
+            builder.seal_block(body_block);
+
+            // Everything extracted is a clone; release the original list.
+            builder.ins().call(dropv, &[argn]);
+
+            for (i, arg) in self.args.args.iter().enumerate() {
+                let var = if i < crate::proc::MAX_DIRECT_ARGS {
+                    arg_slots[i]
+                } else if i < num_required {
+                    extracted[i - crate::proc::MAX_DIRECT_ARGS]
+                } else {
+                    rest.unwrap()
+                };
+                live.bind(*arg, IrValue::Owned(var));
+            }
         }
 
         continuations.extend(self.args.continuation);
 
         let mut cu = CompilationUnit {
             builder,
-            rebinds,
-            allocs,
-            curr_allocs: 0,
+            live,
             continuations,
-            allocs_at_local_cont: &allocs_at_local_conts,
+            local_cont_scopes: HashMap::default(),
             local_cont_blocks: HashMap::default(),
             escaping,
+            liveness,
+            proc_local,
             runtime_funcs,
             params,
             module,
@@ -1563,9 +2115,10 @@ impl ProcedureBundle {
             cu.builder.seal_block(*block);
         }
 
-        cu.builder.finalize();
+        cu.builder.finalize(module.target_config());
 
         module.define_function(self.func_id, &mut ctx).unwrap();
         module.clear_context(&mut ctx);
+        rust_entry_codegen(module, self.func_id, self.rust_entry_id);
     }
 }

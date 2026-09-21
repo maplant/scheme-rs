@@ -188,7 +188,7 @@ impl Syntax {
             Self::List { mut list, .. } => {
                 let mut cdr = Self::unwrap(list.pop().unwrap());
                 for car in list.into_iter().map(Self::unwrap).rev() {
-                    cdr = Value::from((car, cdr));
+                    cdr = Value::cons(car, cdr);
                 }
                 cdr
             }
@@ -253,7 +253,7 @@ impl Syntax {
         match value.unpack() {
             UnpackedValue::Pair(pair) => {
                 let (car, cdr) = pair.into();
-                Value::from((Self::syntax_to_datum(car), Self::syntax_to_datum(cdr)))
+                Value::cons(Self::syntax_to_datum(car), Self::syntax_to_datum(cdr))
             }
             UnpackedValue::Record(rec) if let Some(vec) = rec.cast::<VectorInner<Value>>() => {
                 Value::from(
@@ -665,38 +665,42 @@ impl TryFrom<&Value> for Identifier {
     }
 }
 
+impl TryFrom<Value> for Identifier {
+    type Error = Exception;
+
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        Self::try_from(&value)
+    }
+}
+
 #[bridge(name = "syntax->datum", lib = "(rnrs syntax-case builtins (6))")]
-pub fn syntax_to_datum(value: &Value) -> Result<Vec<Value>, Exception> {
+pub fn syntax_to_datum(value: Value) -> Value {
     // This is quite slow and could be improved
-    Ok(vec![Syntax::syntax_to_datum(value.clone())])
+    Syntax::syntax_to_datum(value)
 }
 
 #[bridge(name = "datum->syntax", lib = "(rnrs syntax-case builtins (6))")]
-pub fn datum_to_syntax(template_id: Identifier, datum: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(Syntax::datum_to_syntax(
-        &template_id.scopes,
-        datum.clone(),
-        &Span::default(),
-    ))])
+pub fn datum_to_syntax(template_id: Identifier, datum: Value) -> Syntax {
+    Syntax::datum_to_syntax(&template_id.scopes, datum, &Span::default())
 }
 
 #[bridge(name = "identifier?", lib = "(rnrs syntax-case builtins (6))")]
-pub fn identifier_pred(obj: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(obj.cast::<Identifier>().is_some())])
+pub fn identifier_pred(obj: Value) -> bool {
+    obj.cast::<Identifier>().is_some()
 }
 
 #[bridge(name = "bound-identifier=?", lib = "(rnrs syntax-case builtins (6))")]
-pub fn bound_identifier_eq_pred(id1: Identifier, id2: Identifier) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(id1 == id2)])
+pub fn bound_identifier_eq_pred(id1: Identifier, id2: Identifier) -> bool {
+    id1 == id2
 }
 
 #[bridge(name = "free-identifier=?", lib = "(rnrs syntax-case builtins (6))")]
-pub fn free_identifier_eq_pred(id1: Identifier, id2: Identifier) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(id1.free_identifier_equal(&id2))])
+pub fn free_identifier_eq_pred(id1: Identifier, id2: Identifier) -> bool {
+    id1.free_identifier_equal(&id2)
 }
 
 #[bridge(name = "generate-temporaries", lib = "(rnrs syntax-case builtins (6))")]
-pub fn generate_temporaries(list: &Value) -> Result<Vec<Value>, Exception> {
+pub fn generate_temporaries(list: Value) -> Result<Value, Exception> {
     let length = if let Syntax::List { list, .. } = Syntax::wrap(list.clone(), &Span::default())
         && list.last().unwrap().is_null()
     {
@@ -714,24 +718,19 @@ pub fn generate_temporaries(list: &Value) -> Result<Vec<Value>, Exception> {
             },
             span: Span::default(),
         };
-        temporaries = Value::from((Value::from(ident), temporaries));
+        temporaries = Value::cons(Value::from(ident), temporaries);
     }
 
-    Ok(vec![temporaries])
+    Ok(temporaries)
 }
 
 #[bridge(name = "syntax-violation", lib = "(rnrs base builtins (6))")]
 pub fn syntax_violation(
-    who: &Value,
-    message: &Value,
-    form: &Value,
-    subform: &[Value],
-) -> Result<Vec<Value>, Exception> {
-    let subform = match subform {
-        [] => None,
-        [subform] => Some(subform.clone()),
-        _ => return Err(Exception::wrong_num_of_var_args(3..4, 3 + subform.len())),
-    };
+    who: Value,
+    message: Value,
+    form: Value,
+    subform: Option<Value>,
+) -> Result<(), Exception> {
     let mut conditions = Vec::new();
     if who.is_true() {
         conditions.push(Value::from(Who::new(who.clone())));

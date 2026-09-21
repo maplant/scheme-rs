@@ -39,8 +39,8 @@ impl Cps {
         dominators: &Dominators,
         scope: &Scope<'_>,
     ) {
-        match self {
-            Cps::Fix(bindings, cexpr) => {
+        match &mut self.inst {
+            Inst::Fix(bindings, cexpr) => {
                 let fix_scope = Scope {
                     up: Some(scope),
                     curr: bindings.iter().map(|binding| binding.val).collect(),
@@ -71,22 +71,22 @@ impl Cps {
 
                 cexpr.flip_in_place_contifiables(escaping, dominators, &fix_scope);
             }
-            Cps::If(_, succ, fail) => {
+            Inst::If(_, succ, fail) => {
                 succ.flip_in_place_contifiables(escaping, dominators, scope);
                 fail.flip_in_place_contifiables(escaping, dominators, scope);
             }
-            Cps::PrimOp(_, _, _, cexpr) => {
+            Inst::PrimOp(_, _, _, cexpr) => {
                 cexpr.flip_in_place_contifiables(escaping, dominators, scope)
             }
-            Cps::App(op, args)
+            Inst::App(op, args)
                 if let Some(local) = op.to_local()
                     && !escaping.contains(local)
                     && matches!(dominators.idoms.get(&local), Some(ReturnNode::Lambda(_))) =>
             {
                 args.remove(0);
             }
-            Cps::App(_, _) => (),
-            Cps::Halt(_) => (),
+            Inst::App(_, _) => (),
+            Inst::Halt(_) => (),
         }
     }
 
@@ -96,8 +96,9 @@ impl Cps {
         dominators: &Dominators,
         places: &mut HashMap<Local, Vec<LambdaBinding>>,
     ) -> Cps {
-        match self {
-            Cps::Fix(bindings, cexpr) => {
+        let Cps { inst, local } = self;
+        match inst {
+            Inst::Fix(bindings, cexpr) => {
                 let bindings = bindings
                     .into_iter()
                     .filter_map(|mut binding| {
@@ -120,21 +121,27 @@ impl Cps {
                 if bindings.is_empty() {
                     cexpr
                 } else {
-                    Cps::Fix(bindings, Box::new(cexpr))
+                    Cps::with_local(Inst::Fix(bindings, Box::new(cexpr)), local)
                 }
             }
-            Cps::If(cond, succ, fail) => Cps::If(
-                cond,
-                Box::new(succ.collect_relocatable_contifiables(escaping, dominators, places)),
-                Box::new(fail.collect_relocatable_contifiables(escaping, dominators, places)),
+            Inst::If(cond, succ, fail) => Cps::with_local(
+                Inst::If(
+                    cond,
+                    Box::new(succ.collect_relocatable_contifiables(escaping, dominators, places)),
+                    Box::new(fail.collect_relocatable_contifiables(escaping, dominators, places)),
+                ),
+                local,
             ),
-            Cps::PrimOp(op, args, res, cexpr) => Cps::PrimOp(
-                op,
-                args,
-                res,
-                Box::new(cexpr.collect_relocatable_contifiables(escaping, dominators, places)),
+            Inst::PrimOp(op, args, res, cexpr) => Cps::with_local(
+                Inst::PrimOp(
+                    op,
+                    args,
+                    res,
+                    Box::new(cexpr.collect_relocatable_contifiables(escaping, dominators, places)),
+                ),
+                local,
             ),
-            cexpr => cexpr,
+            inst => Cps::with_local(inst, local),
         }
     }
 
@@ -144,8 +151,8 @@ impl Cps {
         dominators: &Dominators,
         places: &mut HashMap<Local, Vec<LambdaBinding>>,
     ) {
-        match self {
-            Cps::Fix(bindings, cexpr) => {
+        match &mut self.inst {
+            Inst::Fix(bindings, cexpr) => {
                 let mut new_bindings = vec![];
                 for binding in bindings.iter_mut() {
                     binding
@@ -158,7 +165,7 @@ impl Cps {
                         if binding.is_func() {
                             binding
                                 .body
-                                .update_term(|body| Cps::Fix(funcs, Box::new(body)));
+                                .update_term(|body| Cps::new(Inst::Fix(funcs, Box::new(body))));
                         } else {
                             new_bindings.extend(funcs);
                         }
@@ -167,13 +174,15 @@ impl Cps {
                 bindings.extend(new_bindings);
                 cexpr.relocate_and_contify(escaping, dominators, places);
             }
-            Cps::If(_, succ, fail) => {
+            Inst::If(_, succ, fail) => {
                 succ.relocate_and_contify(escaping, dominators, places);
                 fail.relocate_and_contify(escaping, dominators, places);
             }
-            Cps::PrimOp(_, _, _, cexpr) => cexpr.relocate_and_contify(escaping, dominators, places),
-            Cps::App(_, _) => (),
-            Cps::Halt(_) => (),
+            Inst::PrimOp(_, _, _, cexpr) => {
+                cexpr.relocate_and_contify(escaping, dominators, places)
+            }
+            Inst::App(_, _) => (),
+            Inst::Halt(_) => (),
         }
     }
 }
@@ -200,7 +209,7 @@ impl LambdaBinding {
                 func.contify(escaping, dominators, to_place);
             }
             self.body
-                .update_term(|body| Cps::Fix(funcs, Box::new(body)));
+                .update_term(|body| Cps::new(Inst::Fix(funcs, Box::new(body))));
         }
     }
 }
@@ -378,8 +387,8 @@ impl ReturnGraph {
         bindings: &HashMap<Local, &LambdaBinding>,
         cont_owners: &HashMap<Local, Local>,
     ) {
-        match cps {
-            Cps::App(operator, args) => {
+        match &cps.inst {
+            Inst::App(operator, args) => {
                 if let Some(func) = lookup_value(operator, bindings)
                     && func.is_func()
                 {
@@ -387,22 +396,22 @@ impl ReturnGraph {
                 }
                 self.collect_escaping(args, bindings);
             }
-            Cps::PrimOp(_, args, _, cexpr) => {
+            Inst::PrimOp(_, args, _, cexpr) => {
                 self.collect_escaping(args, bindings);
                 self.collect_returns(cexpr, bindings, cont_owners);
             }
-            Cps::If(cond, succ, fail) => {
+            Inst::If(cond, succ, fail) => {
                 self.collect_escaping(slice::from_ref(cond), bindings);
                 self.collect_returns(succ, bindings, cont_owners);
                 self.collect_returns(fail, bindings, cont_owners);
             }
-            Cps::Fix(fix_bindings, cexpr) => {
+            Inst::Fix(fix_bindings, cexpr) => {
                 for binding in fix_bindings {
                     self.collect_returns(&binding.body, bindings, cont_owners);
                 }
                 self.collect_returns(cexpr, bindings, cont_owners);
             }
-            Cps::Halt(val) => self.collect_escaping(slice::from_ref(val), bindings),
+            Inst::Halt(val) => self.collect_escaping(slice::from_ref(val), bindings),
         }
     }
 
@@ -451,21 +460,21 @@ fn lookup_value<'a>(
 
 impl Cps {
     pub(super) fn collect_bindings<'a>(&'a self, bindings: &mut HashMap<Local, &'a LambdaBinding>) {
-        match self {
-            Cps::PrimOp(_, _, _, cexpr) => cexpr.collect_bindings(bindings),
-            Cps::If(_, succ, fail) => {
+        match &self.inst {
+            Inst::PrimOp(_, _, _, cexpr) => cexpr.collect_bindings(bindings),
+            Inst::If(_, succ, fail) => {
                 succ.collect_bindings(bindings);
                 fail.collect_bindings(bindings);
             }
-            Cps::Fix(fix_bindings, cexpr) => {
+            Inst::Fix(fix_bindings, cexpr) => {
                 for binding in fix_bindings {
                     bindings.insert(binding.val, binding);
                     binding.body.collect_bindings(bindings);
                 }
                 cexpr.collect_bindings(bindings);
             }
-            Cps::Halt(_) => (),
-            Cps::App(_, _) => (),
+            Inst::Halt(_) => (),
+            Inst::App(_, _) => (),
         }
     }
 }

@@ -11,12 +11,12 @@ use crate::{
     exceptions::{Exception, SourceCache, raise},
     gc::{Gc, GcInner, Trace, init_gc},
     hashtables::EqualHashSet,
-    lists::{Pair, list_to_vec},
+    lists::Pair,
     num,
     ports::{BufferMode, Port, Transcoder},
     proc::{
-        Application, ContBarrier, ContPtr, ContinuationPtr, FuncPtr, ProcDebugInfo, Procedure,
-        ProcedureInner, UserPtr,
+        Application, Args, ContBarrier, ContPtr, ContinuationPtr, FuncPtr, JitPtr, ProcDebugInfo,
+        Procedure, ProcedureInner, UserPtr,
     },
     registry::Registry,
     symbols::Symbol,
@@ -161,16 +161,17 @@ impl Runtime {
         let _ = maybe_await!(sender.send(task));
         let entry_cont = maybe_await!(recv_continuation(completion_rx));
         let mut barrier = ContBarrier::new();
-        let app = unsafe {
-            let mut app = std::mem::MaybeUninit::<Application>::uninit();
-            entry_cont(
-                std::ptr::null(),
-                std::ptr::null(),
-                &mut barrier as *mut ContBarrier<'_>,
-                &mut app,
-            );
-            app.assume_init()
-        };
+        let mut app = std::mem::MaybeUninit::<Application>::uninit();
+        entry_cont(
+            Value::undefined(),
+            Value::undefined(),
+            Value::undefined(),
+            Value::undefined(),
+            Value::null(),
+            &mut barrier,
+            &mut app,
+        );
+        let app = unsafe { app.assume_init() };
         maybe_await!(app.eval(&mut barrier))
     }
 
@@ -313,6 +314,8 @@ fn compilation_task(mut compilation_queue_rx: CompilationBufferRx) {
     flag_builder.set("use_colocated_libcalls", "false").unwrap();
     // FIXME set back to true once the x64 backend supports it.
     flag_builder.set("is_pic", "false").unwrap();
+    // Cranelift's tail call implementation requires frame pointers:
+    flag_builder.set("preserve_frame_pointers", "true").unwrap();
     let isa_builder = cranelift_native::builder().unwrap_or_else(|msg| {
         panic!("host machine is not supported: {msg}");
     });
@@ -418,13 +421,11 @@ unsafe extern "C" fn clonev(val: *const ()) -> *const () {
     unsafe { Value::into_raw(Value::from_raw_inc_rc(val)) }
 }
 
-/// Decrement the reference count of a value
+/// Drop a value, decrementing its reference count
 #[runtime_fn]
-unsafe extern "C" fn dropv(val: *const *const (), num_drops: u32) {
+unsafe extern "C" fn dropv(val: *const ()) {
     unsafe {
-        for i in 0..num_drops {
-            drop(Value::from_raw(val.add(i as usize).read()));
-        }
+        drop(Value::from_raw(val));
     }
 }
 
@@ -432,12 +433,23 @@ unsafe extern "C" fn dropv(val: *const *const (), num_drops: u32) {
 #[runtime_fn]
 unsafe extern "C" fn apply(
     op: *const (),
-    args: *const *const (),
-    num_args: u32,
+    arg1: *const (),
+    arg2: *const (),
+    arg3: *const (),
+    arg4: *const (),
+    argn: *const (),
     barrier: *mut ContBarrier,
     out: *mut MaybeUninit<Application>,
 ) {
     unsafe {
+        let args = Args([
+            Value::from_raw(arg1),
+            Value::from_raw(arg2),
+            Value::from_raw(arg3),
+            Value::from_raw(arg4),
+            Value::from_raw(argn),
+        ]);
+
         let op = match Value::from_raw_inc_rc(op).unpack() {
             UnpackedValue::Procedure(op) => op,
             x => {
@@ -450,11 +462,68 @@ unsafe extern "C" fn apply(
             }
         };
 
-        (*out).write(Application::new(
-            op,
-            (0..num_args)
-                .map(|i| Value::from_raw_inc_rc(args.add(i as usize).read()))
-                .collect(),
+        (*out).write(Application::new(op, args));
+    }
+}
+
+/// Return a pointer to a cranelift ABI function that can be tail-called, or a
+/// null ptr if it cannot.
+#[runtime_fn]
+unsafe extern "C" fn tail_callable(op: *const ()) -> *const u8 {
+    unsafe {
+        let op = ManuallyDrop::new(Value::from_raw(op));
+        if let UnpackedValue::Procedure(proc) = &*op.unpacked_ref()
+            && let FuncPtr::User(func, _) = proc.0.func
+        {
+            func.0
+        } else {
+            std::ptr::null()
+        }
+    }
+}
+
+/// Borrow the environment pointer of a procedure value.
+#[runtime_fn]
+unsafe extern "C" fn proc_env(proc: *const ()) -> *const Value {
+    unsafe {
+        let proc = ManuallyDrop::new(Value::from_raw(proc));
+        let UnpackedValue::Procedure(proc) = &*proc.unpacked_ref() else {
+            unreachable!("proc_env called with a non-procedure");
+        };
+        proc.0.env.as_ptr()
+    }
+}
+
+/// Pop the top environment value off the call stack.
+#[runtime_fn]
+unsafe extern "C" fn pop_env(barrier: *mut ContBarrier) -> *const () {
+    unsafe { Value::into_raw(barrier.as_mut().unwrap_unchecked().pop_env()) }
+}
+
+/// Raise a wrong number of arguments exception and drop the arguments
+#[runtime_fn]
+unsafe extern "C" fn raise_wrong_num_args(
+    arg1: *const (),
+    arg2: *const (),
+    arg3: *const (),
+    arg4: *const (),
+    argn: *const (),
+    num_required: u32,
+    barrier: *mut ContBarrier,
+    out: *mut MaybeUninit<Application>,
+) {
+    unsafe {
+        let args = Args([
+            Value::from_raw(arg1),
+            Value::from_raw(arg2),
+            Value::from_raw(arg3),
+            Value::from_raw(arg4),
+            Value::from_raw(argn),
+        ]);
+        let provided = args.len();
+        (*out).write(raise(
+            Exception::wrong_num_of_args(num_required as usize, provided).into(),
+            barrier.as_mut().unwrap_unchecked(),
         ));
     }
 }
@@ -509,11 +578,8 @@ unsafe extern "C" fn set_continuation_mark(
 #[runtime_fn]
 pub(crate) unsafe extern "C" fn halt(args: *const (), out: *mut MaybeUninit<Application>) {
     unsafe {
-        // We do not need to increment the rc here, it will be incremented in list_to_vec
         let args = ManuallyDrop::new(Value::from_raw(args));
-        let mut flattened = Vec::new();
-        list_to_vec(&args, &mut flattened);
-        (*out).write(Application::halt_ok(flattened));
+        (*out).write(Application::halt_ok(Args::from_list((*args).clone())));
     }
 }
 
@@ -575,6 +641,25 @@ unsafe extern "C" fn cons(car: *const (), cdr: *const ()) -> *const () {
     }
 }
 
+/// Return the arguments appended together as a list.
+#[runtime_fn]
+unsafe extern "C" fn append(vals: *const *const (), num_vals: u32) -> *const () {
+    unsafe fn append_raw(vals: *const *const (), num_vals: u32) -> Value {
+        unsafe {
+            if num_vals == 0 {
+                return Value::null();
+            }
+            let first = ManuallyDrop::new(Value::from_raw(vals.read()));
+            if num_vals == 1 {
+                return (*first).clone();
+            }
+            crate::lists::append_list(&first, append_raw(vals.add(1), num_vals - 1))
+        }
+    }
+
+    unsafe { Value::into_raw(append_raw(vals, num_vals)) }
+}
+
 /// Return the proper list of the arguments
 #[runtime_fn]
 unsafe extern "C" fn list(vals: *const *const (), num_vals: u32) -> *const () {
@@ -593,7 +678,8 @@ unsafe extern "C" fn list(vals: *const *const (), num_vals: u32) -> *const () {
 /// Allocate a continuation
 #[runtime_fn]
 unsafe extern "C" fn push_continuation(
-    fn_ptr: ContinuationPtr,
+    fn_ptr: *const u8,
+    entry: ContinuationPtr,
     env: *const *const (),
     num_envs: u32,
     num_required_args: u32,
@@ -602,38 +688,53 @@ unsafe extern "C" fn push_continuation(
 ) {
     unsafe {
         let barrier = barrier.as_mut().unwrap();
-        barrier.push_cont(
+        barrier.cont_stack.push(
+            ContPtr::JitCont(JitPtr(fn_ptr), entry),
             (0..num_envs).map(|i| Value::from_raw_inc_rc(env.add(i as usize).read())),
-            ContPtr::Continuation(fn_ptr),
             num_required_args as usize,
             variadic,
         );
     }
 }
 
-/// Call the current continuation
+/// Call the continuation at the top of the stack.
 #[runtime_fn]
 unsafe extern "C" fn call_continuation(
-    args: *const *const (),
-    num_args: u32,
-    barrier: *mut ContBarrier,
+    arg1: Value,
+    arg2: Value,
+    arg3: Value,
+    arg4: Value,
+    argn: Value,
+    barrier: *mut ContBarrier<'_>,
     out: *mut MaybeUninit<Application>,
 ) {
     unsafe {
         (*out).write(
-            barrier.as_mut().unwrap().call_cont(
-                (0..num_args)
-                    .map(|i| Value::from_raw_inc_rc(args.add(i as usize).read()))
-                    .collect(),
-            ),
+            barrier
+                .as_mut()
+                .unwrap()
+                .call_cont(Args([arg1, arg2, arg3, arg4, argn])),
         );
+    }
+}
+
+/// Pop the JIT continuation at the top of the stack, returning null if none exists.
+#[runtime_fn]
+unsafe extern "C" fn pop_jit_continuation(barrier: *mut ContBarrier) -> *const u8 {
+    unsafe {
+        barrier
+            .as_mut()
+            .unwrap()
+            .pop_jit_cont()
+            .map_or(std::ptr::null(), |func| func.as_ptr().cast_const())
     }
 }
 
 /// Allocate a user function
 #[runtime_fn]
 unsafe extern "C" fn make_user(
-    fn_ptr: UserPtr,
+    fn_ptr: *const u8,
+    entry: UserPtr,
     env: *const *const (),
     num_envs: u32,
     num_required_args: u32,
@@ -648,7 +749,7 @@ unsafe extern "C" fn make_user(
 
         let proc = Procedure(Gc::rooted(ProcedureInner::new(
             env,
-            FuncPtr::User(fn_ptr),
+            FuncPtr::User(JitPtr(fn_ptr), entry),
             num_required_args as usize,
             variadic,
             arc_from_ptr(debug_info),
@@ -697,7 +798,7 @@ unsafe extern "C" fn add(vals: *const *const (), num_vals: u32, error: *mut Valu
             // Can't easily wrap these in a ManuallyDrop, so we dec the rc.
             .map(|i| Value::from_raw_inc_rc(vals.add(i as usize).read()))
             .collect();
-        match num::add_prim(&vals) {
+        match num::add_prim(vals) {
             Ok(num) => Value::into_raw(Value::from(num)),
             Err(condition) => {
                 error.write(condition.into());
@@ -713,7 +814,7 @@ unsafe extern "C" fn sub(vals: *const *const (), num_vals: u32, error: *mut Valu
         let vals: Vec<_> = (0..num_vals)
             .map(|i| Value::from_raw_inc_rc(vals.add(i as usize).read()))
             .collect();
-        match num::sub_prim(&vals[0], &vals[1..]) {
+        match num::sub_prim(&vals[0], vals[1..].iter().cloned()) {
             Ok(num) => Value::into_raw(Value::from(num)),
             Err(condition) => {
                 error.write(condition.into());
@@ -740,7 +841,7 @@ unsafe extern "C" fn mul(vals: *const *const (), num_vals: u32, error: *mut Valu
         let vals: Vec<_> = (0..num_vals)
             .map(|i| Value::from_raw_inc_rc(vals.add(i as usize).read()))
             .collect();
-        match num::mul_prim(&vals) {
+        match num::mul_prim(vals) {
             Ok(num) => Value::into_raw(Value::from(num)),
             Err(condition) => {
                 error.write(condition.into());
@@ -756,7 +857,7 @@ unsafe extern "C" fn div(vals: *const *const (), num_vals: u32, error: *mut Valu
         let vals: Vec<_> = (0..num_vals)
             .map(|i| Value::from_raw_inc_rc(vals.add(i as usize).read()))
             .collect();
-        match num::div_prim(&vals[0], &vals[1..]) {
+        match num::div_prim(&vals[0], vals[1..].iter().cloned()) {
             Ok(num) => Value::into_raw(Value::from(num)),
             Err(condition) => {
                 error.write(condition.into());
@@ -778,7 +879,7 @@ macro_rules! define_comparison_fn {
                 let vals: Vec<_> = (0..num_vals)
                     .map(|i| Value::from_raw_inc_rc(vals.add(i as usize).read()))
                     .collect();
-                match num::$prim(&vals) {
+                match num::$prim(vals) {
                     Ok(res) => Value::into_raw(Value::from(res)),
                     Err(condition) => {
                         error.write(condition.into());
@@ -795,136 +896,3 @@ define_comparison_fn!(greater, greater_prim);
 define_comparison_fn!(greater_equal, greater_equal_prim);
 define_comparison_fn!(lesser, lesser_prim);
 define_comparison_fn!(lesser_equal, lesser_equal_prim);
-
-#[runtime_fn]
-unsafe extern "C" fn call_known_1x0(func: usize, arg1: *const (), error: *mut Value) -> *const () {
-    unsafe {
-        let func: fn(&Value) -> Result<(), Exception> = std::mem::transmute(func);
-        let arg1 = ManuallyDrop::new(Value::from_raw(arg1));
-        match (func)(&arg1) {
-            Ok(()) => Value::into_raw(Value::from(true)),
-            Err(condition) => {
-                error.write(condition.into());
-                Value::into_raw(Value::undefined())
-            }
-        }
-    }
-}
-
-#[runtime_fn]
-unsafe extern "C" fn call_known_2x0(
-    func: usize,
-    arg1: *const (),
-    arg2: *const (),
-    error: *mut Value,
-) -> *const () {
-    unsafe {
-        let func: fn(&Value, &Value) -> Result<(), Exception> = std::mem::transmute(func);
-        let arg1 = ManuallyDrop::new(Value::from_raw(arg1));
-        let arg2 = ManuallyDrop::new(Value::from_raw(arg2));
-        match (func)(&arg1, &arg2) {
-            Ok(()) => Value::into_raw(Value::from(true)),
-            Err(condition) => {
-                error.write(condition.into());
-                Value::into_raw(Value::undefined())
-            }
-        }
-    }
-}
-
-#[runtime_fn]
-unsafe extern "C" fn call_known_3x0(
-    func: usize,
-    arg1: *const (),
-    arg2: *const (),
-    arg3: *const (),
-    error: *mut Value,
-) -> *const () {
-    unsafe {
-        let func: fn(&Value, &Value, &Value) -> Result<(), Exception> = std::mem::transmute(func);
-        let arg1 = ManuallyDrop::new(Value::from_raw(arg1));
-        let arg2 = ManuallyDrop::new(Value::from_raw(arg2));
-        let arg3 = ManuallyDrop::new(Value::from_raw(arg3));
-        match (func)(&arg1, &arg2, &arg3) {
-            Ok(()) => Value::into_raw(Value::from(true)),
-            Err(condition) => {
-                error.write(condition.into());
-                Value::into_raw(Value::undefined())
-            }
-        }
-    }
-}
-
-#[runtime_fn]
-unsafe extern "C" fn call_known_0x1(func: usize, error: *mut Value) -> *const () {
-    unsafe {
-        let func: fn() -> Result<Value, Exception> = std::mem::transmute(func);
-        match (func)() {
-            Ok(res) => Value::into_raw(res),
-            Err(condition) => {
-                error.write(condition.into());
-                Value::into_raw(Value::undefined())
-            }
-        }
-    }
-}
-
-#[runtime_fn]
-unsafe extern "C" fn call_known_1x1(func: usize, arg1: *const (), error: *mut Value) -> *const () {
-    unsafe {
-        let func: fn(&Value) -> Result<Value, Exception> = std::mem::transmute(func);
-        let arg1 = ManuallyDrop::new(Value::from_raw(arg1));
-        match (func)(&arg1) {
-            Ok(res) => Value::into_raw(res),
-            Err(condition) => {
-                error.write(condition.into());
-                Value::into_raw(Value::undefined())
-            }
-        }
-    }
-}
-
-#[runtime_fn]
-unsafe extern "C" fn call_known_2x1(
-    func: usize,
-    arg1: *const (),
-    arg2: *const (),
-    error: *mut Value,
-) -> *const () {
-    unsafe {
-        let func: fn(&Value, &Value) -> Result<Value, Exception> = std::mem::transmute(func);
-        let arg1 = ManuallyDrop::new(Value::from_raw(arg1));
-        let arg2 = ManuallyDrop::new(Value::from_raw(arg2));
-        match (func)(&arg1, &arg2) {
-            Ok(res) => Value::into_raw(res),
-            Err(condition) => {
-                error.write(condition.into());
-                Value::into_raw(Value::undefined())
-            }
-        }
-    }
-}
-
-#[runtime_fn]
-unsafe extern "C" fn call_known_3x1(
-    func: usize,
-    arg1: *const (),
-    arg2: *const (),
-    arg3: *const (),
-    error: *mut Value,
-) -> *const () {
-    unsafe {
-        let func: fn(&Value, &Value, &Value) -> Result<Value, Exception> =
-            std::mem::transmute(func);
-        let arg1 = ManuallyDrop::new(Value::from_raw(arg1));
-        let arg2 = ManuallyDrop::new(Value::from_raw(arg2));
-        let arg3 = ManuallyDrop::new(Value::from_raw(arg3));
-        match (func)(&arg1, &arg2, &arg3) {
-            Ok(res) => Value::into_raw(res),
-            Err(condition) => {
-                error.write(condition.into());
-                Value::into_raw(Value::undefined())
-            }
-        }
-    }
-}

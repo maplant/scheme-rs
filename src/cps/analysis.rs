@@ -20,69 +20,144 @@
 use super::*;
 use std::{collections::VecDeque, slice};
 
-#[derive(Default)]
 pub(crate) struct FreeVariables {
     free_vars: HashMap<Local, HashSet<Local>>,
 }
 
 impl FreeVariables {
+    pub(crate) fn analyze(cps: &Cps) -> Self {
+        let mut free_vars = Self {
+            free_vars: HashMap::default(),
+        };
+        free_vars.visit(cps);
+        free_vars
+    }
+
+    pub(crate) fn free_in(&self, local: Local) -> &HashSet<Local> {
+        &self.free_vars[&local]
+    }
+
     #[stacksafe::stacksafe]
-    pub fn find_free_vars(&mut self, cps: &Cps) -> HashSet<Local> {
-        match cps {
-            Cps::PrimOp(PrimOp::AllocCell, _, bind, cexpr) => {
-                let mut free = self.find_free_vars(cexpr);
+    fn visit(&mut self, cps: &Cps) -> HashSet<Local> {
+        let free = match &cps.inst {
+            Inst::PrimOp(PrimOp::AllocCell, _, bind, cexpr) => {
+                let mut free = self.visit(cexpr);
                 free.remove(bind);
                 free
             }
-            Cps::PrimOp(_, args, bind, cexpr) => {
-                let mut free = self.find_free_vars(cexpr);
+            Inst::PrimOp(_, args, bind, cexpr) => {
+                let mut free = self.visit(cexpr);
                 free.remove(bind);
-                free.union(&values_to_locals(args)).copied().collect()
+                free.extend(values_to_locals(args));
+                free
             }
-            Cps::If(cond, success, failure) => {
-                let mut free: HashSet<_> = self
-                    .find_free_vars(success)
-                    .union(&self.find_free_vars(failure))
-                    .copied()
-                    .collect();
+            Inst::If(cond, success, failure) => {
+                let mut free = self.visit(success);
+                free.extend(self.visit(failure));
                 free.extend(cond.to_local());
                 free
             }
-            Cps::App(op, vals) => {
+            Inst::App(op, vals) => {
                 let mut free = values_to_locals(vals);
                 free.extend(op.to_local());
                 free
             }
-            Cps::Fix(bindings, cexpr) => {
-                let mut free_variables = HashSet::default();
+            Inst::Fix(bindings, cexpr) => {
+                let mut free = self.visit(cexpr);
                 for binding in bindings {
-                    if !self.free_vars.contains_key(&binding.val) {
-                        let mut free_body = self.find_free_vars(&binding.body);
-                        for arg in binding.args.iter() {
-                            free_body.remove(arg);
-                        }
-                        self.free_vars.insert(binding.val, free_body);
+                    let mut free_body = self.visit(&binding.body);
+                    for arg in binding.args.iter() {
+                        free_body.remove(arg);
                     }
-                    free_variables = if free_variables.is_empty() {
-                        self.free_vars[&binding.val].clone()
-                    } else {
-                        self.free_vars[&binding.val]
-                            .union(&free_variables)
-                            .copied()
-                            .collect()
-                    }
+                    free.extend(free_body);
                 }
-                free_variables = self
-                    .find_free_vars(cexpr)
-                    .union(&free_variables)
-                    .copied()
-                    .collect();
                 for binding in bindings {
-                    free_variables.remove(&binding.val);
+                    free.remove(&binding.val);
                 }
-                free_variables
+                free
             }
-            Cps::Halt(val) => val.to_local().into_iter().collect(),
+            Inst::Halt(val) => val.to_local().into_iter().collect(),
+        };
+        self.free_vars.insert(cps.local, free.clone());
+        free
+    }
+}
+
+pub(crate) struct Liveness {
+    live: HashMap<Local, HashSet<Local>>,
+    cont_live: HashMap<Local, HashSet<Local>>,
+}
+
+impl Liveness {
+    pub(crate) fn analyze(cps: &Cps, free_vars: &FreeVariables, escaping: &Escaping) -> Self {
+        let mut liveness = Self {
+            live: HashMap::default(),
+            cont_live: HashMap::default(),
+        };
+        liveness.visit(cps, free_vars, escaping);
+        liveness
+    }
+
+    pub(crate) fn live_in(&self, local: Local) -> &HashSet<Local> {
+        &self.live[&local]
+    }
+
+    pub(crate) fn live_after_jump(&self, cont: Local) -> &HashSet<Local> {
+        &self.cont_live[&cont]
+    }
+
+    fn expand(&self, mut live: HashSet<Local>) -> HashSet<Local> {
+        let conts: Vec<_> = live
+            .iter()
+            .filter(|local| self.cont_live.contains_key(local))
+            .copied()
+            .collect();
+        for cont in conts {
+            live.extend(self.cont_live[&cont].iter().copied());
+        }
+        live
+    }
+
+    #[stacksafe::stacksafe]
+    fn visit(&mut self, cps: &Cps, free_vars: &FreeVariables, escaping: &Escaping) {
+        let live = self.expand(free_vars.free_in(cps.local).clone());
+        self.live.insert(cps.local, live);
+        match &cps.inst {
+            Inst::PrimOp(_, _, _, cexpr) => self.visit(cexpr, free_vars, escaping),
+            Inst::If(_, succ, fail) => {
+                self.visit(succ, free_vars, escaping);
+                self.visit(fail, free_vars, escaping);
+            }
+            Inst::Fix(bindings, cexpr) => {
+                let local_conts: Vec<_> = bindings
+                    .iter()
+                    .filter(|binding| binding.is_continuation() && !escaping.contains(binding.val))
+                    .collect();
+                for binding in &local_conts {
+                    self.cont_live.insert(binding.val, HashSet::default());
+                }
+                loop {
+                    let mut changed = false;
+                    for binding in &local_conts {
+                        let mut body = self.expand(free_vars.free_in(binding.body.local).clone());
+                        for arg in binding.args.iter() {
+                            body.remove(arg);
+                        }
+                        if self.cont_live[&binding.val] != body {
+                            self.cont_live.insert(binding.val, body);
+                            changed = true;
+                        }
+                    }
+                    if !changed {
+                        break;
+                    }
+                }
+                for binding in bindings {
+                    self.visit(&binding.body, free_vars, escaping);
+                }
+                self.visit(cexpr, free_vars, escaping);
+            }
+            Inst::App(_, _) | Inst::Halt(_) => (),
         }
     }
 }
@@ -99,23 +174,23 @@ impl Uses {
     }
 
     pub fn find_uses(&mut self, cps: &Cps) -> HashMap<Local, usize> {
-        match cps {
-            Cps::PrimOp(_, args, val, cexpr) => {
+        match &cps.inst {
+            Inst::PrimOp(_, args, val, cexpr) => {
                 if !self.uses.contains_key(val) {
                     let uses = merge_uses(values_to_uses(args), self.find_uses(cexpr));
                     self.uses.insert(*val, uses);
                 }
                 self.uses[val].clone()
             }
-            Cps::If(cond, success, failure) => {
+            Inst::If(cond, success, failure) => {
                 let uses = merge_uses(self.find_uses(success), self.find_uses(failure));
                 add_value_use(uses, cond)
             }
-            Cps::App(op, vals) => {
+            Inst::App(op, vals) => {
                 let uses = values_to_uses(vals);
                 add_value_use(uses, op)
             }
-            Cps::Fix(bindings, cexpr) => {
+            Inst::Fix(bindings, cexpr) => {
                 let mut uses = HashMap::default();
                 for binding in bindings {
                     if !self.uses.contains_key(&binding.val) {
@@ -130,7 +205,7 @@ impl Uses {
                 }
                 merge_uses(uses, self.find_uses(cexpr))
             }
-            Cps::Halt(value) => add_value_use(HashMap::default(), value),
+            Inst::Halt(value) => add_value_use(HashMap::default(), value),
         }
     }
 }
@@ -173,8 +248,8 @@ impl Escaping {
     }
 
     fn scan(&mut self, cexpr: &Cps, procs: &HashMap<Local, &LambdaBinding>) {
-        match cexpr {
-            Cps::App(op, args) => {
+        match &cexpr.inst {
+            Inst::App(op, args) => {
                 self.scan_vals(args, procs);
                 // Functions applied with the wrong number of arguments escape:
                 if let Some(local) = op.to_local()
@@ -184,16 +259,16 @@ impl Escaping {
                     self.escaping.insert(local);
                 }
             }
-            Cps::PrimOp(_, args, _, cexpr) => {
+            Inst::PrimOp(_, args, _, cexpr) => {
                 self.scan_vals(args, procs);
                 self.scan(cexpr, procs);
             }
-            Cps::If(cond, succ, fail) => {
+            Inst::If(cond, succ, fail) => {
                 self.scan_vals(slice::from_ref(cond), procs);
                 self.scan(succ, procs);
                 self.scan(fail, procs);
             }
-            Cps::Fix(bindings, cexpr) => {
+            Inst::Fix(bindings, cexpr) => {
                 for binding in bindings {
                     self.scan(&binding.body, procs);
                     // Variadic functions escape (for now):
@@ -203,7 +278,7 @@ impl Escaping {
                 }
                 self.scan(cexpr, procs);
             }
-            Cps::Halt(val) => self.scan_vals(slice::from_ref(val), procs),
+            Inst::Halt(val) => self.scan_vals(slice::from_ref(val), procs),
         }
     }
 
@@ -217,14 +292,14 @@ impl Escaping {
         }
     }
 
-    fn find_transitive_closure<T>(
+    fn find_transitive_closure(
         &mut self,
-        procs: &HashMap<Local, T>,
+        procs: &HashMap<Local, &LambdaBinding>,
         free_variables: &FreeVariables,
     ) {
         let mut work_queue = self.escaping.iter().copied().collect::<VecDeque<_>>();
         while let Some(proc) = work_queue.pop_front() {
-            for p in &free_variables.free_vars[&proc] {
+            for p in free_variables.free_in(procs[&proc].body.local) {
                 if procs.contains_key(p) && !self.escaping.contains(p) {
                     self.escaping.insert(*p);
                     work_queue.push_back(*p);
@@ -235,54 +310,20 @@ impl Escaping {
 }
 
 impl Cps {
-    pub(super) fn max_allocs(
-        &self,
-        curr_allocs: usize,
-        escaping: &Escaping,
-        allocs_at_local_conts: &mut HashMap<Local, usize>,
-    ) -> usize {
-        match self {
-            Cps::PrimOp(primop, _, _, cexpr) => {
-                let curr_allocs = curr_allocs + primop.info().needs_drop as usize;
-                cexpr.max_allocs(curr_allocs, escaping, allocs_at_local_conts)
-            }
-            Cps::Fix(bindings, cexpr) => {
-                let curr_allocs =
-                    curr_allocs + bindings.iter().filter(|binding| binding.is_func()).count();
-                let mut max_allocs = curr_allocs;
-                for binding in bindings {
-                    if binding.is_continuation() && !escaping.contains(binding.val) {
-                        allocs_at_local_conts.insert(binding.val, curr_allocs);
-                        max_allocs = max_allocs.max(binding.body.max_allocs(
-                            curr_allocs + binding.args.args.len(),
-                            escaping,
-                            allocs_at_local_conts,
-                        ));
-                    }
-                }
-                max_allocs.max(cexpr.max_allocs(curr_allocs, escaping, allocs_at_local_conts))
-            }
-            Cps::If(_, success, failure) => success
-                .max_allocs(curr_allocs, escaping, allocs_at_local_conts)
-                .max(failure.max_allocs(curr_allocs, escaping, allocs_at_local_conts)),
-            _ => curr_allocs,
-        }
-    }
-
     pub(super) fn cells(&self, out: &mut HashSet<Local>) {
-        match self {
-            Cps::PrimOp(PrimOp::AllocCell, _, val, cexp) => {
+        match &self.inst {
+            Inst::PrimOp(PrimOp::AllocCell, _, val, cexp) => {
                 cexp.cells(out);
                 out.insert(*val);
             }
-            Cps::PrimOp(_, _, _, cexp) => {
+            Inst::PrimOp(_, _, _, cexp) => {
                 cexp.cells(out);
             }
-            Cps::If(_, succ, fail) => {
+            Inst::If(_, succ, fail) => {
                 succ.cells(out);
                 fail.cells(out);
             }
-            Cps::Fix(bindings, cexp) => {
+            Inst::Fix(bindings, cexp) => {
                 for binding in bindings {
                     binding.body.cells(out);
                 }

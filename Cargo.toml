@@ -40,10 +40,10 @@ unicode_categories = "0.1"
 stacksafe = "1"
 
 # Cranelift dependencies
-cranelift = "0.122"
-cranelift-jit = "0.122"
-cranelift-native = "0.122"
-cranelift-module = "0.122"
+cranelift = "0.135"
+cranelift-jit = "0.135"
+cranelift-native = "0.135"
+cranelift-module = "0.135"
 
 # Optional dependencies
 tokio = { version = "1.47", features = ["full"], optional = true }

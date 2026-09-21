@@ -3,13 +3,13 @@
 use std::{fmt, sync::Arc};
 
 use indexmap::IndexSet;
-use scheme_rs_macros::{bridge, cps_bridge};
+use scheme_rs_macros::bridge;
 
 use crate::{
     exceptions::Exception,
     gc::Trace,
     lists::List,
-    proc::{Application, ContBarrier, FuncPtr, Procedure},
+    proc::{Application, Args, ContBarrier, FuncPtr, Procedure},
     records::{Embeddable, Embedded, RecordTypeDescriptor, rtd},
     symbols::Symbol,
     value::Value,
@@ -81,37 +81,33 @@ unsafe impl Embeddable for EnumerationSet {
 }
 
 #[bridge(name = "make-enumeration", lib = "(rnrs enums (6))")]
-pub fn make_enumeration(symbols: List) -> Result<Vec<Value>, Exception> {
+pub fn make_enumeration(symbols: List) -> Result<EnumerationSet, Exception> {
     let symbols = symbols
         .into_iter()
         .map(|item| item.try_to())
         .collect::<Result<IndexSet<Symbol>, Exception>>()?;
-    let set = EnumerationSet {
+    Ok(EnumerationSet {
         set: symbols.clone(),
         enum_type: Embedded::new(EnumerationType { symbols }),
-    };
-    Ok(vec![Value::from(set)])
+    })
 }
 
 #[bridge(name = "enum-set-universe", lib = "(rnrs enums (6))")]
-pub fn enum_set_universe(enum_set: Embedded<EnumerationSet>) -> Result<Vec<Value>, Exception> {
-    let new_set = EnumerationSet {
+pub fn enum_set_universe(enum_set: Embedded<EnumerationSet>) -> EnumerationSet {
+    EnumerationSet {
         enum_type: Embedded::new(EnumerationType {
             symbols: enum_set.enum_type.symbols.clone(),
         }),
         set: enum_set.enum_type.symbols.clone(),
-    };
-    Ok(vec![Value::from(new_set)])
+    }
 }
 
-#[cps_bridge(def = "enum-set-constructor enum-set", lib = "(rnrs enums (6))")]
+#[bridge(name = "enum-set-constructor", lib = "(rnrs enums (6))")]
 pub fn enum_set_constructor(
-    _env: &[Value],
-    args: &[Value],
-    _rest_args: &[Value],
+    enum_set: Embedded<EnumerationSet>,
     barrier: &mut ContBarrier,
 ) -> Result<Application, Exception> {
-    let set = args[0].try_to::<Embedded<EnumerationSet>>()?;
+    let set = enum_set;
     let universe = Value::from(set.enum_type.clone());
     let constructor = Procedure::new(
         vec![universe],
@@ -119,20 +115,16 @@ pub fn enum_set_constructor(
         1,
         false,
     );
-    Ok(barrier.call_cont(vec![Value::from(constructor)]))
+    Ok(barrier.call_cont(Args::pack([Value::from(constructor)])))
 }
 
-#[cps_bridge]
+#[bridge]
 fn enum_set_constructor_fn(
-    env: &[Value],
-    args: &[Value],
-    _rest_args: &[Value],
+    #[env] enum_type: Embedded<EnumerationType>,
+    symbols: List,
     barrier: &mut ContBarrier,
 ) -> Result<Application, Exception> {
-    // env[0] is the universe:
-    let enum_type: Embedded<EnumerationType> = env[0].try_to()?;
-    let set = args[0]
-        .try_to::<List>()?
+    let set = symbols
         .into_iter()
         .map(|symbol| {
             let symbol = symbol.try_to::<Symbol>()?;
@@ -146,11 +138,11 @@ fn enum_set_constructor_fn(
         })
         .collect::<Result<IndexSet<_>, _>>()?;
     let enum_set = EnumerationSet { enum_type, set };
-    Ok(barrier.call_cont(vec![Value::from(enum_set)]))
+    Ok(barrier.call_cont(Args::pack([Value::from(enum_set)])))
 }
 
 #[bridge(name = "enum-set->list", lib = "(rnrs enums (6))")]
-pub fn enum_set_to_list(enum_set: Embedded<EnumerationSet>) -> Result<Vec<Value>, Exception> {
+pub fn enum_set_to_list(enum_set: Embedded<EnumerationSet>) -> List {
     let mut set = enum_set
         .set
         .iter()
@@ -160,46 +152,39 @@ pub fn enum_set_to_list(enum_set: Embedded<EnumerationSet>) -> Result<Vec<Value>
         })
         .collect::<Vec<_>>();
     set.sort_by_key(|(idx, _)| *idx);
-    let list = set.into_iter().map(|(_, sym)| sym).collect::<List>();
-    Ok(vec![Value::from(list)])
+    set.into_iter().map(|(_, sym)| sym).collect()
 }
 
 #[bridge(name = "enum-set-member?", lib = "(rnrs enums (6))")]
-pub fn enum_set_member_pred(
-    symbol: Symbol,
-    enum_set: Embedded<EnumerationSet>,
-) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(enum_set.set.contains(&symbol))])
+pub fn enum_set_member_pred(symbol: Symbol, enum_set: Embedded<EnumerationSet>) -> bool {
+    enum_set.set.contains(&symbol)
 }
 
 #[bridge(name = "enum-set-subset?", lib = "(rnrs enums (6))")]
 pub fn enum_set_subset_pred(
     enum_set1: Embedded<EnumerationSet>,
     enum_set2: Embedded<EnumerationSet>,
-) -> Result<Vec<Value>, Exception> {
-    let is_subset = enum_set1
+) -> bool {
+    enum_set1
         .enum_type
         .symbols
         .is_subset(&enum_set2.enum_type.symbols)
-        && enum_set1.set.is_subset(&enum_set2.set);
-    Ok(vec![Value::from(is_subset)])
+        && enum_set1.set.is_subset(&enum_set2.set)
 }
 
 #[bridge(name = "enum-set=?", lib = "(rnrs enums (6))")]
 pub fn enum_set_equal(
     enum_set1: Embedded<EnumerationSet>,
     enum_set2: Embedded<EnumerationSet>,
-) -> Result<Vec<Value>, Exception> {
-    let is_equal = enum_set1.enum_type.symbols == enum_set2.enum_type.symbols
-        && enum_set1.set == enum_set2.set;
-    Ok(vec![Value::from(is_equal)])
+) -> bool {
+    enum_set1.enum_type.symbols == enum_set2.enum_type.symbols && enum_set1.set == enum_set2.set
 }
 
 #[bridge(name = "enum-set-union", lib = "(rnrs enums (6))")]
 pub fn enum_set_union(
     enum_set1: Embedded<EnumerationSet>,
     enum_set2: Embedded<EnumerationSet>,
-) -> Result<Vec<Value>, Exception> {
+) -> Result<EnumerationSet, Exception> {
     if !Embedded::ptr_eq(&enum_set1.enum_type, &enum_set2.enum_type) {
         return Err(Exception::error("enum sets must be of the same enum type"));
     }
@@ -208,18 +193,17 @@ pub fn enum_set_union(
         .union(&enum_set2.set)
         .copied()
         .collect::<IndexSet<_>>();
-    let set = Value::from(EnumerationSet {
+    Ok(EnumerationSet {
         enum_type: enum_set1.enum_type.clone(),
         set: union,
-    });
-    Ok(vec![set])
+    })
 }
 
 #[bridge(name = "enum-set-intersection", lib = "(rnrs enums (6))")]
 pub fn enum_set_intersection(
     enum_set1: Embedded<EnumerationSet>,
     enum_set2: Embedded<EnumerationSet>,
-) -> Result<Vec<Value>, Exception> {
+) -> Result<EnumerationSet, Exception> {
     if !Embedded::ptr_eq(&enum_set1.enum_type, &enum_set2.enum_type) {
         return Err(Exception::error("enum sets must be of the same enum type"));
     }
@@ -228,18 +212,17 @@ pub fn enum_set_intersection(
         .intersection(&enum_set2.set)
         .copied()
         .collect::<IndexSet<_>>();
-    let set = Value::from(EnumerationSet {
+    Ok(EnumerationSet {
         enum_type: enum_set1.enum_type.clone(),
         set: intersection,
-    });
-    Ok(vec![set])
+    })
 }
 
 #[bridge(name = "enum-set-difference", lib = "(rnrs enums (6))")]
 pub fn enum_set_difference(
     enum_set1: Embedded<EnumerationSet>,
     enum_set2: Embedded<EnumerationSet>,
-) -> Result<Vec<Value>, Exception> {
+) -> Result<EnumerationSet, Exception> {
     if !Embedded::ptr_eq(&enum_set1.enum_type, &enum_set2.enum_type) {
         return Err(Exception::error("enum sets must be of the same enum type"));
     }
@@ -248,42 +231,39 @@ pub fn enum_set_difference(
         .difference(&enum_set2.set)
         .copied()
         .collect::<IndexSet<_>>();
-    let set = Value::from(EnumerationSet {
+    Ok(EnumerationSet {
         enum_type: enum_set1.enum_type.clone(),
         set: difference,
-    });
-    Ok(vec![set])
+    })
 }
 
 #[bridge(name = "enum-set-complement", lib = "(rnrs enums (6))")]
-pub fn enum_set_complement(enum_set: Embedded<EnumerationSet>) -> Result<Vec<Value>, Exception> {
+pub fn enum_set_complement(enum_set: Embedded<EnumerationSet>) -> EnumerationSet {
     let complement = enum_set
         .enum_type
         .symbols
         .difference(&enum_set.set)
         .copied()
         .collect::<IndexSet<_>>();
-    let set = Value::from(EnumerationSet {
+    EnumerationSet {
         enum_type: enum_set.enum_type.clone(),
         set: complement,
-    });
-    Ok(vec![set])
+    }
 }
 
 #[bridge(name = "enum-set-projection", lib = "(rnrs enums (6))")]
 pub fn enum_set_projection(
     enum_set1: Embedded<EnumerationSet>,
     enum_set2: Embedded<EnumerationSet>,
-) -> Result<Vec<Value>, Exception> {
+) -> EnumerationSet {
     let projection = enum_set1
         .set
         .iter()
         .filter(|sym| enum_set2.enum_type.symbols.contains(*sym))
         .copied()
         .collect::<IndexSet<_>>();
-    let set = Value::from(EnumerationSet {
+    EnumerationSet {
         enum_type: enum_set2.enum_type.clone(),
         set: projection,
-    });
-    Ok(vec![set])
+    }
 }

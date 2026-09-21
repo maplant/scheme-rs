@@ -10,21 +10,19 @@
 //!
 //! Generally procedures are created in Scheme contexts. However, it is
 //! occasionally desirable to create a closure in Rust contexts. This can be
-//! done with a [`cps_bridge`] function and a call to [`Procedure::new`]. The
-//! `env` argument to the CPS function is a reference to the vector passed to
-//! the `new` function:
+//! done with a `bridge` function taking `#[env]` parameters and a call to
+//! [`Procedure::new`]. The `#[env]` parameters are converted from the vector
+//! passed to the `new` function:
 //!
 //! ```
-//! # use scheme_rs::{proc::{Procedure, BridgePtr, Application, ContBarrier},
-//! # registry::cps_bridge, value::Value, exceptions::Exception};
-//! #[cps_bridge]
+//! # use scheme_rs::{proc::{Procedure, BridgePtr, Application, ContBarrier, Args},
+//! # registry::bridge, value::Value, exceptions::Exception};
+//! #[bridge]
 //! fn closure(
-//!     env: &[Value],
-//!     _args: &[Value],
-//!     _rest_args: &[Value],
+//!     #[env] captured: Value,
 //!     barrier: &mut ContBarrier,
 //! ) -> Result<Application, Exception> {
-//!     Ok(barrier.call_cont(vec![ env[0].clone() ]))
+//!     Ok(barrier.call_cont(Args::pack([captured])))
 //! }
 //!
 //! # fn main() {
@@ -42,27 +40,23 @@
 //!
 //! ```
 //! # use scheme_rs::{
-//! #     proc::{Procedure, BridgePtr, Application, ContBarrier},
-//! #     registry::cps_bridge, value::{Value, Cell},
+//! #     proc::{Procedure, BridgePtr, Application, ContBarrier, Args},
+//! #     registry::bridge, value::{Value, Cell},
 //! #     exceptions::Exception,
 //! #     num::Number,
 //! # };
-//! #[cps_bridge]
+//! #[bridge]
 //! fn next_num(
-//!     env: &[Value],
-//!     _args: &[Value],
-//!     _rest_args: &[Value],
+//!     #[env] cell: Cell,
 //!     barrier: &mut ContBarrier,
 //! ) -> Result<Application, Exception> {
-//!     // Fetch the cell from the environment:
-//!     let cell: Cell = env[0].try_to()?;
 //!     let curr: Number = cell.get().try_into()?;
 //!
 //!     // Increment the cell
 //!     cell.set(Value::from(curr.clone() + Number::from(1)));
 //!
 //!     // Return the previous value:
-//!     Ok(barrier.call_cont(vec![ Value::from(curr) ]))
+//!     Ok(barrier.call_cont(Args::pack([Value::from(curr)])))
 //! }
 //!
 //! # fn main() {
@@ -88,106 +82,241 @@ use crate::{
     env::Local,
     exceptions::{Exception, raise},
     gc::{Gc, Trace},
-    lists::{Pair, list_to_vec},
+    lists::{Pair, list_len, list_to_vec},
     ports::{BufferMode, Port, Transcoder},
     records::{Embeddable, Embedded, RecordTypeDescriptor, rtd},
     registry::BridgeFnDebugInfo,
     symbols::Symbol,
     syntax::Span,
     value::Value,
-    vectors::Vector,
 };
-use scheme_rs_macros::{cps_bridge, maybe_async, maybe_await};
-use smallvec::SmallVec;
+use scheme_rs_macros::{bridge, maybe_async, maybe_await};
 use std::{
     any::Any,
     collections::HashMap,
     fmt,
     mem::MaybeUninit,
     ops::DerefMut,
+    ptr::NonNull,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
 };
 
+/// An opaque pointer to the tail calling convention body of a JIT compiled
+/// function.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct JitPtr(pub(crate) *const u8);
+
+unsafe impl Send for JitPtr {}
+unsafe impl Sync for JitPtr {}
+
 /// A function pointer to a generated continuation.
-pub(crate) type ContinuationPtr = unsafe extern "C" fn(
-    env: *const Value,
-    args: *const Value,
-    barrier: *mut ContBarrier<'_>,
-    out: *mut MaybeUninit<Application>,
+pub(crate) type ContinuationPtr = extern "C" fn(
+    arg1: Value,
+    arg2: Value,
+    arg3: Value,
+    arg4: Value,
+    argn: Value,
+    barrier: &mut ContBarrier<'_>,
+    out: &mut MaybeUninit<Application>,
 );
 
 /// A function pointer to a generated user function.
-pub(crate) type UserPtr = unsafe extern "C" fn(
-    env: *const Value,
-    args: *const Value,
-    barrier: *mut ContBarrier<'_>,
-    out: *mut MaybeUninit<Application>,
+pub(crate) type UserPtr = extern "C" fn(
+    proc: Procedure,
+    arg1: Value,
+    arg2: Value,
+    arg3: Value,
+    arg4: Value,
+    argn: Value,
+    barrier: &mut ContBarrier<'_>,
+    out: &mut MaybeUninit<Application>,
 );
 
 /// A function pointer to a sync Rust bridge function.
-pub type BridgePtr = fn(
-    env: &[Value],
-    args: &[Value],
-    rest_args: &[Value],
+pub type BridgePtr = extern "C" fn(
+    proc: Procedure,
+    arg1: Value,
+    arg2: Value,
+    arg3: Value,
+    arg4: Value,
+    argn: Value,
     barrier: &mut ContBarrier<'_>,
-) -> Application;
+    out: &mut MaybeUninit<Application>,
+);
 
 /// A function pointer to an async Rust bridge function.
 #[cfg(feature = "async")]
 pub type AsyncBridgePtr = for<'a> fn(
-    env: &'a [Value],
-    args: &'a [Value],
-    rest_args: &'a [Value],
+    proc: Procedure,
+    arg1: Value,
+    arg2: Value,
+    arg3: Value,
+    arg4: Value,
+    argn: Value,
     barrier: &'a mut ContBarrier<'_>,
 ) -> futures::future::BoxFuture<'a, Application>;
 
+pub const MAX_DIRECT_ARGS: usize = 4;
+
+#[repr(transparent)]
+pub struct Args(pub [Value; MAX_DIRECT_ARGS + 1]);
+
+impl Args {
+    pub fn pack(args: impl IntoIterator<IntoIter: DoubleEndedIterator<Item = Value>>) -> Self {
+        let mut slots = Self::empty();
+        let mut args = args.into_iter();
+        for slot in slots.0.iter_mut().take(MAX_DIRECT_ARGS) {
+            let Some(arg) = args.next() else {
+                return slots;
+            };
+            *slot = arg;
+        }
+        let mut argn = Value::null();
+        while let Some(arg) = args.next_back() {
+            argn = Value::from(Pair::immutable(arg, argn));
+        }
+        slots.0[MAX_DIRECT_ARGS] = argn;
+        slots
+    }
+
+    pub fn from_slice(args: &[Value]) -> Self {
+        Self::pack(args.iter().cloned())
+    }
+
+    pub fn empty() -> Self {
+        Self([
+            Value::undefined(),
+            Value::undefined(),
+            Value::undefined(),
+            Value::undefined(),
+            Value::null(),
+        ])
+    }
+
+    pub fn from_list(mut list: Value) -> Self {
+        let mut slots = Self::empty();
+        for slot in slots.0.iter_mut().take(MAX_DIRECT_ARGS) {
+            let Some(pair) = list.cast::<Pair>() else {
+                return slots;
+            };
+            *slot = pair.car();
+            list = pair.cdr();
+        }
+        slots.0[MAX_DIRECT_ARGS] = list;
+        slots
+    }
+
+    pub fn into_list(self) -> Value {
+        let Self([arg1, arg2, arg3, arg4, argn]) = self;
+        cons_direct_args([arg1, arg2, arg3, arg4], argn)
+    }
+
+    pub fn into_vec(self) -> Vec<Value> {
+        let Self([arg1, arg2, arg3, arg4, argn]) = self;
+        let mut out = Vec::new();
+        for arg in [arg1, arg2, arg3, arg4] {
+            if arg.is_undefined() {
+                return out;
+            }
+            out.push(arg);
+        }
+        list_to_vec(&argn, &mut out);
+        out
+    }
+
+    pub fn len(&self) -> usize {
+        let mut count = 0;
+        for arg in &self.0[..MAX_DIRECT_ARGS] {
+            if arg.is_undefined() {
+                return count;
+            }
+            count += 1;
+        }
+        count + list_len(&self.0[MAX_DIRECT_ARGS])
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0[0].is_undefined()
+    }
+}
+
+/// Cons the provided direct argument slots onto `tail`, skipping any that
+/// are undefined.
+fn cons_direct_args<const N: usize>(direct: [Value; N], tail: Value) -> Value {
+    let mut list = tail;
+    for arg in direct.into_iter().rev() {
+        if !arg.is_undefined() {
+            list = Value::from(Pair::immutable(arg, list));
+        }
+    }
+    list
+}
+
+impl Default for Args {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
+pub type KnownFnPtr0 = extern "C" fn(error: &mut Value) -> Value;
+pub type KnownFnPtr1 = extern "C" fn(Value, error: &mut Value) -> Value;
+pub type KnownFnPtr2 = extern "C" fn(Value, Value, error: &mut Value) -> Value;
+pub type KnownFnPtr3 = extern "C" fn(Value, Value, Value, error: &mut Value) -> Value;
+
 #[derive(Copy, Clone, Debug)]
 pub enum KnownFunc {
-    Known0x1(fn() -> Result<Value, Exception>),
-    Known1x0(fn(&Value) -> Result<(), Exception>),
-    Known1x1(fn(&Value) -> Result<Value, Exception>),
-    Known2x0(fn(&Value, &Value) -> Result<(), Exception>),
-    Known2x1(fn(&Value, &Value) -> Result<Value, Exception>),
-    Known3x0(fn(&Value, &Value, &Value) -> Result<(), Exception>),
-    Known3x1(fn(&Value, &Value, &Value) -> Result<Value, Exception>),
+    Known0x1(KnownFnPtr0),
+    Known1x0(KnownFnPtr1),
+    Known1x1(KnownFnPtr1),
+    Known2x0(KnownFnPtr2),
+    Known2x1(KnownFnPtr2),
+    Known3x0(KnownFnPtr3),
+    Known3x1(KnownFnPtr3),
 }
 
 impl KnownFunc {
-    fn call(self, args: &[Value]) -> Result<Vec<Value>, Exception> {
-        match self {
-            Self::Known0x1(func) => Ok(vec![(func)()?]),
-            Self::Known1x0(func) => {
-                (func)(&args[0])?;
-                Ok(Vec::new())
-            }
-            Self::Known1x1(func) => Ok(vec![(func)(&args[0])?]),
-            Self::Known2x0(func) => {
-                (func)(&args[0], &args[1])?;
-                Ok(Vec::new())
-            }
-            Self::Known2x1(func) => Ok(vec![(func)(&args[0], &args[1])?]),
-            Self::Known3x0(func) => {
-                (func)(&args[0], &args[1], &args[2])?;
-                Ok(Vec::new())
-            }
-            Self::Known3x1(func) => Ok(vec![(func)(&args[0], &args[1], &args[2])?]),
+    fn apply(self, args: Args, barrier: &mut ContBarrier<'_>) -> Application {
+        let expected = self.num_args();
+        if args.0[..expected].iter().any(Value::is_undefined) || !args.0[expected].is_undefined() {
+            return raise(
+                Exception::wrong_num_of_args(expected, args.len()).into(),
+                barrier,
+            );
+        }
+        let Args([arg1, arg2, arg3, _, _]) = args;
+        let mut error = Value::undefined();
+        let res = match self {
+            Self::Known0x1(func) => func(&mut error),
+            Self::Known1x0(func) | Self::Known1x1(func) => func(arg1, &mut error),
+            Self::Known2x0(func) | Self::Known2x1(func) => func(arg1, arg2, &mut error),
+            Self::Known3x0(func) | Self::Known3x1(func) => func(arg1, arg2, arg3, &mut error),
+        };
+        if res.is_undefined() {
+            raise(error, barrier)
+        } else if self.returns_value() {
+            barrier.call_cont(Args::pack([res]))
+        } else {
+            barrier.call_cont(Args::empty())
         }
     }
 
-    fn apply(self, args: &[Value], barrier: &mut ContBarrier<'_>) -> Application {
-        match self.call(args) {
-            Ok(result) => barrier.call_cont(result),
-            Err(err) => raise(err.into(), barrier),
-        }
+    pub(crate) fn returns_value(&self) -> bool {
+        matches!(
+            self,
+            Self::Known0x1(_) | Self::Known1x1(_) | Self::Known2x1(_) | Self::Known3x1(_)
+        )
     }
 
-    pub fn return_values(&self) -> usize {
+    /// The number of arguments the function takes.
+    pub fn num_args(&self) -> usize {
         match self {
-            Self::Known1x0(_) | Self::Known2x0(_) | Self::Known3x0(_) => 0,
-            Self::Known0x1(_) | Self::Known1x1(_) | Self::Known2x1(_) | Self::Known3x1(_) => 1,
+            Self::Known0x1(_) => 0,
+            Self::Known1x0(_) | Self::Known1x1(_) => 1,
+            Self::Known2x0(_) | Self::Known2x1(_) => 2,
+            Self::Known3x0(_) | Self::Known3x1(_) => 3,
         }
     }
 
@@ -220,8 +349,9 @@ pub(crate) enum FuncPtr {
     #[cfg(feature = "async")]
     /// An async function defined in Rust
     AsyncBridge(AsyncBridgePtr),
-    /// A JIT compiled user function
-    User(UserPtr),
+    /// A JIT compiled user function: its tail callable body and its native
+    /// entry point.
+    User(JitPtr, UserPtr),
     /// A known function
     Known(KnownFunc),
 }
@@ -239,24 +369,21 @@ impl From<AsyncBridgePtr> for FuncPtr {
     }
 }
 
-impl From<UserPtr> for FuncPtr {
-    fn from(ptr: UserPtr) -> Self {
-        Self::User(ptr)
-    }
-}
-
-#[derive(Copy, Clone)]
+#[derive(Clone)]
 pub(crate) enum ContPtr {
-    /// A JIT compiled (or occasionally defined in Rust) continuation
-    Continuation(ContinuationPtr),
+    /// A generated continuation: its tail callable body and its native
+    /// entry point.
+    JitCont(JitPtr, ContinuationPtr),
+    /// A boxed Rust closure continuation.
+    RustCont(RustContinuation),
     /// A continuation that exits a prompt. Can be dynamically replaced.
     /// The continuation of a prompt barrier will always be pop_dyn_stack.
     PromptBarrier { barrier_id: usize },
 }
 
-impl From<ContinuationPtr> for ContPtr {
-    fn from(value: ContinuationPtr) -> Self {
-        Self::Continuation(value)
+impl ContPtr {
+    fn is_rust_cont(&self) -> bool {
+        matches!(self, ContPtr::RustCont(_))
     }
 }
 
@@ -296,97 +423,67 @@ impl ProcedureInner {
             debug_info,
         }
     }
+}
 
-    #[cfg(feature = "async")]
-    async fn apply_async_bridge(
-        &self,
-        func: AsyncBridgePtr,
-        args: &[Value],
-        barrier: &mut ContBarrier<'_>,
-    ) -> Application {
-        let (args, rest_args) = if self.variadic {
-            args.split_at(self.num_required_args)
-        } else {
-            (args, &[] as &[Value])
-        };
+#[cfg(feature = "async")]
+async fn apply_async_bridge(
+    proc: Procedure,
+    func: AsyncBridgePtr,
+    args: Args,
+    barrier: &mut ContBarrier<'_>,
+) -> Application {
+    let Args([arg1, arg2, arg3, arg4, argn]) = args;
+    (func)(proc, arg1, arg2, arg3, arg4, argn, barrier).await
+}
 
-        (func)(&self.env, args, rest_args, barrier).await
-    }
+fn apply_bridge(
+    proc: Procedure,
+    func: BridgePtr,
+    args: Args,
+    barrier: &mut ContBarrier,
+) -> Application {
+    let Args([arg1, arg2, arg3, arg4, argn]) = args;
+    let mut app = std::mem::MaybeUninit::<Application>::uninit();
+    (func)(proc, arg1, arg2, arg3, arg4, argn, barrier, &mut app);
+    unsafe { app.assume_init() }
+}
 
-    fn apply_sync_bridge(
-        &self,
-        func: BridgePtr,
-        args: &[Value],
-        barrier: &mut ContBarrier,
-    ) -> Application {
-        let (args, rest_args) = if self.variadic {
-            args.split_at(self.num_required_args)
-        } else {
-            (args, &[] as &[Value])
-        };
+fn apply_jit(
+    proc: Procedure,
+    entry: UserPtr,
+    args: Args,
+    barrier: &mut ContBarrier,
+) -> Application {
+    let Args([arg1, arg2, arg3, arg4, argn]) = args;
+    let mut app = std::mem::MaybeUninit::<Application>::uninit();
+    entry(proc, arg1, arg2, arg3, arg4, argn, barrier, &mut app);
+    unsafe { app.assume_init() }
+}
 
-        (func)(&self.env, args, rest_args, barrier)
-    }
-
-    fn apply_jit(
-        &self,
-        func: UserPtr,
-        mut args: Vec<Value>,
-        barrier: &mut ContBarrier,
-    ) -> Application {
-        if self.variadic {
-            let mut rest_args = Value::null();
-            let extra_args = args.len() - self.num_required_args;
-            for _ in 0..extra_args {
-                // TBD: Is pop or clone faster?
-                rest_args = Value::from(Pair::immutable(args.pop().unwrap(), rest_args));
-            }
-            args.push(rest_args);
-        }
-
-        unsafe {
-            let mut app = std::mem::MaybeUninit::<Application>::uninit();
-            (func)(
-                self.env.as_ptr(),
-                args.as_ptr(),
-                barrier as *mut ContBarrier<'_>,
-                &mut app,
-            );
-            app.assume_init()
-        }
-    }
-
-    /// Apply the arguments to the function, returning the next application.
+impl Procedure {
+    /// Apply the arguments to the procedure, returning the next application.
     #[maybe_async]
-    pub fn apply(&self, args: Vec<Value>, barrier: &mut ContBarrier<'_>) -> Application {
-        if let Err(raised) = check_args(self.num_required_args, self.variadic, &args, barrier) {
-            return raised;
-        }
-
-        match self.func {
-            FuncPtr::Bridge(sbridge) => self.apply_sync_bridge(sbridge, &args, barrier),
+    pub(crate) fn apply(self, args: Args, barrier: &mut ContBarrier<'_>) -> Application {
+        match self.0.func {
+            FuncPtr::Bridge(sbridge) => apply_bridge(self, sbridge, args, barrier),
             #[cfg(feature = "async")]
-            FuncPtr::AsyncBridge(abridge) => self.apply_async_bridge(abridge, &args, barrier).await,
-            FuncPtr::User(user) => self.apply_jit(user, args, barrier),
-            FuncPtr::Known(known) => known.apply(&args, barrier),
+            FuncPtr::AsyncBridge(abridge) => apply_async_bridge(self, abridge, args, barrier).await,
+            FuncPtr::User(_, entry) => apply_jit(self, entry, args, barrier),
+            FuncPtr::Known(known) => known.apply(args, barrier),
         }
     }
 
     #[cfg(feature = "async")]
     /// Attempt to call the function, and throw an error if is async
-    pub fn apply_sync(&self, args: Vec<Value>, barrier: &mut ContBarrier) -> Application {
-        if let Err(raised) = check_args(self.num_required_args, self.variadic, &args, barrier) {
-            return raised;
-        }
-
-        match self.func {
-            FuncPtr::Bridge(sbridge) => self.apply_sync_bridge(sbridge, &args, barrier),
+    pub(crate) fn apply_sync(self, args: Args, barrier: &mut ContBarrier) -> Application {
+        match self.0.func {
+            FuncPtr::Bridge(sbridge) => apply_bridge(self, sbridge, args, barrier),
             FuncPtr::AsyncBridge(_) => raise(
                 Exception::error("attempt to apply async function in a sync-only context").into(),
                 barrier,
             ),
-            FuncPtr::User(user) => self.apply_jit(user, args, barrier),
-            FuncPtr::Known(known) => known.apply(&args, barrier),
+            FuncPtr::User(_, entry) => apply_jit(self, entry, args, barrier),
+            FuncPtr::Known(known) => known.apply(args, barrier),
         }
     }
 }
@@ -457,6 +554,11 @@ impl Procedure {
         )))
     }
 
+    /// Borrow the environment slice of this procedure.
+    pub fn env(&self) -> &[Value] {
+        &self.0.env
+    }
+
     /// Return the number of required arguments and whether or not this function
     /// is variadic
     pub fn get_formals(&self) -> (usize, bool) {
@@ -472,6 +574,24 @@ impl Procedure {
         self.0.is_variable_transformer
     }
 
+    #[allow(private_bounds)]
+    pub fn call_with_cont<A, const N: usize>(
+        &self,
+        args: Args,
+        cont_env: [Value; N],
+        cont: impl IntoRustContinuation<A, N>,
+        barrier: &mut ContBarrier<'_>,
+    ) -> Application {
+        let (req_args, variadic) = cont.formals();
+        barrier.cont_stack.push(
+            ContPtr::RustCont(cont.into_rust_cont()),
+            cont_env,
+            req_args,
+            variadic,
+        );
+        Application::new(self.clone(), args)
+    }
+
     /// Applies `args` to the procedure and returns the values it evaluates to.
     #[maybe_async]
     pub fn call(
@@ -479,7 +599,7 @@ impl Procedure {
         args: &[Value],
         barrier: &mut ContBarrier<'_>,
     ) -> Result<Vec<Value>, Exception> {
-        maybe_await!(Application::new(self.clone(), args.to_vec()).eval(barrier))
+        maybe_await!(Application::new(self.clone(), Args::from_slice(args)).eval(barrier))
     }
 
     #[cfg(feature = "async")]
@@ -488,12 +608,12 @@ impl Procedure {
         args: &[Value],
         barrier: &mut ContBarrier<'_>,
     ) -> Result<Vec<Value>, Exception> {
-        Application::new(self.clone(), args.to_vec()).eval_sync(barrier)
+        Application::new(self.clone(), Args::from_slice(args)).eval_sync(barrier)
     }
 
     pub(crate) fn to_primop(&self) -> Option<PrimOp> {
         use crate::{
-            lists::{car, cdr, cons, list},
+            lists::{append, car, cdr, cons, list},
             num::{add, div, equal, greater, greater_equal, lesser, lesser_equal, mul, sub},
             proc::{BridgePtr, FuncPtr::Bridge},
             value::{not, null_pred, pair_pred},
@@ -510,8 +630,9 @@ impl Procedure {
             (greater_equal, PrimOp::GreaterEqual),
             (lesser, PrimOp::Lesser),
             (lesser_equal, PrimOp::LesserEqual),
-            (cons, PrimOp::Cons),
             (list, PrimOp::List),
+            (append, PrimOp::Append),
+            (cons, PrimOp::Cons),
             (car, PrimOp::Car),
             (cdr, PrimOp::Cdr),
             (not, PrimOp::Not),
@@ -542,13 +663,8 @@ impl Procedure {
     }
 }
 
-unsafe extern "C" fn halt(
-    _env: *const Value,
-    args: *const Value,
-    _barrier: *mut ContBarrier,
-    out: *mut MaybeUninit<Application>,
-) {
-    unsafe { crate::runtime::halt(Value::into_raw(args.read()), out) }
+fn halt(_env: [Value; 0], args: Rest, _barrier: &mut ContBarrier) -> Application {
+    Application::halt_ok(Args::from_list(args.0))
 }
 
 impl fmt::Debug for Procedure {
@@ -563,30 +679,30 @@ impl PartialEq for Procedure {
     }
 }
 
+#[repr(C, u8)]
 pub(crate) enum OpType {
-    /// Call a procedure, passing it the continuation `k`.
+    JitCont = 0,
     Proc(Procedure),
     HaltOk,
     HaltErr,
 }
 
 /// An application of a function to a given set of values.
+#[repr(C)]
 pub struct Application {
-    /// The operator being applied to.
-    op: OpType,
-    /// The arguments being applied to the operator.
-    args: Vec<Value>,
+    pub(crate) op: OpType,
+    pub(crate) args: Args,
 }
 
 impl Application {
-    pub fn new(op: Procedure, args: Vec<Value>) -> Self {
+    pub fn new(op: Procedure, args: Args) -> Self {
         Self {
             op: OpType::Proc(op),
             args,
         }
     }
 
-    pub fn halt_ok(args: Vec<Value>) -> Self {
+    pub fn halt_ok(args: Args) -> Self {
         Self {
             op: OpType::HaltOk,
             args,
@@ -596,7 +712,7 @@ impl Application {
     pub fn halt_err(arg: Value) -> Self {
         Self {
             op: OpType::HaltErr,
-            args: vec![arg],
+            args: Args::pack([arg]),
         }
     }
 
@@ -607,11 +723,12 @@ impl Application {
         loop {
             let Application { op, args } = self;
             self = match op {
-                OpType::Proc(proc) => maybe_await!(proc.0.apply(args, barrier)),
-                OpType::HaltOk => return Ok(args),
+                OpType::Proc(proc) => maybe_await!(proc.apply(args, barrier)),
+                OpType::JitCont => call_jit_cont(args, barrier),
+                OpType::HaltOk => return Ok(args.into_vec()),
                 OpType::HaltErr => {
-                    let mut args = args;
-                    return Err(Exception(args.pop().unwrap()));
+                    let Args([err, _, _, _, _]) = args;
+                    return Err(Exception(err));
                 }
             };
         }
@@ -623,16 +740,326 @@ impl Application {
         loop {
             let Application { op, args } = self;
             self = match op {
-                OpType::Proc(proc) => proc.0.apply_sync(args, barrier),
-                OpType::HaltOk => return Ok(args),
+                OpType::Proc(proc) => proc.apply_sync(args, barrier),
+                OpType::JitCont => call_jit_cont(args, barrier),
+                OpType::HaltOk => return Ok(args.into_vec()),
                 OpType::HaltErr => {
-                    let mut args = args;
-                    return Err(Exception(args.pop().unwrap()));
+                    let Args([err, _, _, _, _]) = args;
+                    return Err(Exception(err));
                 }
             };
         }
     }
 }
+
+fn call_jit_cont(args: Args, barrier: &mut ContBarrier<'_>) -> Application {
+    let frame = barrier.cont_stack.frames.pop().unwrap();
+    let ContPtr::JitCont(_, entry) = frame.func_ptr else {
+        unreachable!("proc isn't not a jit continuation");
+    };
+    let Args([arg1, arg2, arg3, arg4, argn]) = args;
+    let mut app = std::mem::MaybeUninit::<Application>::uninit();
+    entry(arg1, arg2, arg3, arg4, argn, barrier, &mut app);
+    unsafe { app.assume_init() }
+}
+
+pub trait IntoApplication {
+    fn into_application(self, barrier: &mut ContBarrier) -> Application;
+}
+
+impl IntoApplication for Application {
+    fn into_application(self, _barrier: &mut ContBarrier) -> Application {
+        self
+    }
+}
+
+impl IntoApplication for () {
+    fn into_application(self, barrier: &mut ContBarrier) -> Application {
+        barrier.call_cont(Args::pack([]))
+    }
+}
+
+impl<A, B> IntoApplication for (A, B)
+where
+    Value: From<A>,
+    Value: From<B>,
+{
+    fn into_application(self, barrier: &mut ContBarrier) -> Application {
+        barrier.call_cont(Args::pack([Value::from(self.0), Value::from(self.1)]))
+    }
+}
+
+impl<A, B, C> IntoApplication for (A, B, C)
+where
+    Value: From<A>,
+    Value: From<B>,
+    Value: From<C>,
+{
+    fn into_application(self, barrier: &mut ContBarrier) -> Application {
+        barrier.call_cont(Args::pack([
+            Value::from(self.0),
+            Value::from(self.1),
+            Value::from(self.2),
+        ]))
+    }
+}
+
+impl<T, E> IntoApplication for Result<T, E>
+where
+    T: IntoApplication,
+    Value: From<E>,
+{
+    fn into_application(self, barrier: &mut ContBarrier) -> Application {
+        match self {
+            Ok(val) => val.into_application(barrier),
+            Err(err) => raise(err.into(), barrier),
+        }
+    }
+}
+
+impl<T> IntoApplication for T
+where
+    Value: From<T>,
+{
+    fn into_application(self, barrier: &mut ContBarrier) -> Application {
+        barrier.call_cont(Args::pack([Value::from(self)]))
+    }
+}
+
+pub(crate) trait IntoRustContinuation<A, const N: usize> {
+    fn formals(&self) -> (usize, bool);
+
+    fn into_rust_cont(self) -> RustContinuation;
+}
+
+/// Type to declare that a Rust continuation is variadic
+pub struct Rest(pub Value);
+
+/// A continuation derived from a Rust clossure.
+#[derive(Copy, Clone)]
+pub(crate) struct RustContinuation(fn(Args, &mut ContBarrier<'_>) -> Application);
+
+const fn assert_non_capturing<F>() {
+    assert!(
+        size_of::<F>() == 0,
+        "a Rust continuation must be convertible to a function pointer"
+    );
+}
+
+/// Create a function from a type. Has the effect of converting a `impl Fn`
+/// into a callable function. This code is taken from the rust stdlib nightly
+/// feature `conjure_zst`.
+///
+/// # Safety
+///
+/// Generally incredibly unsafe and should only be used in this particular
+/// context.
+#[allow(clippy::uninit_assumed_init)]
+unsafe fn conjure<F>() -> F {
+    const { assert_non_capturing::<F>() };
+    unsafe { std::mem::MaybeUninit::<F>::uninit().assume_init() }
+}
+
+impl<F, R, const N: usize> IntoRustContinuation<(), N> for F
+where
+    F: Fn([Value; N], &mut ContBarrier) -> R + Send + Sync + 'static,
+    R: IntoApplication + 'static,
+{
+    fn formals(&self) -> (usize, bool) {
+        (0, false)
+    }
+
+    fn into_rust_cont(self) -> RustContinuation {
+        RustContinuation(|args, barrier: &mut ContBarrier<'_>| {
+            let env = barrier.pop_env_n::<N>();
+            if !args.0[0].is_undefined() {
+                return raise(Exception::wrong_num_of_args(0, args.len()).into(), barrier);
+            }
+            (unsafe { conjure::<F>() })(env, barrier).into_application(barrier)
+        })
+    }
+}
+
+impl<F, R, const N: usize> IntoRustContinuation<(Rest,), N> for F
+where
+    F: Fn([Value; N], Rest, &mut ContBarrier) -> R + Send + Sync + 'static,
+    R: IntoApplication + 'static,
+{
+    fn formals(&self) -> (usize, bool) {
+        (0, true)
+    }
+
+    fn into_rust_cont(self) -> RustContinuation {
+        RustContinuation(|args, barrier: &mut ContBarrier<'_>| {
+            let env = barrier.pop_env_n::<N>();
+            (unsafe { conjure::<F>() })(env, Rest(args.into_list()), barrier)
+                .into_application(barrier)
+        })
+    }
+}
+
+macro_rules! count {
+    () => {
+        0usize
+    };
+
+    ($head:ident, $( $tail:ident, )*) => {
+        1 + count!($($tail,)*)
+    };
+}
+
+macro_rules! direct_args {
+    ($args:ident, $barrier:ident; $( $t:ident )*) => {{
+        let expected = count!($( $t, )*);
+        let direct = expected.min(MAX_DIRECT_ARGS);
+        let required_present = $args.0[..direct].iter().all(|arg| !arg.is_undefined());
+        let no_extra = if expected < MAX_DIRECT_ARGS {
+            $args.0[expected].is_undefined()
+        } else {
+            list_len(&$args.0[MAX_DIRECT_ARGS]) == expected - MAX_DIRECT_ARGS
+        };
+        if !required_present || !no_extra {
+            return raise(
+                Exception::wrong_num_of_args(expected, $args.len()).into(),
+                $barrier,
+            );
+        }
+        direct_args!(@extract $args; $( $t )*)
+    }};
+    (@extract $args:ident; $t1:ident) => {{
+        let Args([arg1, ..]) = $args;
+        [arg1]
+    }};
+    (@extract $args:ident; $t1:ident $t2:ident) => {{
+        let Args([arg1, arg2, ..]) = $args;
+        [arg1, arg2]
+    }};
+    (@extract $args:ident; $t1:ident $t2:ident $t3:ident) => {{
+        let Args([arg1, arg2, arg3, ..]) = $args;
+        [arg1, arg2, arg3]
+    }};
+    (@extract $args:ident; $t1:ident $t2:ident $t3:ident $t4:ident) => {{
+        let Args([arg1, arg2, arg3, arg4, _]) = $args;
+        [arg1, arg2, arg3, arg4]
+    }};
+    (@extract $args:ident; $t1:ident $t2:ident $t3:ident $t4:ident $t5:ident) => {{
+        let Args([arg1, arg2, arg3, arg4, argn]) = $args;
+        let arg5 = argn.cast::<Pair>().unwrap().car();
+        [arg1, arg2, arg3, arg4, arg5]
+    }};
+}
+
+macro_rules! direct_args_rest {
+    ($args:ident, $barrier:ident; $( $t:ident )*) => {{
+        let expected = count!($( $t, )*);
+        let direct = expected.min(MAX_DIRECT_ARGS);
+        let required_present = $args.0[..direct].iter().all(|arg| !arg.is_undefined())
+            && (expected <= MAX_DIRECT_ARGS
+                || list_len(&$args.0[MAX_DIRECT_ARGS]) >= expected - MAX_DIRECT_ARGS);
+        if !required_present {
+            return raise(
+                Exception::wrong_num_of_args(expected, $args.len()).into(),
+                $barrier,
+            );
+        }
+        direct_args_rest!(@extract $args; $( $t )*)
+    }};
+    (@extract $args:ident; $t1:ident) => {{
+        let Args([arg1, arg2, arg3, arg4, argn]) = $args;
+        ([arg1], cons_direct_args([arg2, arg3, arg4], argn))
+    }};
+    (@extract $args:ident; $t1:ident $t2:ident) => {{
+        let Args([arg1, arg2, arg3, arg4, argn]) = $args;
+        ([arg1, arg2], cons_direct_args([arg3, arg4], argn))
+    }};
+    (@extract $args:ident; $t1:ident $t2:ident $t3:ident) => {{
+        let Args([arg1, arg2, arg3, arg4, argn]) = $args;
+        ([arg1, arg2, arg3], cons_direct_args([arg4], argn))
+    }};
+    (@extract $args:ident; $t1:ident $t2:ident $t3:ident $t4:ident) => {{
+        let Args([arg1, arg2, arg3, arg4, argn]) = $args;
+        ([arg1, arg2, arg3, arg4], argn)
+    }};
+    (@extract $args:ident; $t1:ident $t2:ident $t3:ident $t4:ident $t5:ident) => {{
+        let Args([arg1, arg2, arg3, arg4, argn]) = $args;
+        let pair = argn.cast::<Pair>().unwrap();
+        ([arg1, arg2, arg3, arg4, pair.car()], pair.cdr())
+    }};
+}
+
+macro_rules! impl_rust_cont {
+    ( $( $arg:ident ),* ) => {
+        impl<F, R, $( $arg, )* const N: usize> IntoRustContinuation<($($arg,)*), N> for F
+        where
+            F: Fn([Value; N], $( $arg, )* &mut ContBarrier) -> R + Send + Sync + 'static,
+            R: IntoApplication + 'static,
+        $(
+            Value: TryInto<$arg>,
+            <Value as TryInto<$arg>>::Error: Into<Value>,
+        )*
+        {
+            fn formals(&self) -> (usize, bool) {
+                (count!($( $arg, )*), false)
+            }
+
+            fn into_rust_cont(self) -> RustContinuation {
+                RustContinuation(|args, barrier: &mut ContBarrier<'_>| {
+                    let env = barrier.pop_env_n::<N>();
+                    let values = direct_args!(args, barrier; $( $arg )*);
+                    let mut values = values.into_iter();
+                    (unsafe { conjure::<F>() })(
+                        env,
+                        $(
+                            match <Value as TryInto<$arg>>::try_into(values.next().unwrap()) {
+                                Ok(val) => val,
+                                Err(err) => return raise(err.into(), barrier),
+                            },
+                        )*
+                        barrier
+                    ).into_application(barrier)
+                })
+            }
+        }
+
+        impl<F, R, $( $arg, )* const N: usize> IntoRustContinuation<($($arg,)* Rest), N> for F
+        where
+            F: Fn([Value; N], $( $arg, )* Rest) -> R + Send + Sync + 'static,
+            R: IntoApplication + 'static,
+        $(
+            Value: TryInto<$arg>,
+            <Value as TryInto<$arg>>::Error: Into<Value>,
+        )*
+        {
+            fn formals(&self) -> (usize, bool) {
+                (count!($( $arg, )*), true)
+            }
+
+            fn into_rust_cont(self) -> RustContinuation {
+                RustContinuation(|args, barrier: &mut ContBarrier<'_>| {
+                    let env = barrier.pop_env_n::<N>();
+                    let (values, rest) = direct_args_rest!(args, barrier; $( $arg )*);
+                    let mut values = values.into_iter();
+                    (unsafe { conjure::<F>() })(
+                        env,
+                        $(
+                            match <Value as TryInto<$arg>>::try_into(values.next().unwrap()) {
+                                Ok(val) => val,
+                                Err(err) => return raise(err.into(), barrier),
+                            },
+                        )*
+                        Rest(rest)
+                    ).into_application(barrier)
+                })
+            }
+        }
+    }
+}
+
+impl_rust_cont!(T1);
+impl_rust_cont!(T1, T2);
+impl_rust_cont!(T1, T2, T3);
+impl_rust_cont!(T1, T2, T3, T4);
+impl_rust_cont!(T1, T2, T3, T4, T5);
 
 /// Debug information associated with a procedure, including its name, argument
 /// names, and source location.
@@ -677,21 +1104,23 @@ impl ProcDebugInfo {
     }
 }
 
-#[cps_bridge(def = "apply arg1 . args", lib = "(rnrs base builtins (6))")]
-pub fn apply(
-    _env: &[Value],
-    args: &[Value],
-    rest_args: &[Value],
-    _barrier: &mut ContBarrier,
-) -> Result<Application, Exception> {
-    if rest_args.is_empty() {
-        return Err(Exception::wrong_num_of_args(2, args.len()));
+#[bridge(name = "apply", lib = "(rnrs base builtins (6))")]
+pub fn apply(proc: Procedure, #[rest_args] args: Value) -> Result<Application, Exception> {
+    Ok(Application::new(proc, Args::from_list(splice_last(args)?)))
+}
+
+/// Flatten the last element of a list with its own elements, i.e.
+/// `(a b (c d))` becomes `(a b c d)`.
+fn splice_last(args: Value) -> Result<Value, Exception> {
+    let Some(pair) = args.cast::<Pair>() else {
+        return Err(Exception::wrong_num_of_args(2, 1));
+    };
+    let cdr = pair.cdr();
+    if cdr.is_null() {
+        Ok(pair.car())
+    } else {
+        Ok(Value::from(Pair::immutable(pair.car(), splice_last(cdr)?)))
     }
-    let op: Procedure = args[0].clone().try_into()?;
-    let (last, args) = rest_args.split_last().unwrap();
-    let mut args = args.to_vec();
-    list_to_vec(last, &mut args);
-    Ok(Application::new(op.clone(), args))
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -717,7 +1146,7 @@ pub struct ContBarrier<'a> {
     state: DynState,
     /// The current live continuations for the program. Effectively the call
     /// stack. Includes active [continuation marks](https://srfi.schemers.org/srfi-157/srfi-157.html).
-    cont_stack: ContStack,
+    pub(crate) cont_stack: ContStack,
     /// The active installed mutable parameters
     params: HashMap<Symbol, Param<'a>>,
 }
@@ -734,7 +1163,7 @@ impl<'a> ContBarrier<'a> {
         };
 
         // The call stack always contains a top-level halt continuation:
-        this.push_cont([], ContPtr::Continuation(halt), 0, true);
+        this.push_cont([], halt);
 
         this
     }
@@ -902,60 +1331,72 @@ impl<'a> ContBarrier<'a> {
         self.state.dyn_stack.is_empty()
     }
 
-    /// Push a continuation onto the current call stack.
+    /// Push a Rust continuation onto the current call stack.
     #[allow(private_bounds)]
-    pub fn push_cont(
+    pub fn push_cont<A, const N: usize>(
         &mut self,
-        env: impl IntoIterator<Item = Value>,
-        func_ptr: impl Into<ContPtr>,
-        num_required_args: usize,
-        variadic: bool,
+        env: [Value; N],
+        cont: impl IntoRustContinuation<A, N>,
     ) {
-        self.cont_stack
-            .push_cont(func_ptr.into(), env, num_required_args, variadic);
+        let (num_required_args, variadic) = cont.formals();
+        self.cont_stack.push(
+            ContPtr::RustCont(cont.into_rust_cont()),
+            env,
+            num_required_args,
+            variadic,
+        );
     }
 
-    pub fn call_cont(&mut self, mut args: Vec<Value>) -> Application {
-        let curr_frame = self.cont_stack.frames.pop().unwrap();
-        let env: SmallVec<[Value; 10]> =
-            self.cont_stack.envs.drain(curr_frame.env_start..).collect();
-
-        if let Err(raised) = check_args(
-            curr_frame.num_required_args,
-            curr_frame.variadic,
-            &args,
-            self,
-        ) {
-            return raised;
-        }
-
-        if curr_frame.variadic {
-            let mut rest_args = Value::null();
-            let extra_args = args.len() - curr_frame.num_required_args;
-            for _ in 0..extra_args {
-                rest_args = Value::from(Pair::immutable(args.pop().unwrap(), rest_args));
-            }
-            args.push(rest_args);
-        }
-
-        match curr_frame.func_ptr {
-            ContPtr::Continuation(func) => unsafe {
-                let mut app = std::mem::MaybeUninit::<Application>::uninit();
-                (func)(
-                    env.as_ptr(),
-                    args.as_ptr(),
-                    self as *mut ContBarrier<'_>,
-                    &mut app,
-                );
-                app.assume_init()
-            },
-            ContPtr::PromptBarrier { .. } => {
-                self.pop_dyn_stack();
-                let mut values: Vec<Value> = args[..curr_frame.num_required_args].to_vec();
-                if curr_frame.variadic {
-                    list_to_vec(&args[curr_frame.num_required_args], &mut values);
+    pub fn call_cont(&mut self, args: Args) -> Application {
+        loop {
+            let curr_frame = self.cont_stack.frames.pop().unwrap();
+            match curr_frame.func_ptr {
+                ContPtr::JitCont(..) => {
+                    // Return the JIT continuation to the trampoline. When
+                    // `become` is stabalized this will no longer be necessary.
+                    self.cont_stack.frames.push(curr_frame);
+                    return Application {
+                        op: OpType::JitCont,
+                        args,
+                    };
                 }
-                self.call_cont(values)
+                ContPtr::RustCont(rust_cont) => {
+                    return (rust_cont.0)(args, self);
+                }
+                ContPtr::PromptBarrier { .. } => {
+                    self.pop_dyn_stack();
+                }
+            }
+        }
+    }
+
+    pub(crate) fn pop_env_n<const N: usize>(&mut self) -> [Value; N] {
+        let mut env = std::array::from_fn(|_| self.pop_env());
+        env.reverse();
+        env
+    }
+
+    pub(crate) fn pop_env(&mut self) -> Value {
+        self.cont_stack.envs.pop().unwrap()
+    }
+
+    pub(crate) fn pop_jit_cont(&mut self) -> Option<NonNull<u8>> {
+        loop {
+            if self
+                .cont_stack
+                .frames
+                .last()
+                .is_some_and(|frame| frame.func_ptr.is_rust_cont())
+            {
+                return None;
+            } else {
+                match self.cont_stack.frames.pop().unwrap().func_ptr {
+                    ContPtr::JitCont(func, _) => return NonNull::new(func.0 as *mut u8),
+                    ContPtr::PromptBarrier { .. } => {
+                        self.pop_dyn_stack();
+                    }
+                    _ => unreachable!(),
+                }
             }
         }
     }
@@ -1058,29 +1499,13 @@ impl DynStackElem {
     }
 }
 
-pub(crate) unsafe extern "C" fn pop_dyn_stack(
-    _env: *const Value,
-    args: *const Value,
-    barrier: *mut ContBarrier,
-    out: *mut MaybeUninit<Application>,
-) {
-    unsafe {
-        let barrier = barrier.as_mut().unwrap_unchecked();
-        barrier.pop_dyn_stack();
-
-        let (num_required_args, variadic) = barrier.cont_formals();
-        let mut collected_args: Vec<_> = (0..num_required_args)
-            .map(|i| args.add(i).as_ref().unwrap().clone())
-            .collect();
-        if variadic {
-            let rest_args = args.add(num_required_args).as_ref().unwrap().clone();
-            let mut vec = Vec::new();
-            crate::lists::list_to_vec(&rest_args, &mut vec);
-            collected_args.extend(vec);
-        }
-
-        (*out).write(barrier.call_cont(collected_args));
-    }
+pub(crate) fn pop_dyn_stack(
+    _env: [Value; 0],
+    args: Rest,
+    barrier: &mut ContBarrier,
+) -> Application {
+    barrier.pop_dyn_stack();
+    barrier.call_cont(Args::from_list(args.0))
 }
 
 #[derive(Default, Clone, Trace)]
@@ -1090,7 +1515,7 @@ pub(crate) struct ContStack {
 }
 
 impl ContStack {
-    pub(crate) fn push_cont(
+    pub(crate) fn push(
         &mut self,
         func_ptr: ContPtr,
         env: impl IntoIterator<Item = Value>,
@@ -1121,36 +1546,13 @@ pub(crate) struct ContFrame {
     marks: HashMap<Symbol, Value>,
 }
 
-fn check_args(
-    num_required_args: usize,
-    variadic: bool,
-    args: &[Value],
-    barrier: &mut ContBarrier,
-) -> Result<(), Application> {
-    // Error if the number of arguments provided is incorrect.
-    if args.len() < num_required_args || (!variadic && args.len() > num_required_args) {
-        return Err(raise(
-            Exception::wrong_num_of_args(num_required_args, args.len()).into(),
-            barrier,
-        ));
-    }
-
-    Ok(())
-}
-
 #[cfg(feature = "continuation-marks")]
-#[cps_bridge(def = "print-trace", lib = "(rnrs base builtins (6))")]
-pub fn print_trace(
-    _env: &[Value],
-    _args: &[Value],
-    _rest_args: &[Value],
-    barrier: &mut ContBarrier,
-) -> Result<Application, Exception> {
+#[bridge(name = "print-trace", lib = "(scheme-rs tracing (6))")]
+pub fn print_trace(barrier: &mut ContBarrier) {
     println!(
         "trace: {:#?}",
         barrier.current_marks(Symbol::intern("trace"))
     );
-    Ok(barrier.call_cont(Vec::new()))
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1158,246 +1560,123 @@ pub fn print_trace(
 // Call with current continuation
 //
 
-#[cps_bridge(
-    def = "call-with-current-continuation proc",
+#[bridge(
+    name = "call-with-current-continuation",
     lib = "(rnrs base builtins (6))"
 )]
-pub fn call_with_current_continuation(
-    _env: &[Value],
-    args: &[Value],
-    _rest_args: &[Value],
-    barrier: &mut ContBarrier,
-) -> Result<Application, Exception> {
-    let proc: Procedure = args[0].clone().try_into()?;
+pub fn call_with_current_continuation(proc: Procedure, barrier: &mut ContBarrier) -> Application {
     let (req_args, variaidic) = barrier.cont_formals();
 
-    let escape = Procedure::new(
+    let escape_proc = Procedure::new(
         vec![Value::from(barrier.save())],
-        FuncPtr::Bridge(escape_procedure),
+        FuncPtr::Bridge(escape_proc),
         req_args,
         variaidic,
     );
 
-    Ok(Application::new(proc, vec![Value::from(escape)]))
+    Application::new(proc, Args::pack([Value::from(escape_proc)]))
 }
 
 /// Prepare the continuation for call/cc. Clones the continuation environment
 /// and creates a closure that calls the appropriate winders.
-#[cps_bridge]
-fn escape_procedure(
-    env: &[Value],
-    args: &[Value],
-    rest_args: &[Value],
+#[bridge]
+fn escape_proc(
+    #[env] saved_barrier: Embedded<SavedDynamicState>,
+    #[rest_args] args: Value,
     barrier: &mut ContBarrier,
 ) -> Result<Application, Exception> {
-    // env[0] is the continuation environment:
-    let saved_barrier = env[0]
-        .clone()
-        .cast::<Embedded<SavedDynamicState>>()
-        .unwrap();
-
     if saved_barrier.id != barrier.id {
         return Err(Exception::error("attempt to cross continuation barrier"));
     }
 
-    let args = args.iter().chain(rest_args).cloned().collect::<Vec<_>>();
-
     barrier.cont_stack = saved_barrier.cont_stack.clone();
-    barrier.push_cont(
-        vec![Value::from(args), env[0].clone()],
-        ContPtr::Continuation(unwind),
-        0,
-        false,
-    );
-    Ok(barrier.call_cont(Vec::new()))
+    barrier.push_cont([args, Value::from(saved_barrier)], unwind);
+
+    Ok(barrier.call_cont(Args::pack([])))
 }
 
-unsafe extern "C" fn unwind(
-    env: *const Value,
-    _args: *const Value,
-    barrier: *mut ContBarrier,
-    out: *mut MaybeUninit<Application>,
-) {
-    unsafe {
-        // env[0] are the arguments to pass to k
-        let args = env.as_ref().unwrap().clone();
+fn unwind(env: [Value; 2], _args: Rest, barrier: &mut ContBarrier) -> Application {
+    let [args, dest_stack_val] = env;
+    let dest_stack = dest_stack_val
+        .clone()
+        .try_to::<Embedded<SavedDynamicState>>()
+        .unwrap();
+    let dest_stack_read = dest_stack.as_ref();
 
-        // env[1] is the stack we are trying to reach
-        let dest_stack_val = env.add(1).as_ref().unwrap().clone();
-        let dest_stack = dest_stack_val
-            .clone()
-            .try_to::<Embedded<SavedDynamicState>>()
-            .unwrap();
-        let dest_stack_read = dest_stack.as_ref();
-
-        let barrier = barrier.as_mut().unwrap_unchecked();
-
-        while !barrier.dyn_stack_is_empty()
-            && (barrier.dyn_stack_len() > dest_stack_read.dyn_stack_len()
-                || barrier.dyn_stack_last()
-                    != dest_stack_read.dyn_stack_get(barrier.dyn_stack_len() - 1))
-        {
-            match barrier.pop_dyn_stack() {
-                None => {
-                    break;
-                }
-                Some(DynStackElem::Winder(winder)) => {
-                    // Call the out winder while unwinding
-                    barrier.push_cont(
-                        [args, dest_stack_val],
-                        ContPtr::Continuation(unwind),
-                        0,
-                        false,
-                    );
-                    let app = Application::new(winder.out_thunk, Vec::new());
-                    (*out).write(app);
-                    return;
-                }
-                _ => (),
-            };
-        }
-
-        // Begin winding
-        barrier.push_cont(
-            [args, dest_stack_val, Value::from(false)],
-            ContPtr::Continuation(wind),
-            0,
-            false,
-        );
-        (*out).write(barrier.call_cont(Vec::new()));
-    }
-}
-
-unsafe extern "C" fn wind(
-    env: *const Value,
-    _args: *const Value,
-    barrier: *mut ContBarrier,
-    out: *mut MaybeUninit<Application>,
-) {
-    unsafe {
-        // env[0] are the arguments to pass to k
-        let args = env.as_ref().unwrap().clone();
-
-        // env[0] is the stack we are trying to reach
-        let dest_stack_val = env.add(1).as_ref().unwrap().clone();
-        let dest_stack = dest_stack_val
-            .try_to::<Embedded<SavedDynamicState>>()
-            .unwrap();
-        let dest_stack_read = dest_stack.as_ref();
-
-        let barrier = barrier.as_mut().unwrap_unchecked();
-
-        // env[2] is potentially a winder that we should push onto the dyn stack
-        let winder = env.add(2).as_ref().unwrap().clone();
-        if winder.is_true() {
-            let winder = winder.try_to::<Embedded<Winder>>().unwrap();
-            barrier.push_dyn_stack(DynStackElem::Winder(winder.as_ref().clone()));
-        }
-
-        while barrier.dyn_stack_len() < dest_stack_read.dyn_stack_len() {
-            match dest_stack_read
-                .dyn_stack_get(barrier.dyn_stack_len())
-                .cloned()
-            {
-                None => {
-                    break;
-                }
-                Some(DynStackElem::Winder(winder)) => {
-                    // Call the in winder while winding
-                    let in_thunk = winder.in_thunk.clone();
-                    barrier.push_cont(
-                        [args, dest_stack_val, Value::from(winder)],
-                        ContPtr::Continuation(wind),
-                        0,
-                        false,
-                    );
-                    let app = Application::new(in_thunk, Vec::new());
-                    (*out).write(app);
-                    return;
-                }
-                Some(elem) => barrier.push_dyn_stack(elem),
+    while !barrier.dyn_stack_is_empty()
+        && (barrier.dyn_stack_len() > dest_stack_read.dyn_stack_len()
+            || barrier.dyn_stack_last()
+                != dest_stack_read.dyn_stack_get(barrier.dyn_stack_len() - 1))
+    {
+        match barrier.pop_dyn_stack() {
+            None => {
+                break;
             }
-        }
-
-        let args: Vector = args.try_into().unwrap();
-        let args = args.0.vec.read().to_vec();
-
-        (*out).write(barrier.call_cont(args));
-    }
-}
-
-unsafe extern "C" fn call_consumer_with_values(
-    env: *const Value,
-    args: *const Value,
-    barrier: *mut ContBarrier,
-    out: *mut MaybeUninit<Application>,
-) {
-    unsafe {
-        // env[0] is the consumer
-        let consumer = env.as_ref().unwrap().clone();
-        let type_name = consumer.type_name();
-
-        let consumer: Procedure = match consumer.try_into() {
-            Ok(consumer) => consumer,
-            _ => {
-                let raised = raise(
-                    Exception::invalid_operator(&type_name).into(),
-                    barrier.as_mut().unwrap_unchecked(),
-                );
-                (*out).write(raised);
-                return;
+            Some(DynStackElem::Winder(winder)) => {
+                // Call the out winder while unwinding
+                barrier.push_cont([args, dest_stack_val], unwind);
+                return Application::new(winder.out_thunk, Args::pack([]));
             }
+            _ => (),
         };
-
-        let mut collected_args: Vec<_> = (0..consumer.0.num_required_args)
-            .map(|i| args.add(i).as_ref().unwrap().clone())
-            .collect();
-
-        // I hate this constant going back and forth from variadic to list. I have
-        // to figure out a way to make it consistent
-        if consumer.0.variadic {
-            let rest_args = args
-                .add(consumer.0.num_required_args)
-                .as_ref()
-                .unwrap()
-                .clone();
-            let mut vec = Vec::new();
-            list_to_vec(&rest_args, &mut vec);
-            collected_args.extend(vec);
-        }
-
-        (*out).write(Application::new(consumer.clone(), collected_args));
     }
+
+    // Begin winding
+    barrier.push_cont([args, dest_stack_val, Value::from(false)], wind);
+    barrier.call_cont(Args::pack([]))
 }
 
-#[cps_bridge(
-    def = "call-with-values producer consumer",
-    lib = "(rnrs base builtins (6))"
-)]
+fn wind(env: [Value; 3], _args: Rest, barrier: &mut ContBarrier) -> Application {
+    let [args, dest_stack_val, winder] = env;
+    let dest_stack = dest_stack_val
+        .clone()
+        .try_to::<Embedded<SavedDynamicState>>()
+        .unwrap();
+    let dest_stack_read = dest_stack.as_ref();
+
+    if winder.is_true() {
+        let winder = winder.try_to::<Embedded<Winder>>().unwrap();
+        barrier.push_dyn_stack(DynStackElem::Winder(winder.as_ref().clone()));
+    }
+
+    while barrier.dyn_stack_len() < dest_stack_read.dyn_stack_len() {
+        match dest_stack_read
+            .dyn_stack_get(barrier.dyn_stack_len())
+            .cloned()
+        {
+            None => {
+                break;
+            }
+            Some(DynStackElem::Winder(winder)) => {
+                // Call the in winder while winding
+                let in_thunk = winder.in_thunk.clone();
+                barrier.push_cont([args, dest_stack_val, Value::from(winder)], wind);
+                return Application::new(in_thunk, Args::pack([]));
+            }
+            Some(elem) => barrier.push_dyn_stack(elem),
+        }
+    }
+
+    barrier.call_cont(Args::from_list(args))
+}
+
+#[bridge(name = "call-with-values", lib = "(rnrs base builtins (6))")]
 pub fn call_with_values(
-    _env: &[Value],
-    args: &[Value],
-    _rest_args: &[Value],
+    producer: Procedure,
+    consumer: Procedure,
     barrier: &mut ContBarrier,
-) -> Result<Application, Exception> {
-    let [producer, consumer] = args else {
-        return Err(Exception::wrong_num_of_args(2, args.len()));
-    };
-
-    let producer: Procedure = producer.clone().try_into()?;
-    let consumer: Procedure = consumer.clone().try_into()?;
-
-    // Get the details of the consumer:
-    let (num_required_args, variadic) = { (consumer.0.num_required_args, consumer.0.variadic) };
-
-    barrier.push_cont(
+) -> Application {
+    producer.call_with_cont(
+        Args::pack([]),
         [Value::from(consumer)],
-        ContPtr::Continuation(call_consumer_with_values),
-        num_required_args,
-        variadic,
-    );
-
-    Ok(Application::new(producer, Vec::new()))
+        |[consumer]: [Value; 1], args: Rest, _: &mut ContBarrier| {
+            Application::new(
+                consumer.cast::<Procedure>().unwrap(),
+                Args::from_list(args.0),
+            )
+        },
+        barrier,
+    )
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1417,105 +1696,48 @@ unsafe impl Embeddable for Winder {
     }
 }
 
-#[cps_bridge(def = "dynamic-wind in body out", lib = "(rnrs base builtins (6))")]
+#[bridge(name = "dynamic-wind", lib = "(rnrs base builtins (6))")]
 pub fn dynamic_wind(
-    _env: &[Value],
-    args: &[Value],
-    _rest_args: &[Value],
+    in_thunk: Procedure,
+    body_thunk: Procedure,
+    out_thunk: Procedure,
     barrier: &mut ContBarrier,
-) -> Result<Application, Exception> {
-    let [in_thunk_val, body_thunk_val, out_thunk_val] = args else {
-        return Err(Exception::wrong_num_of_args(3, args.len()));
-    };
-
-    let in_thunk: Procedure = in_thunk_val.clone().try_into()?;
-    let _: Procedure = body_thunk_val.clone().try_into()?;
-
-    barrier.push_cont(
+) -> Application {
+    // Call the in thunk:
+    in_thunk.call_with_cont(
+        Args::pack([]),
         [
-            in_thunk_val.clone(),
-            body_thunk_val.clone(),
-            out_thunk_val.clone(),
+            Value::from(in_thunk.clone()),
+            Value::from(body_thunk),
+            Value::from(out_thunk),
         ],
-        ContPtr::Continuation(call_body_thunk),
-        0,
-        true,
-    );
-
-    Ok(Application::new(in_thunk, Vec::new()))
-}
-
-pub(crate) unsafe extern "C" fn call_body_thunk(
-    env: *const Value,
-    _args: *const Value,
-    barrier: *mut ContBarrier,
-    out: *mut MaybeUninit<Application>,
-) {
-    unsafe {
-        // env[0] is the in thunk
-        let in_thunk = env.as_ref().unwrap().clone();
-
-        // env[1] is the body thunk
-        let body_thunk: Procedure = env.add(1).as_ref().unwrap().clone().try_into().unwrap();
-
-        // env[2] is the out thunk
-        let out_thunk = env.add(2).as_ref().unwrap().clone();
-
-        let barrier = barrier.as_mut().unwrap_unchecked();
-
-        barrier.push_dyn_stack(DynStackElem::Winder(Winder {
-            in_thunk: in_thunk.clone().try_into().unwrap(),
-            out_thunk: out_thunk.clone().try_into().unwrap(),
-        }));
-
-        barrier.push_cont([out_thunk], ContPtr::Continuation(call_out_thunks), 0, true);
-
-        (*out).write(Application::new(body_thunk, Vec::new()));
-    }
-}
-
-pub(crate) unsafe extern "C" fn call_out_thunks(
-    env: *const Value,
-    args: *const Value,
-    barrier: *mut ContBarrier,
-    out: *mut MaybeUninit<Application>,
-) {
-    unsafe {
-        // env[0] is the out thunk
-        let out_thunk: Procedure = env.as_ref().unwrap().clone().try_into().unwrap();
-
-        // args[0] is the result of the body thunk
-        let body_thunk_res = args.as_ref().unwrap().clone();
-
-        let barrier = barrier.as_mut().unwrap_unchecked();
-        barrier.pop_dyn_stack();
-
-        barrier.push_cont(
-            vec![body_thunk_res],
-            ContPtr::Continuation(forward_body_thunk_result),
-            0,
-            true,
-        );
-
-        (*out).write(Application::new(out_thunk, Vec::new()));
-    }
-}
-
-unsafe extern "C" fn forward_body_thunk_result(
-    env: *const Value,
-    _args: *const Value,
-    barrier: *mut ContBarrier,
-    out: *mut MaybeUninit<Application>,
-) {
-    unsafe {
-        // env[0] is the result of the body thunk
-        let body_thunk_res = env.as_ref().unwrap().clone();
-
-        let mut args = Vec::new();
-        list_to_vec(&body_thunk_res, &mut args);
-
-        (*out).write(barrier.as_mut().unwrap().call_cont(args));
-    }
+        |[in_thunk, body_thunk, out_thunk]: [Value; 3], _: Rest, barrier: &mut ContBarrier| {
+            barrier.push_dyn_stack(DynStackElem::Winder(Winder {
+                in_thunk: in_thunk.cast().unwrap(),
+                out_thunk: out_thunk.cast().unwrap(),
+            }));
+            // Call the body thunk:
+            body_thunk.cast::<Procedure>().unwrap().call_with_cont(
+                Args::pack([]),
+                [out_thunk.clone()],
+                |[out_thunk]: [Value; 1], args: Rest, barrier: &mut ContBarrier| {
+                    // Pop the dyn stack:
+                    barrier.pop_dyn_stack();
+                    // Save the arguments and call the out thunk:
+                    out_thunk.cast::<Procedure>().unwrap().call_with_cont(
+                        Args::pack([]),
+                        [args.0],
+                        |[body_thunk_res]: [Value; 1], _: Rest, barrier: &mut ContBarrier| {
+                            barrier.call_cont(Args::from_list(body_thunk_res.clone()))
+                        },
+                        barrier,
+                    )
+                },
+                barrier,
+            )
+        },
+        barrier,
+    )
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1530,92 +1752,62 @@ pub(crate) struct Prompt {
     handler: Procedure,
 }
 
-#[cps_bridge(def = "call-with-prompt tag thunk handler", lib = "(prompts)")]
+#[bridge(name = "call-with-prompt", lib = "(prompts)")]
 pub fn call_with_prompt(
-    _env: &[Value],
-    args: &[Value],
-    _rest_args: &[Value],
+    tag: Symbol,
+    thunk: Procedure,
+    handler: Procedure,
     barrier: &mut ContBarrier,
-) -> Result<Application, Exception> {
+) -> Application {
     static BARRIER_ID: AtomicUsize = AtomicUsize::new(0);
-
-    let [tag, thunk, handler] = args else {
-        unreachable!()
-    };
-
-    let (req_args, variadic) = barrier.cont_formals();
-    let tag: Symbol = tag.clone().try_into().unwrap();
 
     let barrier_id = BARRIER_ID.fetch_add(1, Ordering::Relaxed);
 
+    let (req_args, variadic) = barrier.cont_formals();
+
     barrier.push_dyn_stack(DynStackElem::Prompt(Prompt {
         tag,
-        handler: handler.clone().try_into().unwrap(),
+        handler,
         barrier_id,
     }));
 
-    barrier.push_cont(
-        Vec::new(),
+    barrier.cont_stack.push(
         ContPtr::PromptBarrier { barrier_id },
+        Vec::new(),
         req_args,
         variadic,
     );
 
-    Ok(Application::new(
-        thunk.clone().try_into().unwrap(),
-        Vec::new(),
-    ))
+    Application::new(thunk, Args::pack([]))
 }
 
-#[cps_bridge(def = "abort-to-prompt tag . values", lib = "(prompts)")]
+#[bridge(name = "abort-to-prompt", lib = "(prompts)")]
 pub fn abort_to_prompt(
-    _env: &[Value],
-    args: &[Value],
-    rest_args: &[Value],
+    tag: Symbol,
+    #[rest_args] rest_args: Value,
     barrier: &mut ContBarrier,
-) -> Result<Application, Exception> {
-    let [tag] = args else { unreachable!() };
-    barrier.push_cont(
-        vec![
-            Value::from(rest_args.to_vec()),
-            tag.clone(),
-            Value::from(barrier.save()),
-        ],
-        ContPtr::Continuation(unwind_to_prompt),
-        0,
-        false,
-    );
-    Ok(barrier.call_cont(Vec::new()))
+) -> Application {
+    let saved = Value::from(barrier.save());
+    barrier.push_cont([rest_args, Value::from(tag), saved], unwind_to_prompt);
+    barrier.call_cont(Args::pack([]))
 }
 
-unsafe extern "C" fn unwind_to_prompt(
-    env: *const Value,
-    _args: *const Value,
-    barrier: *mut ContBarrier,
-    out: *mut MaybeUninit<Application>,
-) {
-    unsafe {
-        // env[0] is the arguments passed to abort-to-prompt:
-        let args = env.as_ref().unwrap().clone();
-        // env[1] is the prompt tag
-        let tag: Symbol = env.add(1).as_ref().unwrap().clone().try_into().unwrap();
-        // env[2] is the saved dyn stack
-        let saved_barrier = env.add(2).as_ref().unwrap().clone();
+fn unwind_to_prompt(env: [Value; 3], _args: Rest, barrier: &mut ContBarrier) -> Application {
+    let [args, tag_val, saved_barrier] = env;
+    let tag: Symbol = tag_val.clone().try_into().unwrap();
 
-        let barrier = barrier.as_mut().unwrap_unchecked();
-
-        loop {
-            let app = match barrier.pop_dyn_stack() {
-                None => Application::halt_err(Value::from(Exception::error(format!(
-                    "no prompt tag {tag} found"
-                )))),
-                Some(DynStackElem::Prompt(Prompt {
-                    tag: prompt_tag,
-                    barrier_id,
-                    handler,
-                })) if prompt_tag == tag => {
-                    // Split the continuation at the barrier:
-                    let barrier_idx = barrier
+    loop {
+        return match barrier.pop_dyn_stack() {
+            None => Application::halt_err(Value::from(Exception::error(format!(
+                "no prompt tag {tag} found"
+            )))),
+            Some(DynStackElem::Prompt(Prompt {
+                tag: prompt_tag,
+                barrier_id,
+                handler,
+            })) if prompt_tag == tag => {
+                // Split the continuation at the barrier:
+                let barrier_idx = barrier
                         .cont_stack
                         .frames
                         .iter()
@@ -1623,75 +1815,61 @@ unsafe extern "C" fn unwind_to_prompt(
                             matches!(frame.func_ptr, ContPtr::PromptBarrier { barrier_id: b } if b == barrier_id)
                         })
                         .unwrap();
-                    let env_base = barrier
-                        .cont_stack
-                        .frames
-                        .get(barrier_idx + 1)
-                        .map_or(barrier.cont_stack.envs.len(), |frame| frame.env_start);
-                    let mut delimited_frames =
-                        barrier.cont_stack.frames[barrier_idx + 1..].to_vec();
-                    for frame in &mut delimited_frames {
-                        frame.env_start -= env_base;
-                    }
-                    let delimited_cont = ContStack {
-                        frames: delimited_frames,
-                        envs: barrier.cont_stack.envs[env_base..].to_vec(),
-                    };
-
-                    let barrier_env_base = barrier.cont_stack.frames[barrier_idx].env_start;
-                    barrier.cont_stack.frames.truncate(barrier_idx);
-                    barrier.cont_stack.envs.truncate(barrier_env_base);
-
-                    let saved_barrier = saved_barrier
-                        .try_to::<Embedded<SavedDynamicState>>()
-                        .unwrap();
-                    let prompt_delimited_barrier = SavedDynamicState {
-                        id: saved_barrier.id,
-                        state: DynState {
-                            dyn_stack: saved_barrier.as_ref().state.dyn_stack
-                                [barrier.dyn_stack_len() + 1..]
-                                .to_vec(),
-                        },
-                        cont_stack: delimited_cont,
-                    };
-
-                    let mut handler_args = vec![Value::from(Procedure::new(
-                        vec![Value::from(prompt_delimited_barrier)],
-                        FuncPtr::Bridge(delimited_continuation),
-                        0,
-                        true,
-                    ))];
-                    handler_args.extend(args.cast::<Vector>().unwrap().iter());
-                    Application::new(handler, handler_args)
+                let env_base = barrier
+                    .cont_stack
+                    .frames
+                    .get(barrier_idx + 1)
+                    .map_or(barrier.cont_stack.envs.len(), |frame| frame.env_start);
+                let mut delimited_frames = barrier.cont_stack.frames[barrier_idx + 1..].to_vec();
+                for frame in &mut delimited_frames {
+                    frame.env_start -= env_base;
                 }
-                Some(DynStackElem::Winder(winder)) => {
-                    barrier.push_cont(
-                        vec![args, Value::from(tag), saved_barrier],
-                        ContPtr::Continuation(unwind_to_prompt),
-                        0,
-                        false,
-                    );
-                    Application::new(winder.out_thunk, Vec::new())
-                }
-                _ => continue,
-            };
-            (*out).write(app);
-            return;
-        }
+                let delimited_cont = ContStack {
+                    frames: delimited_frames,
+                    envs: barrier.cont_stack.envs[env_base..].to_vec(),
+                };
+
+                let barrier_env_base = barrier.cont_stack.frames[barrier_idx].env_start;
+                barrier.cont_stack.frames.truncate(barrier_idx);
+                barrier.cont_stack.envs.truncate(barrier_env_base);
+
+                let saved_barrier = saved_barrier
+                    .try_to::<Embedded<SavedDynamicState>>()
+                    .unwrap();
+                let prompt_delimited_barrier = SavedDynamicState {
+                    id: saved_barrier.id,
+                    state: DynState {
+                        dyn_stack: saved_barrier.as_ref().state.dyn_stack
+                            [barrier.dyn_stack_len() + 1..]
+                            .to_vec(),
+                    },
+                    cont_stack: delimited_cont,
+                };
+
+                let delimited_cont_proc = Value::from(Procedure::new(
+                    vec![Value::from(prompt_delimited_barrier)],
+                    FuncPtr::Bridge(delimited_continuation),
+                    0,
+                    true,
+                ));
+                let handler_args = Value::from(Pair::immutable(delimited_cont_proc, args));
+                Application::new(handler, Args::from_list(handler_args))
+            }
+            Some(DynStackElem::Winder(winder)) => {
+                barrier.push_cont([args, tag_val, saved_barrier], unwind_to_prompt);
+                Application::new(winder.out_thunk, Args::pack([]))
+            }
+            _ => continue,
+        };
     }
 }
 
-#[cps_bridge]
+#[bridge]
 fn delimited_continuation(
-    env: &[Value],
-    args: &[Value],
-    rest_args: &[Value],
+    #[env] saved_barrier: Embedded<SavedDynamicState>,
+    #[rest_args] rest_args: Value,
     barrier: &mut ContBarrier,
 ) -> Result<Application, Exception> {
-    // env[0] is the captured delimited continuation.
-    let saved_barrier_val = env[0].clone();
-    let saved_barrier = saved_barrier_val.try_to::<Embedded<SavedDynamicState>>()?;
-
     // Splice the captured frames onto the current continuation.
     let base = barrier.cont_stack.envs.len();
     barrier
@@ -1705,72 +1883,48 @@ fn delimited_continuation(
     }
 
     // Restore the captured dynamic stack entries and rewind
-    let values = Value::from(args.iter().chain(rest_args).cloned().collect::<Vec<_>>());
     barrier.push_cont(
         [
-            values,
-            saved_barrier_val,
+            rest_args,
+            Value::from(saved_barrier),
             Value::from(0),
             Value::from(false),
         ],
-        ContPtr::Continuation(wind_delim),
-        0,
-        false,
+        wind_delim,
     );
-    Ok(barrier.call_cont(Vec::new()))
+    Ok(barrier.call_cont(Args::pack([])))
 }
 
-unsafe extern "C" fn wind_delim(
-    env: *const Value,
-    _args: *const Value,
-    barrier: *mut ContBarrier,
-    out: *mut MaybeUninit<Application>,
-) {
-    unsafe {
-        let barrier = barrier.as_mut().unwrap_unchecked();
+fn wind_delim(env: [Value; 4], _args: Rest, barrier: &mut ContBarrier) -> Application {
+    let [args, dest_stack_val, idx, winder] = env;
+    let dest_stack = dest_stack_val
+        .clone()
+        .try_to::<Embedded<SavedDynamicState>>()
+        .unwrap();
+    let mut idx: usize = idx.cast().unwrap();
 
-        // env[0] are the values to resume the delimited continuation with
-        let args = env.as_ref().unwrap().clone();
-
-        // env[1] is the saved state whose dynamic stack we are re-establishing
-        let dest_stack_val = env.add(1).as_ref().unwrap().clone();
-        let dest_stack = dest_stack_val
-            .try_to::<Embedded<SavedDynamicState>>()
-            .unwrap();
-
-        // env[2] is how far into that dynamic stack we've wound
-        let mut idx: usize = env.add(2).as_ref().unwrap().cast().unwrap();
-
-        // env[3] is the winder whose in thunk just ran.
-        let winder = env.add(3).as_ref().unwrap().clone();
-        if winder.is_true() {
-            let winder = winder.try_to::<Embedded<Winder>>().unwrap();
-            barrier.push_dyn_stack(DynStackElem::Winder(winder.as_ref().clone()));
-        }
-
-        while let Some(elem) = dest_stack.as_ref().dyn_stack_get(idx) {
-            idx += 1;
-
-            if let DynStackElem::Winder(winder) = elem {
-                barrier.push_cont(
-                    vec![
-                        args,
-                        dest_stack_val,
-                        Value::from(idx),
-                        Value::from(winder.clone()),
-                    ],
-                    ContPtr::Continuation(wind_delim),
-                    0,
-                    false,
-                );
-                (*out).write(Application::new(winder.in_thunk.clone(), Vec::new()));
-                return;
-            }
-            barrier.push_dyn_stack(elem.clone());
-        }
-
-        let args: Vector = args.try_into().unwrap();
-        let args = args.0.vec.read().to_vec();
-        (*out).write(barrier.call_cont(args));
+    if winder.is_true() {
+        let winder = winder.try_to::<Embedded<Winder>>().unwrap();
+        barrier.push_dyn_stack(DynStackElem::Winder(winder.as_ref().clone()));
     }
+
+    while let Some(elem) = dest_stack.as_ref().dyn_stack_get(idx) {
+        idx += 1;
+
+        if let DynStackElem::Winder(winder) = elem {
+            barrier.push_cont(
+                [
+                    args,
+                    dest_stack_val,
+                    Value::from(idx),
+                    Value::from(winder.clone()),
+                ],
+                wind_delim,
+            );
+            return Application::new(winder.in_thunk.clone(), Args::pack([]));
+        }
+        barrier.push_dyn_stack(elem.clone());
+    }
+
+    barrier.call_cont(Args::from_list(args))
 }

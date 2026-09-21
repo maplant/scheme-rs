@@ -8,13 +8,12 @@
 
 use memchr::{memchr, memmem};
 use rustyline::Editor;
-use scheme_rs_macros::{bridge, cps_bridge, define_condition_type, maybe_async, maybe_await, rtd};
+use scheme_rs_macros::{bridge, define_condition_type, maybe_async, maybe_await, rtd};
 use std::{
     any::Any,
     borrow::Cow,
     fmt,
     io::{Cursor, ErrorKind},
-    mem::MaybeUninit,
     path::Path,
     pin::Pin,
     sync::{Arc, LazyLock},
@@ -23,9 +22,9 @@ use std::{
 use crate::{
     Either,
     enumerations::{EnumerationSet, EnumerationType},
-    exceptions::{Assertion, Error, Exception, raise},
+    exceptions::{Assertion, Error, Exception},
     gc::Trace,
-    proc::{Application, ContBarrier, ContPtr, DynStackElem, FuncPtr, Procedure, pop_dyn_stack},
+    proc::{Application, Args, ContBarrier, DynStackElem, FuncPtr, Procedure, Rest, pop_dyn_stack},
     records::{Embeddable, Embedded, RecordTypeDescriptor},
     strings::WideString,
     symbols::Symbol,
@@ -34,7 +33,7 @@ use crate::{
         parse::{ParseSyntaxError, Parser},
     },
     value::{Expect1, Value},
-    vectors::{ByteVector, Vector},
+    vectors::ByteVector,
 };
 
 pub(crate) struct Utf8Buffer {
@@ -299,52 +298,47 @@ unsafe impl Embeddable for Transcoder {
 }
 
 #[bridge(name = "native-transcoder", lib = "(rnrs io builtins (6))")]
-pub fn native_transcoder() -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(Transcoder::native())])
+pub fn native_transcoder() -> Value {
+    Value::from(Transcoder::native())
 }
 
 #[bridge(name = "make-transcoder", lib = "(rnrs io builtins (6))")]
 pub fn make_transcoder(
     codec: Embedded<Codec>,
-    remaining: &[Value],
-) -> Result<Vec<Value>, Exception> {
-    let (eol_type, error_handling_mode) = match remaining {
-        [] => (EolStyle::None, ErrorHandlingMode::Replace),
-        [eol_style] => (
-            EolStyle::from_sym(eol_style.try_into()?)?,
-            ErrorHandlingMode::Replace,
-        ),
-        [eol_style, error_handling_mode] => (
-            EolStyle::from_sym(eol_style.try_into()?)?,
-            ErrorHandlingMode::from_sym(error_handling_mode.try_into()?)?,
-        ),
-        _ => return Err(Exception::wrong_num_of_var_args(1..3, 1 + remaining.len())),
+    eol_style: Option<Symbol>,
+    error_handling_mode: Option<Symbol>,
+) -> Result<Value, Exception> {
+    let eol_type = match eol_style {
+        Some(eol_style) => EolStyle::from_sym(eol_style)?,
+        None => EolStyle::None,
     };
-    Ok(vec![Value::from(Transcoder {
+    let error_handling_mode = match error_handling_mode {
+        Some(error_handling_mode) => ErrorHandlingMode::from_sym(error_handling_mode)?,
+        None => ErrorHandlingMode::Replace,
+    };
+    Ok(Value::from(Transcoder {
         codec: *codec,
         eol_type,
         error_handling_mode,
-    })])
+    }))
 }
 
 #[bridge(name = "transcoder-codec", lib = "(rnrs io builtins (6))")]
-pub fn transcoder_codec(transcoder: Embedded<Transcoder>) -> Result<Vec<Value>, Exception> {
-    Ok(vec![transcoder.codec.to_value()])
+pub fn transcoder_codec(transcoder: Embedded<Transcoder>) -> Value {
+    transcoder.codec.to_value()
 }
 
 #[bridge(name = "transcoder-eol-style", lib = "(rnrs io builtins (6))")]
-pub fn transcoder_eol_style(transcoder: Embedded<Transcoder>) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(transcoder.eol_type.to_sym())])
+pub fn transcoder_eol_style(transcoder: Embedded<Transcoder>) -> Symbol {
+    transcoder.eol_type.to_sym()
 }
 
 #[bridge(
     name = "transcoder-error-handling-mode",
     lib = "(rnrs io builtins (6))"
 )]
-pub fn transcoder_error_handling_mode(
-    transcoder: Embedded<Transcoder>,
-) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(transcoder.error_handling_mode.to_sym())])
+pub fn transcoder_error_handling_mode(transcoder: Embedded<Transcoder>) -> Symbol {
+    transcoder.error_handling_mode.to_sym()
 }
 
 #[derive(Copy, Clone, Trace)]
@@ -365,18 +359,18 @@ static UTF_8_CODEC: LazyLock<Embedded<Codec>> = LazyLock::new(|| Embedded::new(C
 static UTF_16_CODEC: LazyLock<Embedded<Codec>> = LazyLock::new(|| Embedded::new(Codec::Utf16));
 
 #[bridge(name = "latin-1-codec", lib = "(rnrs io builtins (6))")]
-pub fn latin_1_codec() -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(LATIN_1_CODEC.clone())])
+pub fn latin_1_codec() -> Value {
+    Value::from(LATIN_1_CODEC.clone())
 }
 
 #[bridge(name = "utf-8-codec", lib = "(rnrs io builtins (6))")]
-pub fn utf_8_codec() -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(UTF_8_CODEC.clone())])
+pub fn utf_8_codec() -> Value {
+    Value::from(UTF_8_CODEC.clone())
 }
 
 #[bridge(name = "utf-16-codec", lib = "(rnrs io builtins (6))")]
-pub fn utf_16_codec() -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(UTF_16_CODEC.clone())])
+pub fn utf_16_codec() -> Value {
+    Value::from(UTF_16_CODEC.clone())
 }
 
 impl fmt::Debug for Codec {
@@ -3427,7 +3421,9 @@ impl PortKind {
 #[maybe_async]
 fn open_file_port(
     filename: &Value,
-    rest_args: &[Value],
+    file_options: Option<Embedded<EnumerationSet>>,
+    buffer_mode: Option<Symbol>,
+    transcoder: Option<Value>,
     kind: PortKind,
 ) -> Result<Port, Exception> {
     #[cfg(not(feature = "async"))]
@@ -3436,35 +3432,25 @@ fn open_file_port(
     #[cfg(feature = "tokio")]
     use tokio::fs::File;
 
-    if rest_args.len() > 3 {
-        return Err(Exception::wrong_num_of_var_args(1..4, rest_args.len() + 1));
-    }
-
     // We don't actually use file options for anything in the input case.
-    let (file_options, rest_args) = if let [file_options, rest @ ..] = rest_args {
-        let file_options = file_options.clone().try_to::<Embedded<EnumerationSet>>()?;
-        file_options.type_check(&FILE_OPTIONS)?;
-        (file_options, rest)
-    } else {
-        (default_file_options(), &[] as &[Value])
-    };
-
-    let (buffer_mode, rest_args) = if let [buffer_mode, rest @ ..] = rest_args {
-        let buffer_mode = BufferMode::from_sym(buffer_mode.clone().try_to::<Symbol>()?)?;
-        (buffer_mode, rest)
-    } else {
-        (BufferMode::Block, &[] as &[Value])
-    };
-
-    let transcoder = if let [transcoder] = rest_args {
-        if transcoder.is_true() {
-            let transcoder = transcoder.clone().try_to::<Embedded<Transcoder>>()?;
-            Some(*transcoder)
-        } else {
-            None
+    let file_options = match file_options {
+        Some(file_options) => {
+            file_options.type_check(&FILE_OPTIONS)?;
+            file_options
         }
-    } else {
-        None
+        None => default_file_options(),
+    };
+
+    let buffer_mode = match buffer_mode {
+        Some(buffer_mode) => BufferMode::from_sym(buffer_mode)?,
+        None => BufferMode::Block,
+    };
+
+    let transcoder = match transcoder {
+        Some(transcoder) if transcoder.is_true() => {
+            Some(*transcoder.try_to::<Embedded<Transcoder>>()?)
+        }
+        _ => None,
     };
 
     let filename = filename.to_string();
@@ -3509,8 +3495,8 @@ fn map_io_error_to_condition(filename: &str, err: std::io::Error) -> Exception {
 }
 
 #[bridge(name = "default-file-options", lib = "(rnrs io builtins (6))")]
-pub fn default_file_options_scm() -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(default_file_options())])
+pub fn default_file_options_scm() -> Value {
+    Value::from(default_file_options())
 }
 
 #[bridge(name = "eof-object", lib = "(rnrs io builtins (6))")]
@@ -3519,44 +3505,37 @@ pub fn eof_object() -> Value {
 }
 
 #[bridge(name = "eof-object?", lib = "(rnrs io builtins (6))")]
-pub fn eof_object_pred(val: &Value) -> bool {
+pub fn eof_object_pred(val: Value) -> bool {
     val.is_a::<Embedded<EofObject>>()
 }
 
 #[bridge(name = "port?", lib = "(rnrs io builtins (6))")]
-pub fn port_pred(obj: &Value) -> bool {
+pub fn port_pred(obj: Value) -> bool {
     obj.is_a::<Embedded<PortInner>>()
 }
 
 #[bridge(name = "port-transcoder", lib = "(rnrs io builtins (6))")]
-pub fn port_transcoder(port: &Value) -> Result<Vec<Value>, Exception> {
-    let port: Port = port.clone().try_into()?;
+pub fn port_transcoder(port: Port) -> Value {
     if let Some(transcoder) = port.transcoder() {
-        let transcoder = Value::from(transcoder);
-        Ok(vec![transcoder])
+        Value::from(transcoder)
     } else {
-        Ok(vec![Value::from(false)])
+        Value::from(false)
     }
 }
 
 #[bridge(name = "textual-port?", lib = "(rnrs io builtins (6))")]
-pub fn textual_port_pred(port: &Value) -> Result<Vec<Value>, Exception> {
-    let port: Port = port.clone().try_into()?;
-    Ok(vec![Value::from(port.is_textual_port())])
+pub fn textual_port_pred(port: Port) -> bool {
+    port.is_textual_port()
 }
 
 #[bridge(name = "binary-port?", lib = "(rnrs io builtins (6))")]
-pub fn binary_port_pred(port: &Value) -> Result<Vec<Value>, Exception> {
-    let port: Port = port.clone().try_into()?;
-    Ok(vec![Value::from(!port.is_textual_port())])
+pub fn binary_port_pred(port: Port) -> bool {
+    !port.is_textual_port()
 }
 
 #[maybe_async]
 #[bridge(name = "transcoded-port", lib = "(rnrs io builtins (6))")]
-pub fn transcoded_port(
-    port: Port,
-    transcoder: Embedded<Transcoder>,
-) -> Result<Vec<Value>, Exception> {
+pub fn transcoded_port(port: Port, transcoder: Embedded<Transcoder>) -> Result<Port, Exception> {
     if port.is_textual_port() {
         return Err(Exception::error("not a binary port"));
     }
@@ -3597,47 +3576,38 @@ pub fn transcoded_port(
         ..port_info.clone()
     };
 
-    let new_port = Port(Embedded::new(PortInner {
+    Ok(Port(Embedded::new(PortInner {
         info: PortInfo::BinaryPort(new_info),
         data: Mutex::new(PortData::BinaryPort(new_data)),
-    }));
-
-    Ok(vec![Value::from(new_port)])
+    })))
 }
 
 #[bridge(name = "port-has-port-position?", lib = "(rnrs io builtins (6))")]
-pub fn port_has_port_position_pred(port: &Value) -> Result<Vec<Value>, Exception> {
-    let port: Port = port.clone().try_into()?;
-    Ok(vec![Value::from(port.has_port_position())])
+pub fn port_has_port_position_pred(port: Port) -> bool {
+    port.has_port_position()
 }
 
 #[maybe_async]
 #[bridge(name = "port-position", lib = "(rnrs io builtins (6))")]
-pub fn port_position(port: &Value) -> Result<Vec<Value>, Exception> {
-    let port: Port = port.clone().try_into()?;
-    Ok(vec![Value::from(maybe_await!(port.get_pos())?)])
+pub fn port_position(port: Port) -> Result<u64, Exception> {
+    maybe_await!(port.get_pos())
 }
 
 #[bridge(name = "port-has-set-port-position!?", lib = "(rnrs io builtins (6))")]
-pub fn port_has_set_port_position_bang_pred(port: &Value) -> Result<Vec<Value>, Exception> {
-    let port: Port = port.clone().try_into()?;
-    Ok(vec![Value::from(port.has_set_port_position())])
+pub fn port_has_set_port_position_bang_pred(port: Port) -> bool {
+    port.has_set_port_position()
 }
 
 #[maybe_async]
 #[bridge(name = "set-port-position!", lib = "(rnrs io builtins (6))")]
-pub fn set_port_position_bang(port: &Value, pos: &Value) -> Result<Vec<Value>, Exception> {
-    let port: Port = port.clone().try_into()?;
-    let pos: u64 = pos.clone().try_into()?;
+pub fn set_port_position_bang(port: Port, pos: u64) -> Result<(), Exception> {
     maybe_await!(port.set_pos(pos))?;
-    Ok(Vec::new())
+    Ok(())
 }
 
 #[maybe_async]
 #[bridge(name = "close-port", lib = "(rnrs io builtins (6))")]
-pub fn close_port(port: &Value) -> Result<Vec<Value>, Exception> {
-    let port: Port = port.clone().try_into()?;
-
+pub fn close_port(port: Port, _barrier: &mut ContBarrier<'_>) -> Result<(), Exception> {
     #[cfg(not(feature = "async"))]
     let mut data = port.0.data.lock().unwrap();
 
@@ -3646,59 +3616,53 @@ pub fn close_port(port: &Value) -> Result<Vec<Value>, Exception> {
 
     maybe_await!(data.close(&port.0.info))?;
 
-    Ok(Vec::new())
+    Ok(())
 }
 
 // TODO: call-with-port
 
 #[bridge(name = "input-port?", lib = "(rnrs io builtins (6))")]
-pub fn input_port_pred(obj: &Value) -> Result<Vec<Value>, Exception> {
-    let Ok(port) = Port::try_from(obj.clone()) else {
-        return Ok(vec![Value::from(false)]);
-    };
-
-    Ok(vec![Value::from(port.is_input_port())])
+pub fn input_port_pred(obj: Value) -> bool {
+    obj.cast::<Port>().is_some_and(|port| port.is_input_port())
 }
 
 #[maybe_async]
 #[bridge(name = "port-eof?", lib = "(rnrs io builtins (6))")]
-pub fn port_eof_pred(input_port: &Value) -> Result<Vec<Value>, Exception> {
-    let port: Port = input_port.clone().try_into()?;
-
+pub fn port_eof_pred(port: Port) -> Result<bool, Exception> {
     #[cfg(not(feature = "async"))]
     let mut data = port.0.data.lock().unwrap();
 
     #[cfg(feature = "tokio")]
     let mut data = port.0.data.lock().await;
 
-    Ok(vec![Value::from(
-        maybe_await!(data.peekn_bytes(&port.0.info, 0))?.is_none(),
-    )])
+    Ok(maybe_await!(data.peekn_bytes(&port.0.info, 0))?.is_none())
 }
 
 #[maybe_async]
 #[bridge(name = "open-file-input-port", lib = "(rnrs io builtins (6))")]
 pub fn open_file_input_port(
-    filename: &Value,
-    rest_args: &[Value],
-) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(maybe_await!(open_file_port(
-        filename,
-        rest_args,
+    filename: Value,
+    file_options: Option<Embedded<EnumerationSet>>,
+    buffer_mode: Option<Symbol>,
+    transcoder: Option<Value>,
+) -> Result<Port, Exception> {
+    maybe_await!(open_file_port(
+        &filename,
+        file_options,
+        buffer_mode,
+        transcoder,
         PortKind::Read
-    ))?)])
+    ))
 }
 
 #[bridge(name = "make-custom-binary-input-port", lib = "(rnrs io builtins (6))")]
 pub fn make_custom_binary_input_port(
-    id: &Value,
-    read: &Value,
-    get_position: &Value,
-    set_position: &Value,
-    close: &Value,
-) -> Result<Vec<Value>, Exception> {
-    let read: Procedure = read.clone().try_into()?;
-
+    id: Value,
+    read: Procedure,
+    get_position: Value,
+    set_position: Value,
+    close: Value,
+) -> Result<Port, Exception> {
     let get_pos = if get_position.is_true() {
         let get_pos: Procedure = get_position.clone().try_into()?;
         Some(get_pos)
@@ -3720,7 +3684,7 @@ pub fn make_custom_binary_input_port(
         None
     };
 
-    let port = Port::new_custom(
+    Ok(Port::new_custom(
         id.to_string(),
         Some(read),
         None,
@@ -3729,9 +3693,7 @@ pub fn make_custom_binary_input_port(
         close,
         BufferMode::Block,
         None,
-    );
-
-    Ok(vec![Value::from(port)])
+    ))
 }
 
 #[bridge(
@@ -3739,14 +3701,12 @@ pub fn make_custom_binary_input_port(
     lib = "(rnrs io builtins (6))"
 )]
 pub fn make_custom_textual_input_port(
-    id: &Value,
-    read: &Value,
-    get_position: &Value,
-    set_position: &Value,
-    close: &Value,
-) -> Result<Vec<Value>, Exception> {
-    let read: Procedure = read.clone().try_into()?;
-
+    id: Value,
+    read: Procedure,
+    get_position: Value,
+    set_position: Value,
+    close: Value,
+) -> Result<Port, Exception> {
     let get_pos = if get_position.is_true() {
         let get_pos: Procedure = get_position.clone().try_into()?;
         Some(get_pos)
@@ -3768,7 +3728,7 @@ pub fn make_custom_textual_input_port(
         None
     };
 
-    let port = Port::new_custom_textual(
+    Ok(Port::new_custom_textual(
         id.to_string(),
         Some(read),
         None,
@@ -3776,14 +3736,12 @@ pub fn make_custom_textual_input_port(
         set_pos,
         close,
         BufferMode::Block,
-    );
-
-    Ok(vec![Value::from(port)])
+    ))
 }
 
 #[bridge(name = "standard-input-port", lib = "(rnrs io builtins (6))")]
-pub fn standard_input_port() -> Result<Vec<Value>, Exception> {
-    let port = Port::new(
+pub fn standard_input_port() -> Port {
+    Port::new(
         "<stdin>",
         #[cfg(not(feature = "async"))]
         std::io::stdin(),
@@ -3791,40 +3749,22 @@ pub fn standard_input_port() -> Result<Vec<Value>, Exception> {
         tokio::io::stdin(),
         BufferMode::None,
         None,
-    );
-    Ok(vec![Value::from(port)])
+    )
 }
 
-#[cps_bridge(def = "current-input-port", lib = "(rnrs base builtins (6))")]
-pub fn current_input_port(
-    _env: &[Value],
-    _args: &[Value],
-    _rest_args: &[Value],
-    barrier: &mut ContBarrier,
-) -> Result<Application, Exception> {
-    let current_input_port = barrier.current_input_port();
-    Ok(barrier.call_cont(vec![Value::from(current_input_port)]))
+#[bridge(name = "current-input-port", lib = "(rnrs base builtins (6))")]
+pub fn current_input_port(barrier: &mut ContBarrier) -> Port {
+    barrier.current_input_port()
 }
 
-#[cps_bridge(def = "current-output-port", lib = "(rnrs base builtins (6))")]
-pub fn current_output_port(
-    _env: &[Value],
-    _args: &[Value],
-    _rest_args: &[Value],
-    barrier: &mut ContBarrier,
-) -> Result<Application, Exception> {
-    let current_input_port = barrier.current_output_port();
-    Ok(barrier.call_cont(vec![Value::from(current_input_port)]))
+#[bridge(name = "current-output-port", lib = "(rnrs base builtins (6))")]
+pub fn current_output_port(barrier: &mut ContBarrier) -> Port {
+    barrier.current_output_port()
 }
 
-#[cps_bridge(def = "current-error-port", lib = "(rnrs base builtins (6))")]
-pub fn current_error_port(
-    _env: &[Value],
-    _args: &[Value],
-    _rest_args: &[Value],
-    barrier: &mut ContBarrier,
-) -> Result<Application, Exception> {
-    let current_error_port = Port::new(
+#[bridge(name = "current-error-port", lib = "(rnrs base builtins (6))")]
+pub fn current_error_port() -> Port {
+    Port::new(
         "<stderr>",
         #[cfg(not(feature = "async"))]
         std::io::stderr(),
@@ -3832,31 +3772,28 @@ pub fn current_error_port(
         tokio::io::stderr(),
         BufferMode::None,
         Some(Transcoder::native()),
-    );
-    Ok(barrier.call_cont(vec![Value::from(current_error_port)]))
+    )
 }
 
 // 8.2.8. Binary input
 
 #[maybe_async]
 #[bridge(name = "get-u8", lib = "(rnrs io builtins (6))")]
-pub fn get_u8(binary_input_port: &Value) -> Result<Vec<Value>, Exception> {
-    let port: Port = binary_input_port.clone().try_into()?;
+pub fn get_u8(port: Port) -> Result<Value, Exception> {
     if let Some(byte) = maybe_await!(port.get_u8())? {
-        Ok(vec![Value::from(byte)])
+        Ok(Value::from(byte))
     } else {
-        Ok(vec![EOF_OBJECT.clone()])
+        Ok(EOF_OBJECT.clone())
     }
 }
 
 #[maybe_async]
 #[bridge(name = "lookahead-u8", lib = "(rnrs io builtins (6))")]
-pub fn lookahead_u8(binary_input_port: &Value) -> Result<Vec<Value>, Exception> {
-    let port: Port = binary_input_port.clone().try_into()?;
+pub fn lookahead_u8(port: Port) -> Result<Value, Exception> {
     if let Some(byte) = maybe_await!(port.lookahead_u8())? {
-        Ok(vec![Value::from(byte)])
+        Ok(Value::from(byte))
     } else {
-        Ok(vec![EOF_OBJECT.clone()])
+        Ok(EOF_OBJECT.clone())
     }
 }
 
@@ -3864,69 +3801,69 @@ pub fn lookahead_u8(binary_input_port: &Value) -> Result<Vec<Value>, Exception> 
 
 #[maybe_async]
 #[bridge(name = "get-char", lib = "(rnrs io builtins (6))")]
-pub fn get_char(textual_input_port: Port) -> Result<Vec<Value>, Exception> {
+pub fn get_char(textual_input_port: Port) -> Result<Value, Exception> {
     if let Some(chr) = maybe_await!(textual_input_port.get_char())? {
-        Ok(vec![Value::from(chr)])
+        Ok(Value::from(chr))
     } else {
-        Ok(vec![EOF_OBJECT.clone()])
+        Ok(EOF_OBJECT.clone())
     }
 }
 
 #[maybe_async]
 #[bridge(name = "lookahead-char", lib = "(rnrs io builtins (6))")]
-pub fn lookahead_char(textual_input_port: Port) -> Result<Vec<Value>, Exception> {
+pub fn lookahead_char(textual_input_port: Port) -> Result<Value, Exception> {
     if let Some(chr) = maybe_await!(textual_input_port.lookahead_char())? {
-        Ok(vec![Value::from(chr)])
+        Ok(Value::from(chr))
     } else {
-        Ok(vec![EOF_OBJECT.clone()])
+        Ok(EOF_OBJECT.clone())
     }
 }
 
 #[maybe_async]
 #[bridge(name = "get-string-n", lib = "(rnrs io builtins (6))")]
-pub fn get_string_n(textual_input_port: Port, n: usize) -> Result<Vec<Value>, Exception> {
+pub fn get_string_n(textual_input_port: Port, n: usize) -> Result<Value, Exception> {
     if let Some(s) = maybe_await!(textual_input_port.get_string_n(n))? {
-        Ok(vec![Value::from(s)])
+        Ok(Value::from(s))
     } else {
-        Ok(vec![EOF_OBJECT.clone()])
+        Ok(EOF_OBJECT.clone())
     }
 }
 
 #[maybe_async]
 #[bridge(name = "get-line", lib = "(rnrs io builtins (6))")]
-pub fn get_line(textual_input_port: Port) -> Result<Vec<Value>, Exception> {
+pub fn get_line(textual_input_port: Port) -> Result<Value, Exception> {
     if let Some(line) = maybe_await!(textual_input_port.get_line())? {
-        Ok(vec![Value::from(line)])
+        Ok(Value::from(line))
     } else {
-        Ok(vec![EOF_OBJECT.clone()])
+        Ok(EOF_OBJECT.clone())
     }
 }
 
 #[maybe_async]
 #[bridge(name = "get-string-all", lib = "(rnrs io builtins (6))")]
-pub fn get_string_all(textual_input_port: Port) -> Result<Vec<Value>, Exception> {
+pub fn get_string_all(textual_input_port: Port) -> Result<Value, Exception> {
     if let Some(s) = maybe_await!(textual_input_port.get_string_all())? {
-        Ok(vec![Value::from(s)])
+        Ok(Value::from(s))
     } else {
-        Ok(vec![EOF_OBJECT.clone()])
+        Ok(EOF_OBJECT.clone())
     }
 }
 
 #[maybe_async]
 #[bridge(name = "get-datum", lib = "(rnrs io builtins (6))")]
-pub fn get_datum(textual_input_port: Port) -> Result<Vec<Value>, Exception> {
+pub fn get_datum(textual_input_port: Port) -> Result<Value, Exception> {
     if let Some((syntax, _)) = maybe_await!(textual_input_port.get_sexpr(Span::default()))? {
-        Ok(vec![Value::datum_from_syntax(&syntax)])
+        Ok(Value::datum_from_syntax(&syntax))
     } else {
-        Ok(vec![EOF_OBJECT.clone()])
+        Ok(EOF_OBJECT.clone())
     }
 }
 
 // 8.2.10. Output ports
 
 #[bridge(name = "standard-output-port", lib = "(rnrs io builtins (6))")]
-pub fn standard_output_port() -> Result<Vec<Value>, Exception> {
-    let port = Port::new(
+pub fn standard_output_port() -> Port {
+    Port::new(
         "<stdout>",
         #[cfg(not(feature = "async"))]
         std::io::stdout(),
@@ -3934,46 +3871,43 @@ pub fn standard_output_port() -> Result<Vec<Value>, Exception> {
         tokio::io::stdout(),
         BufferMode::None,
         None,
-    );
-    Ok(vec![Value::from(port)])
+    )
 }
 
 // 8.2.10. Output ports
 
 #[bridge(name = "output-port?", lib = "(rnrs io builtins (6))")]
-pub fn output_port_pred(obj: &Value) -> Result<Vec<Value>, Exception> {
-    let Ok(port) = Port::try_from(obj.clone()) else {
-        return Ok(vec![Value::from(false)]);
-    };
-
-    Ok(vec![Value::from(port.is_output_port())])
+pub fn output_port_pred(obj: Value) -> bool {
+    obj.cast::<Port>().is_some_and(|port| port.is_output_port())
 }
 
 #[maybe_async]
 #[bridge(name = "flush-output-port", lib = "(rnrs io builtins (6))")]
-pub fn flush_output_port(obj: &Value) -> Result<Vec<Value>, Exception> {
-    let port: Port = obj.clone().try_into()?;
+pub fn flush_output_port(port: Port) -> Result<(), Exception> {
     maybe_await!(port.flush())?;
-    Ok(Vec::new())
+    Ok(())
 }
 
 #[bridge(name = "output-port-buffer-mode", lib = "(rnrs io builtins (6))")]
-pub fn output_port_buffer_mode(output_port: &Value) -> Result<Vec<Value>, Exception> {
-    let output_port: Port = output_port.clone().try_into()?;
-    Ok(vec![Value::from(output_port.buffer_mode().to_sym())])
+pub fn output_port_buffer_mode(output_port: Port) -> Symbol {
+    output_port.buffer_mode().to_sym()
 }
 
 #[maybe_async]
 #[bridge(name = "open-file-output-port", lib = "(rnrs io builtins (6))")]
 pub fn open_file_output_port(
-    filename: &Value,
-    rest_args: &[Value],
-) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(maybe_await!(open_file_port(
-        filename,
-        rest_args,
+    filename: Value,
+    file_options: Option<Embedded<EnumerationSet>>,
+    buffer_mode: Option<Symbol>,
+    transcoder: Option<Value>,
+) -> Result<Port, Exception> {
+    maybe_await!(open_file_port(
+        &filename,
+        file_options,
+        buffer_mode,
+        transcoder,
         PortKind::Write
-    ))?)])
+    ))
 }
 
 #[bridge(
@@ -3981,14 +3915,12 @@ pub fn open_file_output_port(
     lib = "(rnrs io builtins (6))"
 )]
 pub fn make_custom_binary_output_port(
-    id: &Value,
-    write: &Value,
-    get_position: &Value,
-    set_position: &Value,
-    close: &Value,
-) -> Result<Vec<Value>, Exception> {
-    let write: Procedure = write.clone().try_into()?;
-
+    id: Value,
+    write: Procedure,
+    get_position: Value,
+    set_position: Value,
+    close: Value,
+) -> Result<Port, Exception> {
     let get_pos = if get_position.is_true() {
         let get_pos: Procedure = get_position.clone().try_into()?;
         Some(get_pos)
@@ -4010,7 +3942,7 @@ pub fn make_custom_binary_output_port(
         None
     };
 
-    let port = Port::new_custom(
+    Ok(Port::new_custom(
         id.to_string(),
         None,
         Some(write),
@@ -4019,9 +3951,7 @@ pub fn make_custom_binary_output_port(
         close,
         BufferMode::Block,
         None,
-    );
-
-    Ok(vec![Value::from(port)])
+    ))
 }
 
 #[bridge(
@@ -4029,14 +3959,12 @@ pub fn make_custom_binary_output_port(
     lib = "(rnrs io builtins (6))"
 )]
 pub fn make_custom_textual_output_port(
-    id: &Value,
-    write: &Value,
-    get_position: &Value,
-    set_position: &Value,
-    close: &Value,
-) -> Result<Vec<Value>, Exception> {
-    let write: Procedure = write.clone().try_into()?;
-
+    id: Value,
+    write: Procedure,
+    get_position: Value,
+    set_position: Value,
+    close: Value,
+) -> Result<Port, Exception> {
     let get_pos = if get_position.is_true() {
         let get_pos: Procedure = get_position.clone().try_into()?;
         Some(get_pos)
@@ -4058,7 +3986,7 @@ pub fn make_custom_textual_output_port(
         None
     };
 
-    let port = Port::new_custom_textual(
+    Ok(Port::new_custom_textual(
         id.to_string(),
         None,
         Some(write),
@@ -4066,20 +3994,16 @@ pub fn make_custom_textual_output_port(
         set_pos,
         close,
         BufferMode::Block,
-    );
-
-    Ok(vec![Value::from(port)])
+    ))
 }
 
 // 8.2.11. Binary output
 
 #[maybe_async]
 #[bridge(name = "put-u8", lib = "(rnrs io builtins (6))")]
-pub fn put_u8(binary_output_port: &Value, octet: &Value) -> Result<Vec<Value>, Exception> {
-    let port: Port = binary_output_port.clone().try_into()?;
-    let octet: u8 = octet.clone().try_into()?;
+pub fn put_u8(port: Port, octet: u8) -> Result<(), Exception> {
     maybe_await!(port.put_u8(octet))?;
-    Ok(Vec::new())
+    Ok(())
 }
 
 #[cfg(not(feature = "async"))]
@@ -4087,35 +4011,27 @@ pub fn put_u8(binary_output_port: &Value, octet: &Value) -> Result<Vec<Value>, E
 pub fn put_bytevector(
     port: Port,
     bytevector: ByteVector,
-    start_count: &[Value],
-) -> Result<Vec<Value>, Exception> {
+    start: Option<usize>,
+    count: Option<usize>,
+) -> Result<(), Exception> {
     let bytevector = bytevector.as_slice();
-    let slice = match start_count {
-        [] => &bytevector[..],
-        [start] => {
-            let start: usize = start.try_to()?;
+    let slice = match (start, count) {
+        (None, _) => &bytevector[..],
+        (Some(start), None) => {
             if start >= bytevector.len() {
                 return Err(Exception::invalid_index(start, bytevector.len()));
             }
             &bytevector[start..]
         }
-        [start, count] => {
-            let start: usize = start.try_to()?;
-            let count: usize = count.try_to()?;
+        (Some(start), Some(count)) => {
             if (start + count) >= bytevector.len() {
                 return Err(Exception::invalid_index(start + count, bytevector.len()));
             }
             &bytevector[start..(start + count)]
         }
-        _ => {
-            return Err(Exception::wrong_num_of_var_args(
-                2..4,
-                2 + start_count.len(),
-            ));
-        }
     };
     port.put_bytes(slice)?;
-    Ok(Vec::new())
+    Ok(())
 }
 
 #[cfg(feature = "async")]
@@ -4123,49 +4039,39 @@ pub fn put_bytevector(
 pub async fn put_bytevector(
     port: Port,
     bytevector: ByteVector,
-    start_count: &[Value],
-) -> Result<Vec<Value>, Exception> {
+    start: Option<usize>,
+    count: Option<usize>,
+) -> Result<(), Exception> {
     // We have to copy the slice to another buffer... it's really obnoxious
     let slice = {
         let bytevector = bytevector.as_slice();
-        match start_count {
-            [] => bytevector[..].to_vec(),
-            [start] => {
-                let start: usize = start.try_to()?;
+        match (start, count) {
+            (None, _) => bytevector[..].to_vec(),
+            (Some(start), None) => {
                 if start >= bytevector.len() {
                     return Err(Exception::invalid_index(start, bytevector.len()));
                 }
                 bytevector[start..].to_vec()
             }
-            [start, count] => {
-                let start: usize = start.try_to()?;
-                let count: usize = count.try_to()?;
+            (Some(start), Some(count)) => {
                 if (start + count) >= bytevector.len() {
                     return Err(Exception::invalid_index(start + count, bytevector.len()));
                 }
                 bytevector[start..(start + count)].to_vec()
             }
-            _ => {
-                return Err(Exception::wrong_num_of_var_args(
-                    2..4,
-                    2 + start_count.len(),
-                ));
-            }
         }
     };
     port.put_bytes(&slice).await?;
-    Ok(Vec::new())
+    Ok(())
 }
 
 // 8.2.12. Textual output
 
 #[maybe_async]
 #[bridge(name = "put-char", lib = "(rnrs io builtins (6))")]
-pub fn put_char(textual_output_port: &Value, chr: &Value) -> Result<Vec<Value>, Exception> {
-    let port: Port = textual_output_port.clone().try_into()?;
-    let chr: char = chr.clone().try_into()?;
+pub fn put_char(port: Port, chr: char) -> Result<(), Exception> {
     maybe_await!(port.put_char(chr))?;
-    Ok(Vec::new())
+    Ok(())
 }
 
 #[cfg(not(feature = "async"))]
@@ -4173,35 +4079,27 @@ pub fn put_char(textual_output_port: &Value, chr: &Value) -> Result<Vec<Value>, 
 pub fn put_string(
     port: Port,
     string: WideString,
-    start_count: &[Value],
-) -> Result<Vec<Value>, Exception> {
+    start: Option<usize>,
+    count: Option<usize>,
+) -> Result<(), Exception> {
     let string = string.as_slice();
-    let slice = match start_count {
-        [] => &string[..],
-        [start] => {
-            let start: usize = start.try_to()?;
+    let slice = match (start, count) {
+        (None, _) => &string[..],
+        (Some(start), None) => {
             if start >= string.len() {
                 return Err(Exception::invalid_index(start, string.len()));
             }
             &string[start..]
         }
-        [start, count] => {
-            let start: usize = start.try_to()?;
-            let count: usize = count.try_to()?;
+        (Some(start), Some(count)) => {
             if (start + count) >= string.len() {
                 return Err(Exception::invalid_index(start + count, string.len()));
             }
             &string[start..(start + count)]
         }
-        _ => {
-            return Err(Exception::wrong_num_of_var_args(
-                2..4,
-                2 + start_count.len(),
-            ));
-        }
     };
     port.put_chars(slice)?;
-    Ok(Vec::new())
+    Ok(())
 }
 
 #[cfg(feature = "async")]
@@ -4209,46 +4107,37 @@ pub fn put_string(
 pub async fn put_string(
     port: Port,
     string: WideString,
-    start_count: &[Value],
-) -> Result<Vec<Value>, Exception> {
+    start: Option<usize>,
+    count: Option<usize>,
+) -> Result<(), Exception> {
     let slice = {
         let string = string.as_slice();
-        match start_count {
-            [] => string[..].to_vec(),
-            [start] => {
-                let start: usize = start.try_to()?;
+        match (start, count) {
+            (None, _) => string[..].to_vec(),
+            (Some(start), None) => {
                 if start >= string.len() {
                     return Err(Exception::invalid_index(start, string.len()));
                 }
                 string[start..].to_vec()
             }
-            [start, count] => {
-                let start: usize = start.try_to()?;
-                let count: usize = count.try_to()?;
+            (Some(start), Some(count)) => {
                 if (start + count) >= string.len() {
                     return Err(Exception::invalid_index(start + count, string.len()));
                 }
                 string[start..(start + count)].to_vec()
             }
-            _ => {
-                return Err(Exception::wrong_num_of_var_args(
-                    2..4,
-                    2 + start_count.len(),
-                ));
-            }
         }
     };
     port.put_chars(&slice).await?;
-    Ok(Vec::new())
+    Ok(())
 }
 
 #[maybe_async]
 #[bridge(name = "put-datum", lib = "(rnrs io builtins (6))")]
-pub fn put_datum(textual_output_port: &Value, datum: &Value) -> Result<Vec<Value>, Exception> {
-    let port: Port = textual_output_port.clone().try_into()?;
+pub fn put_datum(port: Port, datum: Value) -> Result<(), Exception> {
     let str_rep = format!("{datum:?}");
     maybe_await!(port.put_str(&str_rep))?;
-    Ok(Vec::new())
+    Ok(())
 }
 
 // 8.2.13. Input/output ports
@@ -4256,14 +4145,18 @@ pub fn put_datum(textual_output_port: &Value, datum: &Value) -> Result<Vec<Value
 #[maybe_async]
 #[bridge(name = "open-file-input/output-port", lib = "(rnrs io builtins (6))")]
 pub fn open_file_input_output_port(
-    filename: &Value,
-    rest_args: &[Value],
-) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(maybe_await!(open_file_port(
-        filename,
-        rest_args,
+    filename: Value,
+    file_options: Option<Embedded<EnumerationSet>>,
+    buffer_mode: Option<Symbol>,
+    transcoder: Option<Value>,
+) -> Result<Port, Exception> {
+    maybe_await!(open_file_port(
+        &filename,
+        file_options,
+        buffer_mode,
+        transcoder,
         PortKind::ReadWrite
-    ))?)])
+    ))
 }
 
 #[bridge(
@@ -4271,16 +4164,13 @@ pub fn open_file_input_output_port(
     lib = "(rnrs io builtins (6))"
 )]
 pub fn make_custom_binary_input_output_port(
-    id: &Value,
-    read: &Value,
-    write: &Value,
-    get_position: &Value,
-    set_position: &Value,
-    close: &Value,
-) -> Result<Vec<Value>, Exception> {
-    let read: Procedure = read.clone().try_into()?;
-    let write: Procedure = write.clone().try_into()?;
-
+    id: Value,
+    read: Procedure,
+    write: Procedure,
+    get_position: Value,
+    set_position: Value,
+    close: Value,
+) -> Result<Port, Exception> {
     let get_pos = if get_position.is_true() {
         let get_pos: Procedure = get_position.clone().try_into()?;
         Some(get_pos)
@@ -4302,7 +4192,7 @@ pub fn make_custom_binary_input_output_port(
         None
     };
 
-    let port = Port::new_custom(
+    Ok(Port::new_custom(
         id.to_string(),
         Some(read),
         Some(write),
@@ -4311,9 +4201,7 @@ pub fn make_custom_binary_input_output_port(
         close,
         BufferMode::Block,
         None,
-    );
-
-    Ok(vec![Value::from(port)])
+    ))
 }
 
 #[bridge(
@@ -4321,16 +4209,13 @@ pub fn make_custom_binary_input_output_port(
     lib = "(rnrs io builtins (6))"
 )]
 pub fn make_custom_textual_input_output_port(
-    id: &Value,
-    read: &Value,
-    write: &Value,
-    get_position: &Value,
-    set_position: &Value,
-    close: &Value,
-) -> Result<Vec<Value>, Exception> {
-    let read: Procedure = read.clone().try_into()?;
-    let write: Procedure = write.clone().try_into()?;
-
+    id: Value,
+    read: Procedure,
+    write: Procedure,
+    get_position: Value,
+    set_position: Value,
+    close: Value,
+) -> Result<Port, Exception> {
     let get_pos = if get_position.is_true() {
         let get_pos: Procedure = get_position.clone().try_into()?;
         Some(get_pos)
@@ -4352,7 +4237,7 @@ pub fn make_custom_textual_input_output_port(
         None
     };
 
-    let port = Port::new_custom_textual(
+    Ok(Port::new_custom_textual(
         id.to_string(),
         Some(read),
         Some(write),
@@ -4360,9 +4245,7 @@ pub fn make_custom_textual_input_output_port(
         set_pos,
         close,
         BufferMode::Block,
-    );
-
-    Ok(vec![Value::from(port)])
+    ))
 }
 
 // 8.3. Simple I/O
@@ -4371,14 +4254,10 @@ pub fn make_custom_textual_input_output_port(
 // eof-object? already defined
 
 #[maybe_async]
-#[cps_bridge(
-    def = "call-with-input-file filename proc",
-    lib = "(rnrs io simple builtins (6))"
-)]
+#[bridge(name = "call-with-input-file", lib = "(rnrs io simple builtins (6))")]
 pub fn call_with_input_file(
-    _env: &[Value],
-    args: &[Value],
-    _rest_args: &[Value],
+    filename: Value,
+    proc: Procedure,
     barrier: &mut ContBarrier<'_>,
 ) -> Result<Application, Exception> {
     #[cfg(not(feature = "async"))]
@@ -4387,10 +4266,6 @@ pub fn call_with_input_file(
     #[cfg(feature = "tokio")]
     use tokio::fs::File;
 
-    let [filename, proc] = args else {
-        unreachable!()
-    };
-    let proc = proc.clone().try_into()?;
     let filename = filename.to_string();
     let file = maybe_await!(File::options().read(true).write(true).open(&filename))
         .map_err(|err| map_io_error_to_condition(&filename, err))?;
@@ -4407,26 +4282,16 @@ pub fn call_with_input_file(
         Some(Transcoder::native()),
     );
 
-    let (num_req_args, variadic) = barrier.cont_formals();
-    barrier.push_cont(
-        vec![Value::from(port.clone())],
-        ContPtr::Continuation(close_port_and_call_k),
-        num_req_args,
-        variadic,
-    );
+    barrier.push_cont([Value::from(port.clone())], close_port_and_call_k);
 
-    Ok(Application::new(proc, vec![Value::from(port)]))
+    Ok(Application::new(proc, Args::pack([Value::from(port)])))
 }
 
 #[maybe_async]
-#[cps_bridge(
-    def = "call-with-output-file filename proc",
-    lib = "(rnrs io simple builtins (6))"
-)]
+#[bridge(name = "call-with-output-file", lib = "(rnrs io simple builtins (6))")]
 pub fn call_with_output_file(
-    _env: &[Value],
-    args: &[Value],
-    _rest_args: &[Value],
+    filename: Value,
+    proc: Procedure,
     barrier: &mut ContBarrier<'_>,
 ) -> Result<Application, Exception> {
     #[cfg(not(feature = "async"))]
@@ -4435,10 +4300,6 @@ pub fn call_with_output_file(
     #[cfg(feature = "tokio")]
     use tokio::fs::File;
 
-    let [filename, proc] = args else {
-        unreachable!()
-    };
-    let proc = proc.clone().try_into()?;
     let filename = filename.to_string();
     let file = maybe_await!(
         File::options()
@@ -4461,96 +4322,43 @@ pub fn call_with_output_file(
         Some(Transcoder::native()),
     );
 
-    let (num_req_args, variadic) = barrier.cont_formals();
-    barrier.push_cont(
-        vec![Value::from(port.clone())],
-        ContPtr::Continuation(close_port_and_call_k),
-        num_req_args,
-        variadic,
-    );
+    barrier.push_cont([Value::from(port.clone())], close_port_and_call_k);
 
-    Ok(Application::new(proc, vec![Value::from(port)]))
+    Ok(Application::new(proc, Args::pack([Value::from(port)])))
 }
 
-unsafe extern "C" fn close_port_and_call_k(
-    env: *const Value,
-    args: *const Value,
-    barrier: *mut ContBarrier,
-    out: *mut MaybeUninit<Application>,
-) {
+fn close_port_and_call_k(env: [Value; 1], args: Rest, barrier: &mut ContBarrier) -> Application {
     #[cfg(not(feature = "async"))]
     let bridge = FuncPtr::Bridge;
 
     #[cfg(feature = "async")]
     let bridge = FuncPtr::AsyncBridge;
 
-    unsafe {
-        // env[0] is the port
-        let port = env.as_ref().unwrap().clone();
+    let [port] = env;
 
-        let barrier = barrier.as_mut().unwrap();
+    // Save the values the callee returned so they can be passed to the
+    // outer continuation once the port has been closed.
+    barrier.push_cont([args.0], call_k_with_env);
 
-        // Collect the values the callee returned. They arrive shaped for the
-        // outer continuation (whose formals our frame was created with, and which
-        // is now on top of the stack).
-        let (num_required_args, variadic) = barrier.cont_formals();
-        let mut collected_args: Vec<_> = (0..num_required_args)
-            .map(|i| args.add(i).as_ref().unwrap().clone())
-            .collect();
-        if variadic {
-            let rest_args = args.add(num_required_args).as_ref().unwrap().clone();
-            let mut vec = Vec::new();
-            crate::lists::list_to_vec(&rest_args, &mut vec);
-            collected_args.extend(vec);
-        }
-
-        barrier.push_cont(
-            vec![Value::from(collected_args)],
-            ContPtr::Continuation(call_k_with_env),
-            0,
-            false,
-        );
-
-        (*out).write(Application::new(
-            Procedure::new(Vec::new(), bridge(close_port), 1, false),
-            vec![port],
-        ));
-    }
+    Application::new(
+        Procedure::new(Vec::new(), bridge(close_port), 1, false),
+        Args::pack([port]),
+    )
 }
 
-unsafe extern "C" fn call_k_with_env(
-    env: *const Value,
-    _args: *const Value,
-    barrier: *mut ContBarrier,
-    out: *mut MaybeUninit<Application>,
-) {
-    unsafe {
-        // env[0] are the arguments:
-        let args = env
-            .as_ref()
-            .unwrap()
-            .cast::<Vector>()
-            .unwrap()
-            .clone_inner_vec();
-
-        let barrier = barrier.as_mut().unwrap();
-
-        (*out).write(barrier.call_cont(args));
-    }
+fn call_k_with_env(env: [Value; 1], _args: Rest, barrier: &mut ContBarrier) -> Application {
+    let [args] = env;
+    barrier.call_cont(Args::from_list(args))
 }
 
 // input-port? already defined
 // output-port? already defined
 
 #[maybe_async]
-#[cps_bridge(
-    def = "with-input-from-file filename thunk",
-    lib = "(rnrs io simple builtins (6))"
-)]
+#[bridge(name = "with-input-from-file", lib = "(rnrs io simple builtins (6))")]
 pub fn with_input_from_file(
-    _env: &[Value],
-    args: &[Value],
-    _rest_args: &[Value],
+    filename: Value,
+    thunk: Procedure,
     barrier: &mut ContBarrier<'_>,
 ) -> Result<Application, Exception> {
     #[cfg(not(feature = "async"))]
@@ -4559,11 +4367,7 @@ pub fn with_input_from_file(
     #[cfg(feature = "tokio")]
     use tokio::fs::File;
 
-    let [filename, thunk] = args else {
-        unreachable!()
-    };
     let filename = filename.to_string();
-    let thunk = thunk.clone().try_into()?;
 
     let file = maybe_await!(File::options().read(true).open(&filename))
         .map_err(|err| map_io_error_to_condition(&filename, err))?;
@@ -4582,32 +4386,21 @@ pub fn with_input_from_file(
 
     barrier.push_dyn_stack(DynStackElem::CurrentInputPort(port.clone()));
 
-    let (req_args, var) = barrier.cont_formals();
-
     // Stack (bottom to top): the outer continuation, pop_dyn_stack (removes the
     // current-input-port entry), then close_port_and_call_k (closes the port).
     // The thunk returns to the top.
-    barrier.push_cont([], ContPtr::Continuation(pop_dyn_stack), req_args, var);
+    barrier.push_cont([], pop_dyn_stack);
 
-    barrier.push_cont(
-        [Value::from(port.clone())],
-        ContPtr::Continuation(close_port_and_call_k),
-        req_args,
-        var,
-    );
+    barrier.push_cont([Value::from(port.clone())], close_port_and_call_k);
 
-    Ok(Application::new(thunk, Vec::new()))
+    Ok(Application::new(thunk, Args::pack([])))
 }
 
 #[maybe_async]
-#[cps_bridge(
-    def = "with-output-to-file filename thunk",
-    lib = "(rnrs io simple builtins (6))"
-)]
+#[bridge(name = "with-output-to-file", lib = "(rnrs io simple builtins (6))")]
 pub fn with_output_to_file(
-    _env: &[Value],
-    args: &[Value],
-    _rest_args: &[Value],
+    filename: Value,
+    thunk: Procedure,
     barrier: &mut ContBarrier<'_>,
 ) -> Result<Application, Exception> {
     #[cfg(not(feature = "async"))]
@@ -4616,11 +4409,7 @@ pub fn with_output_to_file(
     #[cfg(feature = "tokio")]
     use tokio::fs::File;
 
-    let [filename, thunk] = args else {
-        unreachable!()
-    };
     let filename = filename.to_string();
-    let thunk = thunk.clone().try_into()?;
 
     let file = maybe_await!(
         File::options()
@@ -4645,61 +4434,35 @@ pub fn with_output_to_file(
 
     barrier.push_dyn_stack(DynStackElem::CurrentOutputPort(port.clone()));
 
-    let (req_args, var) = barrier.cont_formals();
+    barrier.push_cont([], pop_dyn_stack);
 
-    barrier.push_cont([], ContPtr::Continuation(pop_dyn_stack), req_args, var);
+    barrier.push_cont([Value::from(port.clone())], close_port_and_call_k);
 
-    barrier.push_cont(
-        [Value::from(port.clone())],
-        ContPtr::Continuation(close_port_and_call_k),
-        req_args,
-        var,
-    );
-
-    Ok(Application::new(thunk, Vec::new()))
+    Ok(Application::new(thunk, Args::pack([])))
 }
 
 #[maybe_async]
 #[bridge(name = "open-input-file", lib = "(rnrs io simple builtins (6))")]
-pub fn open_input_file(filename: &Value) -> Result<Vec<Value>, Exception> {
+pub fn open_input_file(filename: Value) -> Result<Port, Exception> {
     // TODO: This needs to be a text port
-    Ok(vec![Value::from(maybe_await!(open_file_port(
-        filename,
-        &[],
-        PortKind::Read
-    ))?)])
+    maybe_await!(open_file_port(&filename, None, None, None, PortKind::Read))
 }
 
 #[maybe_async]
 #[bridge(name = "open-output-file", lib = "(rnrs io simple builtins (6))")]
-pub fn open_output_file(filename: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(maybe_await!(open_file_port(
-        filename,
-        &[],
-        PortKind::Write
-    ))?)])
+pub fn open_output_file(filename: Value) -> Result<Port, Exception> {
+    maybe_await!(open_file_port(&filename, None, None, None, PortKind::Write))
 }
 
 #[maybe_async]
-#[cps_bridge(
-    def = "read-char . textual-input-port",
-    lib = "(rnrs io simple builtins (6))"
-)]
+#[bridge(name = "read-char", lib = "(rnrs io simple builtins (6))")]
 pub fn read_char(
-    _env: &[Value],
-    _args: &[Value],
-    rest_args: &[Value],
+    input_port: Option<Port>,
     barrier: &mut ContBarrier<'_>,
 ) -> Result<Application, Exception> {
-    let input_port = match rest_args {
-        [] => barrier.current_input_port(),
-        [input_port] => input_port.clone().try_into()?,
-        _ => {
-            return Ok(raise(
-                Value::from(Exception::wrong_num_of_var_args(0..1, rest_args.len())),
-                barrier,
-            ));
-        }
+    let input_port = match input_port {
+        None => barrier.current_input_port(),
+        Some(input_port) => input_port,
     };
 
     let result = if let Some(byte) = maybe_await!(input_port.get_char())? {
@@ -4708,29 +4471,18 @@ pub fn read_char(
         EOF_OBJECT.clone()
     };
 
-    Ok(barrier.call_cont(vec![result]))
+    Ok(barrier.call_cont(Args::pack([result])))
 }
 
 #[maybe_async]
-#[cps_bridge(
-    def = "peek-char . textual-input-port",
-    lib = "(rnrs io simple builtins (6))"
-)]
+#[bridge(name = "peek-char", lib = "(rnrs io simple builtins (6))")]
 pub fn peek_char(
-    _env: &[Value],
-    _args: &[Value],
-    rest_args: &[Value],
+    input_port: Option<Port>,
     barrier: &mut ContBarrier<'_>,
 ) -> Result<Application, Exception> {
-    let input_port = match rest_args {
-        [] => barrier.current_input_port(),
-        [input_port] => input_port.clone().try_into()?,
-        _ => {
-            return Ok(raise(
-                Value::from(Exception::wrong_num_of_var_args(0..1, rest_args.len())),
-                barrier,
-            ));
-        }
+    let input_port = match input_port {
+        None => barrier.current_input_port(),
+        Some(input_port) => input_port,
     };
 
     let result = if let Some(byte) = maybe_await!(input_port.lookahead_char())? {
@@ -4739,29 +4491,18 @@ pub fn peek_char(
         EOF_OBJECT.clone()
     };
 
-    Ok(barrier.call_cont(vec![result]))
+    Ok(barrier.call_cont(Args::pack([result])))
 }
 
 #[maybe_async]
-#[cps_bridge(
-    def = "read . textual-input-port",
-    lib = "(rnrs io simple builtins (6))"
-)]
+#[bridge(name = "read", lib = "(rnrs io simple builtins (6))")]
 pub fn read(
-    _env: &[Value],
-    _args: &[Value],
-    rest_args: &[Value],
+    input_port: Option<Port>,
     barrier: &mut ContBarrier<'_>,
 ) -> Result<Application, Exception> {
-    let input_port = match rest_args {
-        [] => barrier.current_input_port(),
-        [input_port] => input_port.clone().try_into()?,
-        _ => {
-            return Ok(raise(
-                Value::from(Exception::wrong_num_of_var_args(0..1, rest_args.len())),
-                barrier,
-            ));
-        }
+    let input_port = match input_port {
+        None => barrier.current_input_port(),
+        Some(input_port) => input_port,
     };
 
     let result = if let Some((syntax, _)) = maybe_await!(input_port.get_sexpr(Span::default()))? {
@@ -4770,128 +4511,83 @@ pub fn read(
         EOF_OBJECT.clone()
     };
 
-    Ok(barrier.call_cont(vec![result]))
+    Ok(barrier.call_cont(Args::pack([result])))
 }
 
 #[maybe_async]
-#[cps_bridge(
-    def = "write-char char . textual-output-port",
-    lib = "(rnrs io simple builtins (6))"
-)]
+#[bridge(name = "write-char", lib = "(rnrs io simple builtins (6))")]
 pub fn write_char(
-    _env: &[Value],
-    args: &[Value],
-    rest_args: &[Value],
+    chr: char,
+    output_port: Option<Port>,
     barrier: &mut ContBarrier<'_>,
 ) -> Result<Application, Exception> {
-    let [chr] = args else { unreachable!() };
-    let chr: char = chr.clone().try_into()?;
-    let output_port = match rest_args {
-        [] => barrier.current_output_port(),
-        [output_port] => output_port.clone().try_into()?,
-        _ => {
-            return Ok(raise(
-                Value::from(Exception::wrong_num_of_var_args(1..2, rest_args.len())),
-                barrier,
-            ));
-        }
+    let output_port = match output_port {
+        None => barrier.current_output_port(),
+        Some(output_port) => output_port,
     };
 
     maybe_await!(output_port.put_char(chr))?;
 
-    Ok(barrier.call_cont(Vec::new()))
+    Ok(barrier.call_cont(Args::pack([])))
 }
 
 #[maybe_async]
-#[cps_bridge(
-    def = "newline . textual-output-port",
-    lib = "(rnrs io simple builtins (6))"
-)]
+#[bridge(name = "newline", lib = "(rnrs io simple builtins (6))")]
 pub fn newline(
-    _env: &[Value],
-    _args: &[Value],
-    rest_args: &[Value],
+    output_port: Option<Port>,
     barrier: &mut ContBarrier<'_>,
 ) -> Result<Application, Exception> {
-    let output_port = match rest_args {
-        [] => barrier.current_output_port(),
-        [output_port] => output_port.clone().try_into()?,
-        _ => {
-            return Ok(raise(
-                Value::from(Exception::wrong_num_of_var_args(0..1, rest_args.len())),
-                barrier,
-            ));
-        }
+    let output_port = match output_port {
+        None => barrier.current_output_port(),
+        Some(output_port) => output_port,
     };
 
     maybe_await!(output_port.put_char('\n'))?;
 
-    Ok(barrier.call_cont(Vec::new()))
+    Ok(barrier.call_cont(Args::pack([])))
 }
 
 #[maybe_async]
-#[cps_bridge(
-    def = "display obj . textual-output-port",
-    lib = "(rnrs io simple builtins (6))"
-)]
+#[bridge(name = "display", lib = "(rnrs io simple builtins (6))")]
 pub fn display(
-    _env: &[Value],
-    args: &[Value],
-    rest_args: &[Value],
+    obj: Value,
+    output_port: Option<Port>,
     barrier: &mut ContBarrier<'_>,
 ) -> Result<Application, Exception> {
-    let [obj] = args else { unreachable!() };
-    let obj = format!("{obj}");
-    let output_port = match rest_args {
-        [] => barrier.current_output_port(),
-        [output_port] => output_port.clone().try_into()?,
-        _ => {
-            return Ok(raise(
-                Value::from(Exception::wrong_num_of_var_args(1..2, rest_args.len())),
-                barrier,
-            ));
-        }
+    let output_port = match output_port {
+        None => barrier.current_output_port(),
+        Some(output_port) => output_port,
     };
+    let obj = format!("{obj}");
 
     maybe_await!(output_port.put_str(&obj))?;
 
-    Ok(barrier.call_cont(Vec::new()))
+    Ok(barrier.call_cont(Args::pack([])))
 }
 
 #[maybe_async]
-#[cps_bridge(
-    def = "write obj . textual-output-port",
-    lib = "(rnrs io simple builtins (6))"
-)]
+#[bridge(name = "write", lib = "(rnrs io simple builtins (6))")]
 pub fn write(
-    _env: &[Value],
-    args: &[Value],
-    rest_args: &[Value],
+    obj: Value,
+    output_port: Option<Port>,
     barrier: &mut ContBarrier<'_>,
 ) -> Result<Application, Exception> {
-    let [obj] = args else { unreachable!() };
-    let obj = format!("{obj:?}");
-    let output_port = match rest_args {
-        [] => barrier.current_output_port(),
-        [output_port] => output_port.clone().try_into()?,
-        _ => {
-            return Ok(raise(
-                Value::from(Exception::wrong_num_of_var_args(1..2, rest_args.len())),
-                barrier,
-            ));
-        }
+    let output_port = match output_port {
+        None => barrier.current_output_port(),
+        Some(output_port) => output_port,
     };
+    let obj = format!("{obj:?}");
 
     maybe_await!(output_port.put_str(&obj))?;
 
-    Ok(barrier.call_cont(Vec::new()))
+    Ok(barrier.call_cont(Args::pack([])))
 }
 
 // 9. File System
 
 #[maybe_async]
 #[bridge(name = "file-exists?", lib = "(rnrs files (6))")]
-pub fn file_exists_pred(filename: &Value) -> Result<Vec<Value>, Exception> {
+pub fn file_exists_pred(filename: Value) -> Result<bool, Exception> {
     #[cfg(not(feature = "async"))]
     let try_exists = Path::try_exists;
 
@@ -4901,15 +4597,12 @@ pub fn file_exists_pred(filename: &Value) -> Result<Vec<Value>, Exception> {
     let filename = filename.to_string();
     let path = Path::new(&filename);
 
-    let exists =
-        maybe_await!(try_exists(path)).map_err(|err| Exception::io_error(format!("{err}")))?;
-
-    Ok(vec![Value::from(exists)])
+    maybe_await!(try_exists(path)).map_err(|err| Exception::io_error(format!("{err}")))
 }
 
 #[maybe_async]
 #[bridge(name = "delete-file", lib = "(rnrs files (6))")]
-pub fn delete_file(filename: &Value) -> Result<Vec<Value>, Exception> {
+pub fn delete_file(filename: Value) -> Result<(), Exception> {
     #[cfg(not(feature = "async"))]
     use std::fs::remove_file;
 
@@ -4922,7 +4615,7 @@ pub fn delete_file(filename: &Value) -> Result<Vec<Value>, Exception> {
     maybe_await!(remove_file(path))
         .map_err(|_| Exception::from((Assertion::new(), IoFilenameError::new(filename))))?;
 
-    Ok(Vec::new())
+    Ok(())
 }
 
 #[cfg(test)]

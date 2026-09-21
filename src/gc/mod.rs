@@ -36,6 +36,7 @@ use crate::{Either, gc::collection::GcHeader};
 
 /// A heap allocated garbage collected smart pointer. Gc requires that `T`
 /// implements the [`Trace`] trait to properly track references.
+#[repr(transparent)]
 pub struct Gc<T: ?Sized> {
     pub(crate) ptr: NonNull<GcInner<T>>,
     pub(crate) marker: PhantomData<GcInner<T>>,
@@ -763,6 +764,30 @@ where
             self.as_mut().finalize_or_skip();
             drop(Box::from_raw(
                 self.as_mut() as *mut T as *mut ManuallyDrop<T>
+            ));
+        }
+    }
+}
+
+unsafe impl<T> Trace for Box<[T]>
+where
+    T: GcOrTrace,
+{
+    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
+        unsafe {
+            for child in self.as_ref() {
+                child.visit_or_recurse(visitor);
+            }
+        }
+    }
+
+    unsafe fn finalize(&mut self) {
+        unsafe {
+            for child in self.as_mut() {
+                child.finalize_or_skip();
+            }
+            drop(Box::from_raw(
+                self.as_mut() as *mut [T] as *mut ManuallyDrop<[T]>
             ));
         }
     }

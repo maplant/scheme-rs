@@ -116,9 +116,9 @@ automatically registered into a given library:
 # use scheme_rs::{
 # registry::bridge, value::Value, exceptions::Exception};
 #[bridge(name = "add-five", lib = "(add-five-lib)")]
-fn add_five(num: &Value) -> Result<Vec<Value>, Exception> {
-    let num: usize = num.clone().try_into()?;
-    Ok(vec![Value::from(num + 5)])
+fn add_five(num: Value) -> Result<Value, Exception> {
+    let num: usize = num.try_into()?;
+    Ok(Value::from(num + 5))
 }
 ```
 
@@ -129,8 +129,8 @@ run-time, so the following definition is also valid:
 # use scheme_rs::{
 # registry::bridge, value::Value, exceptions::Exception};
 #[bridge(name = "add-five", lib = "(add-five-lib)")]
-fn add_five(num: usize) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(num + 5)])
+fn add_five(num: usize) -> Result<Value, Exception> {
+    Ok(Value::from(num + 5))
 }
 ```
 
@@ -141,9 +141,9 @@ Once you've defined a bridge function it can be imported and called from scheme:
 # registry::bridge, value::Value, exceptions::Exception, 
 # env::TopLevelEnvironment};
 # #[bridge(name = "add-five", lib = "(add-five-lib)")]
-# fn add_five(num: &Value) -> Result<Vec<Value>, Exception> {
-#    let num: usize = num.clone().try_into()?;
-#    Ok(vec![Value::from(num + 5)])
+# fn add_five(num: Value) -> Result<Value, Exception> {
+#    let num: usize = num.try_into()?;
+#    Ok(Value::from(num + 5))
 # }
 # fn main() {
 # let env = TopLevelEnvironment::new_repl();
@@ -160,10 +160,11 @@ assert_eq!(val[0].cast::<u64>().unwrap(), 17);
 # }
 ```
 
-It is also possible to implement bridge functions in a [continuation-passing 
-style](https://en.wikipedia.org/wiki/Continuation-passing_style) for greater 
-flexibility and control. See the [`cps_bridge`](registry::cps_bridge) proc macro
-for more information.
+Bridge functions may also take a `&mut ContBarrier` parameter and return an
+[`Application`](proc::Application), which puts them in
+[continuation-passing style](https://en.wikipedia.org/wiki/Continuation-passing_style)
+for greater flexibility and control — such as calling Scheme procedures in
+tail position.
 
 ## Values
 
@@ -173,7 +174,7 @@ library objects simply by using `From`:
 ```rust
 # use scheme_rs::value::Value;
 let pi = Value::from(3.14159268);
-let pair = Value::from((Value::from(1), Value::from((Value::from(2), Value::from(())))));
+let pair = Value::cons(1, Value::cons(2, Value::null()));
 ```
 
 Rust objects that implement [`Embeddable`](records::Embeddable) can 
@@ -249,28 +250,22 @@ Creating a new mutable references enforces a new continuation barrier.
 
 ```rust
 # use scheme_rs::{
-# registry::cps_bridge, value::Value, exceptions::Exception, 
-# env::TopLevelEnvironment, proc::{Application, ContBarrier, Procedure}}; 
-#[cps_bridge(def = "inc", lib = "(example)")]
-pub fn inc(
-    _env: &[Value],
-    _args: &[Value],
-    _rest_args: &[Value],
-    barrier: &mut ContBarrier,
-) -> Result<Application, Exception> {
+# registry::bridge, value::Value, exceptions::Exception, 
+# env::TopLevelEnvironment,
+# proc::{Application, ContBarrier, Procedure, Args}}; 
+#[bridge(name = "inc", lib = "(example)")]
+pub fn inc(barrier: &mut ContBarrier) -> Result<Application, Exception> {
     let var = {
         let var: &mut u32 = barrier.get_param("var").unwrap().downcast_mut().unwrap();
         *var += 1;
         *var
     };
-    Ok(barrier.call_cont(vec![Value::from(var)]))
+    Ok(barrier.call_cont(Args::pack([Value::from(var)])))
 }
 
-#[cps_bridge(def = "call-with-var thunk", lib = "(example)")]
+#[bridge(name = "call-with-var", lib = "(example)")]
 pub fn call_with_var(
-    _env: &[Value],
-    args: &[Value],
-    _rest_args: &[Value],
+    thunk: Procedure,
     barrier: &mut ContBarrier,
 ) -> Result<Application, Exception> {
     // Set up the new dynamic state and add the param
@@ -280,11 +275,10 @@ pub fn call_with_var(
         new_barrier.add_param("var", &mut var);
     
         // Call the thunk arg with the new dyn state:
-        let thunk: Procedure = args[0].clone().try_into()?;
         thunk.call(&[], &mut new_barrier)?
     };
 
     // Return to the continuation:
-    Ok(barrier.call_cont(result))
+    Ok(barrier.call_cont(Args::pack(result)))
 }
 ```

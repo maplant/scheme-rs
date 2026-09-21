@@ -7,14 +7,12 @@ use parking_lot::RwLock;
 use crate::{
     exceptions::Exception,
     gc::{Gc, Trace},
-    proc::{Application, ContBarrier, ContPtr, Procedure},
-    registry::{bridge, cps_bridge},
+    proc::{Application, Args, ContBarrier, Procedure},
+    registry::bridge,
     strings::WideString,
     value::{UnpackedValue, Value, ValueType, write_value},
-    vectors::Vector,
 };
 use std::fmt;
-use std::mem::MaybeUninit;
 
 #[derive(Trace)]
 #[repr(align(16))]
@@ -233,7 +231,7 @@ where
         let items = iter.into_iter().map(Into::into).collect::<Vec<_>>();
         let mut head = Value::null();
         for item in items.iter().rev() {
-            head = Value::from((item.clone(), head));
+            head = Value::cons(item.clone(), head);
         }
         Self { head, items }
     }
@@ -243,7 +241,7 @@ impl From<Vec<Value>> for List {
     fn from(items: Vec<Value>) -> Self {
         let mut head = Value::null();
         for item in items.iter().rev() {
-            head = Value::from((item.clone(), head));
+            head = Value::cons(item.clone(), head);
         }
         Self { head, items }
     }
@@ -257,6 +255,53 @@ impl TryFrom<&Value> for List {
             .cast::<List>()
             .ok_or_else(|| Exception::error("value is not a proper list"))
     }
+}
+
+impl TryFrom<Value> for List {
+    type Error = Exception;
+
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        (&value).try_into()
+    }
+}
+
+/// An iterator over the elements of a scheme list, fetching each element with
+/// car/cdr. Iteration ends at the first non-pair value.
+pub struct ListIterator {
+    curr: Value,
+}
+
+impl Iterator for ListIterator {
+    type Item = Value;
+
+    fn next(&mut self) -> Option<Value> {
+        let pair = self.curr.cast::<Pair>()?;
+        let car = pair.car();
+        self.curr = pair.cdr();
+        Some(car)
+    }
+}
+
+/// Iterate over the elements of a scheme list without collecting them.
+pub fn iter_list(list: &Value) -> ListIterator {
+    ListIterator { curr: list.clone() }
+}
+
+/// Return the number of elements in a scheme list.
+pub fn list_len(list: &Value) -> usize {
+    iter_list(list).count()
+}
+
+/// Split a list at index `at`, returning the first `at` elements as a newly
+/// allocated list along with the remainder. The remainder shares structure
+/// with the input list.
+pub fn split_list(list: Value, at: usize) -> Result<(Value, Value), Exception> {
+    if at == 0 {
+        return Ok((Value::null(), list));
+    }
+    let pair: Pair = list.try_to()?;
+    let (prefix, tail) = split_list(pair.cdr(), at - 1)?;
+    Ok((Value::from(Pair::immutable(pair.car(), prefix)), tail))
 }
 
 /// Convert a slice of values to a proper list
@@ -307,58 +352,52 @@ pub fn is_list(curr: &Value, seen: &mut HashSet<Value>) -> bool {
 }
 
 #[bridge(name = "list?", lib = "(rnrs base builtins (6))")]
-pub fn list_pred(arg: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(is_list(arg, &mut HashSet::default()))])
+pub fn list_pred(arg: Value) -> bool {
+    is_list(&arg, &mut HashSet::default())
 }
 
 #[bridge(name = "list", lib = "(rnrs base builtins (6))")]
-pub fn list(args: &[Value]) -> Result<Vec<Value>, Exception> {
-    // Construct the list in reverse
-    let mut cdr = Value::null();
-    for arg in args.iter().rev() {
-        cdr = Value::from(Pair::mutable(arg.clone(), cdr));
+pub fn list(#[rest_args] args: Value) -> Value {
+    // Rebuild the rest args as a fresh mutable list:
+    fn rebuild(args: &Value) -> Value {
+        match args.cast::<Pair>() {
+            Some(pair) => Value::from(Pair::mutable(pair.car(), rebuild(&pair.cdr()))),
+            None => Value::null(),
+        }
     }
-    Ok(vec![cdr])
+    rebuild(&args)
 }
 
 #[bridge(name = "cons", lib = "(rnrs base builtins (6))")]
-pub fn cons(car: &Value, cdr: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(Pair::mutable(car.clone(), cdr.clone()))])
+pub fn cons(car: Value, cdr: Value, _: &mut ContBarrier) -> Pair {
+    Pair::mutable(car.clone(), cdr.clone())
 }
 
 #[bridge(name = "car", lib = "(rnrs base builtins (6))")]
-pub fn car(val: &Value) -> Result<Vec<Value>, Exception> {
-    match val.pair_car() {
-        Some(car) => Ok(vec![car]),
-        None => Ok(vec![val.try_to::<Pair>()?.car()]),
-    }
+pub fn car(val: Pair, _: &mut ContBarrier) -> Value {
+    val.car()
 }
 
 #[bridge(name = "cdr", lib = "(rnrs base builtins (6))")]
-pub fn cdr(val: &Value) -> Result<Vec<Value>, Exception> {
-    match val.pair_cdr() {
-        Some(cdr) => Ok(vec![cdr]),
-        None => Ok(vec![val.try_to::<Pair>()?.cdr()]),
-    }
+pub fn cdr(val: Pair, _: &mut ContBarrier) -> Value {
+    val.cdr()
 }
 
 #[bridge(name = "set-car!", lib = "(rnrs mutable-pairs (6))")]
-pub fn set_car(var: &Value, val: &Value) -> Result<Vec<Value>, Exception> {
-    let pair: Pair = var.clone().try_into()?;
+pub fn set_car(pair: Pair, val: Value) -> Result<(), Exception> {
     pair.set_car(val.clone())?;
-    Ok(Vec::new())
+    Ok(())
 }
 
 #[bridge(name = "set-cdr!", lib = "(rnrs mutable-pairs (6))")]
-pub fn set_cdr(var: &Value, val: &Value) -> Result<Vec<Value>, Exception> {
-    let pair: Pair = var.clone().try_into()?;
+pub fn set_cdr(pair: Pair, val: Value) -> Result<(), Exception> {
     pair.set_cdr(val.clone())?;
-    Ok(Vec::new())
+    Ok(())
 }
 
 #[bridge(name = "length", lib = "(rnrs base builtins (6))")]
-pub fn length_builtin(arg: &Value) -> Result<Vec<Value>, Exception> {
-    Ok(vec![Value::from(length(arg)?)])
+pub fn length_builtin(arg: Value) -> Result<usize, Exception> {
+    length(&arg)
 }
 
 pub fn length(arg: &Value) -> Result<usize, Exception> {
@@ -378,158 +417,176 @@ pub fn length(arg: &Value) -> Result<usize, Exception> {
 }
 
 #[bridge(name = "list->vector", lib = "(rnrs base builtins (6))")]
-pub fn list_to_vector(list: &Value) -> Result<Vec<Value>, Exception> {
-    let List { items, .. } = list.try_to()?;
-    Ok(vec![Value::from(items)])
+pub fn list_to_vector(List { items, .. }: List) -> Value {
+    Value::from(items)
 }
 
 #[bridge(name = "list->string", lib = "(rnrs base builtins (6))")]
-pub fn list_to_string(List { items, .. }: List) -> Result<Vec<Value>, Exception> {
+pub fn list_to_string(List { items, .. }: List) -> Result<WideString, Exception> {
     let chars = items
         .into_iter()
         .map(char::try_from)
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(vec![Value::from(WideString::mutable(chars))])
+    Ok(WideString::mutable(chars))
+}
+
+pub(crate) fn append_list(list: &Value, tail: Value) -> Value {
+    match &*list.unpacked_ref() {
+        UnpackedValue::Pair(pair) => {
+            let (car, cdr) = pair.clone().into();
+            Value::from(Pair::mutable(car, append_list(&cdr, tail)))
+        }
+        UnpackedValue::Null => tail,
+        _ => Value::from(Pair::mutable(list.clone(), tail)),
+    }
 }
 
 #[bridge(name = "append", lib = "(rnrs base builtins (6))")]
-pub fn append(lists: &[Value]) -> Result<Vec<Value>, Exception> {
-    if lists.is_empty() {
-        return Ok(vec![Value::null()]);
-    }
-    if lists.len() == 1 {
-        return Ok(vec![lists[0].clone()]);
-    }
-    let mut result = lists.last().unwrap().clone();
-    for list in lists[..lists.len() - 1].iter().rev() {
-        let mut vec = Vec::new();
-        list_to_vec(list, &mut vec);
-        for item in vec.into_iter().rev() {
-            result = Value::from(Pair::mutable(item, result));
+pub fn append(#[rest_args] lists: Value) -> Result<Value, Exception> {
+    fn append_lists(lists: &Value) -> Value {
+        let Some(pair) = lists.cast::<Pair>() else {
+            return Value::null();
+        };
+        let cdr = pair.cdr();
+        if cdr.is_null() {
+            pair.car()
+        } else {
+            append_list(&pair.car(), append_lists(&cdr))
         }
     }
-    Ok(vec![result])
+
+    Ok(append_lists(&lists))
 }
 
-#[cps_bridge(def = "map proc list1 . listn", lib = "(rnrs base builtins (6))")]
+fn split_heads(inputs: &Value) -> Result<Option<(Value, Value)>, Exception> {
+    let Some(inputs) = inputs.cast::<Pair>() else {
+        return Ok(Some((Value::null(), Value::null())));
+    };
+    let input = inputs.car();
+    if input.type_of() == ValueType::Null {
+        // TODO: Check if the rest are also empty
+        return Ok(None);
+    }
+    let (car, cdr) = input.try_to::<Pair>()?.into();
+    let Some((cars, cdrs)) = split_heads(&inputs.cdr())? else {
+        return Ok(None);
+    };
+    Ok(Some((
+        Value::from(Pair::immutable(car, cars)),
+        Value::from(Pair::immutable(cdr, cdrs)),
+    )))
+}
+
+/// Append a mapper result to the output list, returning the updated head and
+/// tail. The list is built in order with mutable pairs; a null tail means the
+/// list is empty.
+fn push_map_output(head: Value, tail: Value, val: Value) -> (Value, Value) {
+    let new_tail = Value::from(Pair::mutable(val, Value::null()));
+    if let Some(tail) = tail.cast::<Pair>() {
+        tail.set_cdr(new_tail.clone()).unwrap();
+        (head, new_tail)
+    } else {
+        (new_tail.clone(), new_tail)
+    }
+}
+
+#[bridge(name = "map", lib = "(rnrs base builtins (6))")]
 pub fn map(
-    _env: &[Value],
-    args: &[Value],
-    list_n: &[Value],
+    mapper: Value,
+    list_1: Value,
+    #[rest_args] list_n: Value,
     barrier: &mut ContBarrier,
 ) -> Result<Application, Exception> {
-    let [mapper, list_1] = args else {
-        unreachable!()
-    };
     let mapper_proc: Procedure = mapper.clone().try_into()?;
-    let mut inputs = Some(list_1.clone())
-        .into_iter()
-        .chain(list_n.iter().cloned())
-        .collect::<Vec<_>>();
 
-    let mut args = Vec::new();
-    for input in inputs.iter_mut() {
-        if input.type_of() == ValueType::Null {
-            // TODO: Check if the rest are also empty and args is empty
-            return Ok(barrier.call_cont(vec![Value::null()]));
+    if list_n.is_null() {
+        if list_1.type_of() == ValueType::Null {
+            return Ok(barrier.call_cont(Args::pack([Value::null()])));
         }
-
-        let (car, cdr) = input.try_to::<Pair>()?.into();
-
-        args.push(car);
-        *input = cdr;
+        let (car, rest) = list_1.try_to::<Pair>()?.into();
+        barrier.push_cont([mapper, rest, Value::null(), Value::null()], map1_k);
+        return Ok(Application::new(mapper_proc, Args::pack([car])));
     }
 
-    // The return continuation `map_k` is pushed onto the barrier; the outer
-    // continuation (where the final list is returned) stays implicit below it.
-    barrier.push_cont(
-        vec![
-            Value::from(Vec::<Value>::new()),
-            Value::from(inputs),
-            mapper.clone(),
-        ],
-        ContPtr::Continuation(map_k),
-        1,
-        false,
-    );
+    let inputs = Value::from(Pair::immutable(list_1, list_n));
+    let Some((args, next_inputs)) = split_heads(&inputs)? else {
+        return Ok(barrier.call_cont(Args::pack([Value::null()])));
+    };
 
-    Ok(Application::new(mapper_proc, args))
+    barrier.push_cont([mapper, next_inputs, Value::null(), Value::null()], mapn_k);
+    Ok(Application::new(mapper_proc, Args::from_list(args)))
 }
 
-unsafe extern "C" fn map_k(
-    env: *const Value,
-    args: *const Value,
-    barrier: *mut ContBarrier,
-    out: *mut MaybeUninit<Application>,
-) {
-    unsafe {
-        // TODO: Probably need to do this in a way that avoids mutable variables
+fn map1_k(env: [Value; 4], mapped: Value, barrier: &mut ContBarrier) -> Application {
+    let [mapper, input, head, tail] = env;
 
-        // env[0] is the output list
-        let output: Vector = env.as_ref().unwrap().clone().try_into().unwrap();
+    let (head, tail) = push_map_output(head, tail, mapped);
 
-        output.0.vec.write().push(args.as_ref().unwrap().clone());
-
-        // env[1] is the input lists
-        let inputs: Vector = env.add(1).as_ref().unwrap().clone().try_into().unwrap();
-
-        // env[2] is the mapper function
-        let mapper: Procedure = env.add(2).as_ref().unwrap().clone().try_into().unwrap();
-
-        let mut args = Vec::new();
-
-        // TODO: We need to collect a new list
-        for input in inputs.0.vec.write().iter_mut() {
-            if input.type_of() == ValueType::Null {
-                // TODO: Check if the rest are also empty and args is empty
-                let output = slice_to_list(&output.0.vec.read());
-                let app = barrier.as_mut().unwrap().call_cont(vec![output]);
-                (*out).write(app);
-                return;
-            }
-
-            let (car, cdr) = input.cast::<Pair>().unwrap().into();
-            args.push(car);
-            *input = cdr;
+    if input.type_of() == ValueType::Null {
+        return barrier.call_cont(Args::pack([head]));
+    }
+    match input.try_to::<Pair>() {
+        Ok(pair) => {
+            let (car, rest) = pair.into();
+            let mapper_proc = mapper.cast::<Procedure>().unwrap();
+            barrier.push_cont([mapper, rest, head, tail], map1_k);
+            Application::new(mapper_proc, Args::pack([car]))
         }
+        Err(err) => crate::exceptions::raise(err.into(), barrier),
+    }
+}
 
-        barrier.as_mut().unwrap().push_cont(
-            vec![
-                Value::from(output),
-                Value::from(inputs),
-                Value::from(mapper.clone()),
-            ],
-            ContPtr::Continuation(map_k),
-            1,
-            false,
-        );
+fn mapn_k(env: [Value; 4], mapped: Value, barrier: &mut ContBarrier) -> Application {
+    let [mapper, inputs, head, tail] = env;
 
-        (*out).write(Application::new(mapper, args));
+    let (head, tail) = push_map_output(head, tail, mapped);
+
+    match split_heads(&inputs) {
+        Ok(Some((args, next_inputs))) => {
+            let mapper_proc = mapper.cast::<Procedure>().unwrap();
+            barrier.push_cont([mapper, next_inputs, head, tail], mapn_k);
+            Application::new(mapper_proc, Args::from_list(args))
+        }
+        Ok(None) => barrier.call_cont(Args::pack([head])),
+        Err(err) => crate::exceptions::raise(err.into(), barrier),
     }
 }
 
 #[bridge(name = "zip", lib = "(rnrs base builtins (6))")]
-pub fn zip(list1: &Value, listn: &[Value]) -> Result<Vec<Value>, Exception> {
-    let mut output: Option<Vec<Value>> = None;
-    for list in Some(list1).into_iter().chain(listn.iter()).rev() {
+pub fn zip(list1: Value, #[rest_args] listn: Value) -> Result<Value, Exception> {
+    fn zip_one(list: &Value, output: &mut Option<Vec<Value>>) -> Result<(), Exception> {
         let List { items, .. } = list.try_to()?;
         if let Some(output) = &output {
             if output.len() != items.len() {
                 return Err(Exception::error("lists do not have the same length"));
             }
         } else {
-            output = Some(vec![Value::null(); items.len()]);
+            *output = Some(vec![Value::null(); items.len()]);
         }
 
         let output = output.as_mut().unwrap();
         for (i, item) in items.into_iter().enumerate() {
-            output[i] = Value::from((item, output[i].clone()));
+            output[i] = Value::cons(item, output[i].clone());
         }
+        Ok(())
     }
 
+    // The lists are processed back to front:
+    fn zip_rev(lists: &Value, output: &mut Option<Vec<Value>>) -> Result<(), Exception> {
+        let Some(pair) = lists.cast::<Pair>() else {
+            return Ok(());
+        };
+        zip_rev(&pair.cdr(), output)?;
+        zip_one(&pair.car(), output)
+    }
+
+    let mut output: Option<Vec<Value>> = None;
+    zip_rev(&listn, &mut output)?;
+    zip_one(&list1, &mut output)?;
+
     if let Some(output) = output {
-        Ok(vec![slice_to_list(&output)])
+        Ok(slice_to_list(&output))
     } else {
-        Ok(vec![Value::null()])
+        Ok(Value::null())
     }
 }
