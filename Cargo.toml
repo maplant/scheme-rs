@@ -81,3 +81,6 @@ harness = false
 [[bench]]
 name = "yin_yang"
 harness = false
+
+[workspace]
+members = ["proc-macros"]

@@ -26,7 +26,7 @@ jobs:
     - name: Clippy
       run: cargo hack clippy --feature-powerset --group-features async,tokio --all-targets -- -Dclippy::all -D warnings
     - name: Test
-      run: cargo test
+      run: cargo test --workspace
       timeout-minutes: 2
     - name: Bench
       run: cargo bench
