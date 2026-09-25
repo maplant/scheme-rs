@@ -58,7 +58,7 @@ use syn::{
 /// a `Vec<Value>` but any type that can be converted into one (although `()` is
 /// treated as no return value rather than the empty list in this context).
 ///
-/// ```rust
+/// ```rust,ignore
 /// #[bridge(name = "length", lib = "(list-length (1))")]
 /// pub fn length(arg: List) -> usize {
 ///     arg.len()
