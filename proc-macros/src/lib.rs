@@ -64,7 +64,6 @@ use syn::{
 ///     arg.len()
 /// }
 /// ```
-
 #[proc_macro_attribute]
 pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
     let mut name: Option<LitStr> = None;
@@ -588,18 +587,18 @@ fn is_cont_barrier(PatType { ty, .. }: &PatType) -> bool {
         elem,
         ..
     }) = ty.as_ref()
+        && let Type::Path(TypePath { path, .. }) = elem.as_ref()
     {
-        if let Type::Path(TypePath { path, .. }) = elem.as_ref() {
-            return path
-                .segments
-                .last()
-                .map(|s| s.ident == "ContBarrier")
-                .unwrap_or(false);
-        }
+        return path
+            .segments
+            .last()
+            .map(|s| s.ident == "ContBarrier")
+            .unwrap_or(false);
     }
     false
 }
 
+#[allow(clippy::too_many_arguments)]
 fn codegen_known_bridge(
     bridge: &ItemFn,
     ret_type: KnownReturnType,
@@ -899,7 +898,7 @@ fn derive_trace_enum(
             let visits = fields
                 .iter()
                 .map(|(attrs, ty, accessor)| {
-                    let skip_field = skip_field(&attrs)?;
+                    let skip_field = skip_field(attrs)?;
 
                     let visit = if skip_field {
                         quote! {
@@ -920,7 +919,7 @@ fn derive_trace_enum(
             let drops: Vec<_> = fields
                 .iter()
                 .map(|(attrs, ty, accessor)| {
-                    let skip_field = skip_field(&attrs).unwrap();
+                    let skip_field = skip_field(attrs).unwrap();
 
                     if skip_field {
                         quote! {
@@ -1101,7 +1100,7 @@ pub fn runtime_fn(_args: TokenStream, item: TokenStream) -> TokenStream {
     let name_lit = Literal::string(&runtime_fn.sig.ident.to_string());
     let ret = if let Some(ret_type) = match runtime_fn.sig.output {
         syn::ReturnType::Default => None,
-        syn::ReturnType::Type(_, ref ty) => Some(rust_type_to_cranelift_type(&ty)),
+        syn::ReturnType::Type(_, ref ty) => Some(rust_type_to_cranelift_type(ty)),
     }
     .flatten()
     {
@@ -1290,7 +1289,7 @@ impl Parse for Rtd {
             return Err(Error::new(input.span(), "ty field is required"));
         };
 
-        if !sealed.as_ref().map_or(false, LitBool::value) && constructor.is_none() {
+        if !sealed.as_ref().is_some_and(LitBool::value) && constructor.is_none() {
             return Err(Error::new(
                 input.span(),
                 "unsealed records must have a constructor defined",
