@@ -86,7 +86,10 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
     let mut bridge = parse_macro_input!(item as ItemFn);
     let docs = doc_string(&bridge.attrs);
 
-    let wrapper_name = std::mem::replace(&mut bridge.sig.ident, Ident::new("__inner__", Span::call_site()));
+    let wrapper_name = std::mem::replace(
+        &mut bridge.sig.ident,
+        Ident::new("__inner__", Span::call_site()),
+    );
     const MAX_DIRECT_ARGS: usize = 4;
 
     let mut arg_names = Vec::new();
@@ -101,10 +104,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
 
     for arg in bridge.sig.inputs.iter_mut() {
         let FnArg::Typed(arg) = arg else {
-            return Error::new(
-                arg.span(),
-                "methods cannot be bridge functions"
-            )
+            return Error::new(arg.span(), "methods cannot be bridge functions")
                 .into_compile_error()
                 .into();
         };
@@ -117,15 +117,18 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
             if attr.path().is_ident("env") && !is_env_var && !is_rest_args {
                 is_env_var = true;
                 false
-            } else if attr.path().is_ident("rest_args") && !is_env_var && !is_rest_args && !is_variadic {
+            } else if attr.path().is_ident("rest_args")
+                && !is_env_var
+                && !is_rest_args
+                && !is_variadic
+            {
                 is_rest_args = true;
                 is_variadic = true;
                 false
             } else {
                 true
             }
-        }
-        );
+        });
 
         if is_env_var {
             let env_idx = env_var_idx;
@@ -197,7 +200,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                     }
                 }
             });
-            
+
             bindings.push(quote! {
                 #[allow(unused_mut)]
                 let mut rest_args = rest;
@@ -465,10 +468,11 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
         quote!()
     };
 
-    quote!{
+    quote! {
         #func
         #registration
-    }.into()
+    }
+    .into()
 }
 
 fn convert_arg(expr: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
@@ -566,7 +570,6 @@ fn is_option(ty: &Type) -> bool {
     } else {
         false
     }
-
 }
 
 fn is_application(ty: &Type) -> bool {
@@ -580,20 +583,20 @@ fn is_application(ty: &Type) -> bool {
 }
 
 fn is_cont_barrier(PatType { ty, .. }: &PatType) -> bool {
-        if let Type::Reference(TypeReference {
-            mutability: Some(_),
-            elem,
-            ..
-        }) = ty.as_ref()
-        {
-            if let Type::Path(TypePath { path, .. }) = elem.as_ref() {
-                return path
-                    .segments
-                    .last()
-                    .map(|s| s.ident == "ContBarrier")
-                    .unwrap_or(false);
-            }
+    if let Type::Reference(TypeReference {
+        mutability: Some(_),
+        elem,
+        ..
+    }) = ty.as_ref()
+    {
+        if let Type::Path(TypePath { path, .. }) = elem.as_ref() {
+            return path
+                .segments
+                .last()
+                .map(|s| s.ident == "ContBarrier")
+                .unwrap_or(false);
         }
+    }
     false
 }
 
