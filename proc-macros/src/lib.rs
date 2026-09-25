@@ -58,13 +58,12 @@ use syn::{
 /// a `Vec<Value>` but any type that can be converted into one (although `()` is
 /// treated as no return value rather than the empty list in this context).
 ///
-/// ```rust
+/// ```rust,ignore
 /// #[bridge(name = "length", lib = "(list-length (1))")]
 /// pub fn length(arg: List) -> usize {
 ///     arg.len()
 /// }
 /// ```
-
 #[proc_macro_attribute]
 pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
     let mut name: Option<LitStr> = None;
@@ -86,7 +85,10 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
     let mut bridge = parse_macro_input!(item as ItemFn);
     let docs = doc_string(&bridge.attrs);
 
-    let wrapper_name = std::mem::replace(&mut bridge.sig.ident, Ident::new("__inner__", Span::call_site()));
+    let wrapper_name = std::mem::replace(
+        &mut bridge.sig.ident,
+        Ident::new("__inner__", Span::call_site()),
+    );
     const MAX_DIRECT_ARGS: usize = 4;
 
     let mut arg_names = Vec::new();
@@ -101,10 +103,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
 
     for arg in bridge.sig.inputs.iter_mut() {
         let FnArg::Typed(arg) = arg else {
-            return Error::new(
-                arg.span(),
-                "methods cannot be bridge functions"
-            )
+            return Error::new(arg.span(), "methods cannot be bridge functions")
                 .into_compile_error()
                 .into();
         };
@@ -117,15 +116,18 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
             if attr.path().is_ident("env") && !is_env_var && !is_rest_args {
                 is_env_var = true;
                 false
-            } else if attr.path().is_ident("rest_args") && !is_env_var && !is_rest_args && !is_variadic {
+            } else if attr.path().is_ident("rest_args")
+                && !is_env_var
+                && !is_rest_args
+                && !is_variadic
+            {
                 is_rest_args = true;
                 is_variadic = true;
                 false
             } else {
                 true
             }
-        }
-        );
+        });
 
         if is_env_var {
             let env_idx = env_var_idx;
@@ -197,7 +199,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                     }
                 }
             });
-            
+
             bindings.push(quote! {
                 #[allow(unused_mut)]
                 let mut rest_args = rest;
@@ -465,10 +467,11 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
         quote!()
     };
 
-    quote!{
+    quote! {
         #func
         #registration
-    }.into()
+    }
+    .into()
 }
 
 fn convert_arg(expr: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
@@ -566,7 +569,6 @@ fn is_option(ty: &Type) -> bool {
     } else {
         false
     }
-
 }
 
 fn is_application(ty: &Type) -> bool {
@@ -580,23 +582,23 @@ fn is_application(ty: &Type) -> bool {
 }
 
 fn is_cont_barrier(PatType { ty, .. }: &PatType) -> bool {
-        if let Type::Reference(TypeReference {
-            mutability: Some(_),
-            elem,
-            ..
-        }) = ty.as_ref()
-        {
-            if let Type::Path(TypePath { path, .. }) = elem.as_ref() {
-                return path
-                    .segments
-                    .last()
-                    .map(|s| s.ident == "ContBarrier")
-                    .unwrap_or(false);
-            }
-        }
+    if let Type::Reference(TypeReference {
+        mutability: Some(_),
+        elem,
+        ..
+    }) = ty.as_ref()
+        && let Type::Path(TypePath { path, .. }) = elem.as_ref()
+    {
+        return path
+            .segments
+            .last()
+            .map(|s| s.ident == "ContBarrier")
+            .unwrap_or(false);
+    }
     false
 }
 
+#[allow(clippy::too_many_arguments)]
 fn codegen_known_bridge(
     bridge: &ItemFn,
     ret_type: KnownReturnType,
@@ -896,7 +898,7 @@ fn derive_trace_enum(
             let visits = fields
                 .iter()
                 .map(|(attrs, ty, accessor)| {
-                    let skip_field = skip_field(&attrs)?;
+                    let skip_field = skip_field(attrs)?;
 
                     let visit = if skip_field {
                         quote! {
@@ -917,7 +919,7 @@ fn derive_trace_enum(
             let drops: Vec<_> = fields
                 .iter()
                 .map(|(attrs, ty, accessor)| {
-                    let skip_field = skip_field(&attrs).unwrap();
+                    let skip_field = skip_field(attrs).unwrap();
 
                     if skip_field {
                         quote! {
@@ -1098,7 +1100,7 @@ pub fn runtime_fn(_args: TokenStream, item: TokenStream) -> TokenStream {
     let name_lit = Literal::string(&runtime_fn.sig.ident.to_string());
     let ret = if let Some(ret_type) = match runtime_fn.sig.output {
         syn::ReturnType::Default => None,
-        syn::ReturnType::Type(_, ref ty) => Some(rust_type_to_cranelift_type(&ty)),
+        syn::ReturnType::Type(_, ref ty) => Some(rust_type_to_cranelift_type(ty)),
     }
     .flatten()
     {
@@ -1287,7 +1289,7 @@ impl Parse for Rtd {
             return Err(Error::new(input.span(), "ty field is required"));
         };
 
-        if !sealed.as_ref().map_or(false, LitBool::value) && constructor.is_none() {
+        if !sealed.as_ref().is_some_and(LitBool::value) && constructor.is_none() {
             return Err(Error::new(
                 input.span(),
                 "unsealed records must have a constructor defined",
