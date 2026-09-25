@@ -1,0 +1,17 @@
+[package]
+name = "scheme-rs-gc"
+version = "0.1.0"
+edition = "2024"
+authors = ["Matthew Plant <maplant@protonmail.com>"]
+description = "Immix heap for scheme-rs, the first step toward an LXR collector"
+license = "MPL-2.0"
+repository = "https://github.com/maplant/scheme-rs"
+
+[dependencies]
+allocator-api2 = "0.4"
+
+[target.'cfg(loom)'.dependencies]
+loom = "0.7"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
