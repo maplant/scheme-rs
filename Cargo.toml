@@ -83,4 +83,4 @@ name = "yin_yang"
 harness = false
 
 [workspace]
-members = ["proc-macros"]
+members = ["proc-macros", "scheme-rs-gc"]
