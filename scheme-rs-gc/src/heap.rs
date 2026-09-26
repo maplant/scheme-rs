@@ -22,15 +22,10 @@ pub struct Heap<M: ObjectModel, A: Allocator = Global> {
     pub(crate) free: Mutex<Vec<OwnedBlock>>,
     pub(crate) recycled: Mutex<Vec<(OwnedBlock, u128)>>,
     pub(crate) retired: Mutex<Vec<OwnedBlock>>,
-    pub(crate) counters: Counters,
-    _model: PhantomData<fn() -> M>,
-}
-
-#[derive(Default)]
-pub(crate) struct Counters {
     pub(crate) bytes_allocated: AtomicUsize,
     pub(crate) overflow_bytes: AtomicUsize,
     pub(crate) large_objects: AtomicUsize,
+    _model: PhantomData<fn() -> M>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,7 +58,9 @@ impl<M: ObjectModel, A: Allocator> Heap<M, A> {
             free: Mutex::new(blocks),
             recycled: Mutex::new(Vec::new()),
             retired: Mutex::new(Vec::new()),
-            counters: Counters::default(),
+            bytes_allocated: AtomicUsize::new(0),
+            overflow_bytes: AtomicUsize::new(0),
+            large_objects: AtomicUsize::new(0),
             _model: PhantomData,
         })
     }
@@ -78,13 +75,12 @@ impl<M: ObjectModel, A: Allocator> Heap<M, A> {
     }
 
     pub fn stats(&self) -> HeapStats {
-        let c = &self.counters;
         HeapStats {
             free_blocks: lock(&self.free).len(),
             recycled_blocks: lock(&self.recycled).len(),
-            bytes_allocated: c.bytes_allocated.load(Ordering::Relaxed),
-            overflow_bytes: c.overflow_bytes.load(Ordering::Relaxed),
-            large_objects: c.large_objects.load(Ordering::Relaxed),
+            bytes_allocated: self.bytes_allocated.load(Ordering::Relaxed),
+            overflow_bytes: self.overflow_bytes.load(Ordering::Relaxed),
+            large_objects: self.large_objects.load(Ordering::Relaxed),
         }
     }
 
@@ -115,7 +111,7 @@ impl<M: ObjectModel, A: Allocator> Heap<M, A> {
 
     pub(crate) fn alloc_large(&self, layout: Layout) -> Result<NonNull<u8>, AllocError> {
         let obj = self.region.alloc.allocate(layout)?.cast::<u8>();
-        self.counters.large_objects.fetch_add(1, Ordering::Relaxed);
+        self.large_objects.fetch_add(1, Ordering::Relaxed);
         Ok(obj)
     }
 }

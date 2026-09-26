@@ -132,12 +132,9 @@ impl Bump {
 
     fn retire<M: ObjectModel, A: Allocator>(&mut self, heap: &Heap<M, A>, block: OwnedBlock) {
         heap.retire(block);
-        let counters = &heap.counters;
-        counters
-            .bytes_allocated
+        heap.bytes_allocated
             .fetch_add(take(&mut self.bytes), Ordering::Relaxed);
-        counters
-            .overflow_bytes
+        heap.overflow_bytes
             .fetch_add(take(&mut self.overflow_bytes), Ordering::Relaxed);
     }
 
