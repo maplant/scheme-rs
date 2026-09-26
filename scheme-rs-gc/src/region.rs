@@ -259,7 +259,6 @@ impl<A: Allocator> Region<A> {
     }
 
     #[cfg(all(test, loom))]
-    #[expect(dead_code, reason = "the loom models use it")]
     pub(crate) fn line_count(&self, token: &CollectorToken, id: BlockId, line: usize) -> u8 {
         self.check_token(token);
         self.line(id, line).load(Ordering::Relaxed)
