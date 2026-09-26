@@ -1,11 +1,15 @@
 //! Immix line/block heap: the first step toward an LXR collector for scheme-rs.
 
+mod heap;
+mod mutator;
 mod region;
 mod sync;
 
 use core::alloc::Layout;
 
 pub use allocator_api2::alloc::{AllocError, Allocator, Global};
+pub use heap::{Heap, HeapStats};
+pub use mutator::Mutator;
 pub use region::{BLOCK_SIZE, LINE_SIZE, LOS_MAX_SIZE, MAX_ALIGN, MIN_SIZE};
 
 /// Tells the heap how to read an object it allocated.
