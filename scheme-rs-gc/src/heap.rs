@@ -3,7 +3,8 @@ use core::{alloc::Layout, marker::PhantomData, ptr::NonNull};
 use allocator_api2::alloc::{AllocError, Allocator, Global};
 
 use crate::{
-    Mutator, ObjectModel,
+    Mutator, ObjectModel, Reclaimer,
+    reclaimer::ReclaimerState,
     region::{ALL_LINES, BLOCK_SIZE, OwnedBlock, Region, State},
     sync::{AtomicUsize, Mutex, Ordering, lock},
 };
@@ -22,6 +23,7 @@ pub struct Heap<M: ObjectModel, A: Allocator = Global> {
     pub(crate) free: Mutex<Vec<OwnedBlock>>,
     pub(crate) recycled: Mutex<Vec<(OwnedBlock, u128)>>,
     pub(crate) retired: Mutex<Vec<OwnedBlock>>,
+    pub(crate) reclaimer: Mutex<ReclaimerState>,
     pub(crate) bytes_allocated: AtomicUsize,
     pub(crate) overflow_bytes: AtomicUsize,
     pub(crate) large_objects: AtomicUsize,
@@ -53,11 +55,14 @@ impl<M: ObjectModel, A: Allocator> Heap<M, A> {
         let (region, mut blocks) = Region::new_in(alloc, bytes)?;
         // Popped from the end, so blocks are handed out in address order.
         blocks.reverse();
+        let token = unsafe { region.reclaimer_token() };
+        let reclaimer = ReclaimerState::new(token, region.capacity());
         Ok(Self {
             region,
             free: Mutex::new(blocks),
             recycled: Mutex::new(Vec::new()),
             retired: Mutex::new(Vec::new()),
+            reclaimer: Mutex::new(reclaimer),
             bytes_allocated: AtomicUsize::new(0),
             overflow_bytes: AtomicUsize::new(0),
             large_objects: AtomicUsize::new(0),
@@ -72,6 +77,13 @@ impl<M: ObjectModel, A: Allocator> Heap<M, A> {
 
     pub fn mutator(&self) -> Mutator<'_, M, A> {
         Mutator::new(self)
+    }
+
+    /// # Panics
+    ///
+    /// If another `Reclaimer` for this heap is alive.
+    pub fn reclaimer(&self) -> Reclaimer<'_, M, A> {
+        Reclaimer::new(self)
     }
 
     pub fn stats(&self) -> HeapStats {
@@ -102,7 +114,7 @@ impl<M: ObjectModel, A: Allocator> Heap<M, A> {
         Ok(block)
     }
 
-    /// Hands an owned block to the collector.
+    /// Hands an owned block to the reclaimer.
     pub(crate) fn retire(&self, block: OwnedBlock) {
         self.region
             .moved(&block, &[State::MutatorOwned], State::Full);
@@ -113,5 +125,13 @@ impl<M: ObjectModel, A: Allocator> Heap<M, A> {
         let obj = self.region.alloc.allocate(layout)?.cast::<u8>();
         self.large_objects.fetch_add(1, Ordering::Relaxed);
         Ok(obj)
+    }
+
+    /// # Safety
+    ///
+    /// `obj` came from `alloc_large` with `layout` and is dead.
+    pub(crate) unsafe fn free_large(&self, obj: NonNull<u8>, layout: Layout) {
+        unsafe { self.region.alloc.deallocate(obj, layout) };
+        self.large_objects.fetch_sub(1, Ordering::Relaxed);
     }
 }
