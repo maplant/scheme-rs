@@ -6,6 +6,9 @@ mod mutator;
 mod region;
 mod sync;
 
+#[cfg(all(test, loom))]
+mod loom_tests;
+
 use core::alloc::Layout;
 
 pub use allocator_api2::alloc::{AllocError, Allocator, Global};
