@@ -3,7 +3,8 @@ use core::{alloc::Layout, marker::PhantomData, ptr::NonNull};
 use allocator_api2::alloc::{AllocError, Allocator, Global};
 
 use crate::{
-    Mutator, ObjectModel,
+    Collector, Mutator, ObjectModel,
+    collector::CollectorState,
     region::{ALL_LINES, BLOCK_SIZE, OwnedBlock, Region, State},
     sync::{AtomicUsize, Mutex, Ordering, lock},
 };
@@ -22,6 +23,7 @@ pub struct Heap<M: ObjectModel, A: Allocator = Global> {
     pub(crate) free: Mutex<Vec<OwnedBlock>>,
     pub(crate) recycled: Mutex<Vec<(OwnedBlock, u128)>>,
     pub(crate) retired: Mutex<Vec<OwnedBlock>>,
+    pub(crate) collector: Mutex<CollectorState>,
     pub(crate) bytes_allocated: AtomicUsize,
     pub(crate) overflow_bytes: AtomicUsize,
     pub(crate) large_objects: AtomicUsize,
@@ -53,11 +55,14 @@ impl<M: ObjectModel, A: Allocator> Heap<M, A> {
         let (region, mut blocks) = Region::new_in(alloc, bytes)?;
         // Popped from the end, so blocks are handed out in address order.
         blocks.reverse();
+        let token = unsafe { region.collector_token() };
+        let collector = CollectorState::new(token, region.capacity());
         Ok(Self {
             region,
             free: Mutex::new(blocks),
             recycled: Mutex::new(Vec::new()),
             retired: Mutex::new(Vec::new()),
+            collector: Mutex::new(collector),
             bytes_allocated: AtomicUsize::new(0),
             overflow_bytes: AtomicUsize::new(0),
             large_objects: AtomicUsize::new(0),
@@ -72,6 +77,13 @@ impl<M: ObjectModel, A: Allocator> Heap<M, A> {
 
     pub fn mutator(&self) -> Mutator<'_, M, A> {
         Mutator::new(self)
+    }
+
+    /// # Panics
+    ///
+    /// If another `Collector` for this heap is alive.
+    pub fn collector(&self) -> Collector<'_, M, A> {
+        Collector::new(self)
     }
 
     pub fn stats(&self) -> HeapStats {
@@ -113,5 +125,13 @@ impl<M: ObjectModel, A: Allocator> Heap<M, A> {
         let obj = self.region.alloc.allocate(layout)?.cast::<u8>();
         self.large_objects.fetch_add(1, Ordering::Relaxed);
         Ok(obj)
+    }
+
+    /// # Safety
+    ///
+    /// `obj` came from `alloc_large` with `layout` and is dead.
+    pub(crate) unsafe fn free_large(&self, obj: NonNull<u8>, layout: Layout) {
+        unsafe { self.region.alloc.deallocate(obj, layout) };
+        self.large_objects.fetch_sub(1, Ordering::Relaxed);
     }
 }
