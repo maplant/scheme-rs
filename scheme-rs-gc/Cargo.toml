@@ -16,5 +16,12 @@ allocator-api2 = "0.4"
 [target.'cfg(loom)'.dependencies]
 loom = "0.7"
 
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "alloc"
+harness = false
+
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
