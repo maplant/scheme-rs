@@ -31,7 +31,7 @@ impl Window {
         debug_assert!(opened, "installed a block with no holes");
     }
 
-    fn take(&mut self) -> Option<OwnedBlock> {
+    fn retire(&mut self) -> Option<OwnedBlock> {
         take(self).block
     }
 
@@ -98,7 +98,7 @@ impl Bump {
                 return self.alloc_overflow(heap, layout);
             }
             if !self.primary.open_next_hole() {
-                if let Some(block) = self.primary.take() {
+                if let Some(block) = self.primary.retire() {
                     self.retire(heap, block);
                 }
                 let (block, holes) = heap.acquire()?;
@@ -117,7 +117,7 @@ impl Bump {
         let obj = match self.overflow.bump(&heap.region, layout) {
             Some(obj) => obj,
             None => {
-                if let Some(block) = self.overflow.take() {
+                if let Some(block) = self.overflow.retire() {
                     self.retire(heap, block);
                 }
                 self.overflow.install(heap.acquire_clean()?, ALL_LINES);
@@ -139,7 +139,7 @@ impl Bump {
     }
 
     pub(crate) fn retire_all<M: ObjectModel, A: Allocator>(&mut self, heap: &Heap<M, A>) {
-        for block in [self.primary.take(), self.overflow.take()]
+        for block in [self.primary.retire(), self.overflow.retire()]
             .into_iter()
             .flatten()
         {
