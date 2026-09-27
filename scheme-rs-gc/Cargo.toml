@@ -2,7 +2,10 @@
 name = "scheme-rs-gc"
 version = "0.1.0"
 edition = "2024"
-authors = ["Matthew Plant <maplant@protonmail.com>"]
+authors = [
+    "Matthew Plant <maplant@protonmail.com>",
+    "Linus Shoravi <linusshoravi@gmail.com>",
+]
 description = "Immix heap for scheme-rs, the first step toward an LXR collector"
 license = "MPL-2.0"
 repository = "https://github.com/maplant/scheme-rs"

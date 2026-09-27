@@ -1,21 +1,23 @@
 //! Immix line/block heap: the first step toward an LXR collector for scheme-rs.
 
-mod meta;
+mod region;
 mod sync;
 
-use core::{alloc::Layout, ptr::NonNull};
+use core::alloc::Layout;
 
 pub use allocator_api2::alloc::{AllocError, Allocator, Global};
-pub use meta::{BLOCK_SIZE, LINE_SIZE, LOS_MAX_SIZE, MAX_ALIGN, META_LINES};
+pub use region::{BLOCK_SIZE, LINE_SIZE, LOS_MAX_SIZE, MAX_ALIGN, MIN_SIZE};
 
 /// Tells the heap how to read an object it allocated.
 ///
 /// # Safety
 ///
-/// `layout` must return the exact layout `obj` was allocated with.
+/// Every object allocated in a `Heap<Self, _>` starts with an initialized
+/// `Header` until it is freed, and `layout` returns the exact layout the
+/// object was allocated with.
 pub unsafe trait ObjectModel {
-    /// # Safety
-    ///
-    /// `obj` was returned by this heap and has not been freed.
-    unsafe fn layout(obj: NonNull<u8>) -> Layout;
+    /// The type every object starts with.
+    type Header;
+
+    fn layout(header: &Self::Header) -> Layout;
 }
