@@ -26,6 +26,7 @@ pub mod runtime;
 pub mod strings;
 pub mod symbols;
 pub mod syntax;
+pub mod stack;
 pub mod threads;
 pub mod time;
 pub mod value;
