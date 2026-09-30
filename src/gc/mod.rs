@@ -14,12 +14,13 @@
 
 mod collection;
 
-pub use collection::{OpaqueGcPtr, collect_garbage, init_gc};
+pub use collection::collect_garbage;
+pub use scheme_rs_gc::{OpaqueGcPtr, init_gc};
 pub use scheme_rs_macros::Trace;
 
 use std::{
     alloc::Layout,
-    any::Any,
+    any::{Any, TypeId},
     cell::UnsafeCell,
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     hash::Hash,
@@ -28,11 +29,12 @@ use std::{
     ops::Deref,
     path::PathBuf,
     ptr::{NonNull, drop_in_place},
+    sync::atomic::Ordering,
 };
 
-pub(crate) use collection::unroot;
+use scheme_rs_gc::{GcHeader, VTable};
 
-use crate::{Either, gc::collection::GcHeader};
+use crate::Either;
 
 /// A heap allocated garbage collected smart pointer. Gc requires that `T`
 /// implements the [`Trace`] trait to properly track references.
@@ -58,7 +60,7 @@ impl<T: Send + GcOrTrace + 'static> Gc<T> {
     pub(crate) fn rooted(data: T) -> Gc<T> {
         Self {
             ptr: NonNull::from(Box::leak(Box::new(GcInner {
-                header: UnsafeCell::new(GcHeader::new::<T>()),
+                header: UnsafeCell::new(GcHeader::new(Layout::new::<GcInner<T>>())),
                 data: UnsafeCell::new(data),
             }))),
             marker: PhantomData,
@@ -103,12 +105,12 @@ impl<T: ?Sized> Gc<T> {
     #[doc(hidden)]
     pub unsafe fn as_opaque(&self) -> OpaqueGcPtr {
         unsafe {
-            OpaqueGcPtr {
-                header: NonNull::from_ref(&self.ptr.as_ref().header),
-                data: NonNull::new_unchecked(
+            OpaqueGcPtr::new(
+                NonNull::from_ref(&self.ptr.as_ref().header),
+                NonNull::new_unchecked(
                     (*self.ptr.as_ptr()).data.get() as *mut () as *mut UnsafeCell<()>
                 ),
-            }
+            )
         }
     }
 
@@ -273,17 +275,33 @@ unsafe impl<T> arc_swap::RefCnt for Gc<T> {
 fn inc_rc<T: ?Sized>(ptr: NonNull<GcInner<T>>) {
     unsafe {
         (*ptr.as_ref().header.get())
-            .shared_rc
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            .shared_rc()
+            .fetch_add(1, Ordering::Relaxed);
     }
 }
 
 fn dec_rc<T: ?Sized>(ptr: NonNull<GcInner<T>>) {
     unsafe {
         (*ptr.as_ref().header.get())
-            .shared_rc
-            .fetch_sub(1, std::sync::atomic::Ordering::Release);
+            .shared_rc()
+            .fetch_sub(1, Ordering::Release);
     }
+}
+
+fn vtable<T: GcOrTrace>() -> VTable {
+    VTable {
+        visit_children: |this, visitor| unsafe {
+            T::visit_or_recurse(&*(this as *const T), visitor);
+        },
+        finalize: |this| unsafe {
+            T::finalize_or_skip(&mut *(this as *mut T));
+        },
+    }
+}
+
+#[allow(private_bounds)]
+pub(crate) unsafe fn unroot<T: GcOrTrace>(gc: &Gc<T>, layout: Layout) {
+    unsafe { scheme_rs_gc::unroot(gc.ptr.cast(), TypeId::of::<T>(), vtable::<T>, layout) }
 }
 
 #[repr(C)]
@@ -296,7 +314,7 @@ pub struct GcInner<T: ?Sized> {
 impl<T: Trace> GcInner<T> {
     pub(crate) fn new(data: T) -> Self {
         Self {
-            header: UnsafeCell::new(GcHeader::new::<T>()),
+            header: UnsafeCell::new(GcHeader::new(Layout::new::<GcInner<T>>())),
             data: UnsafeCell::new(data),
         }
     }
