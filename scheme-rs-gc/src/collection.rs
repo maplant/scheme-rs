@@ -425,10 +425,12 @@ thread_local! {
     static ON_COLLECTOR_THREAD: Cell<bool> = const { Cell::new(false) };
 }
 
-/// Whether `collect_garbage` can make progress from this thread: the
-/// collector runs, and this is not the collector thread waiting on itself.
-pub(crate) fn can_collect() -> bool {
-    COLLECTOR_TASK.get().is_some() && !ON_COLLECTOR_THREAD.get()
+pub(crate) fn on_collector_thread() -> bool {
+    ON_COLLECTOR_THREAD.get()
+}
+
+pub(crate) fn collector_running() -> bool {
+    COLLECTOR_TASK.get().is_some()
 }
 
 fn run() -> JoinHandle<()> {
