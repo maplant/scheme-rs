@@ -9,7 +9,7 @@ use std::{
 };
 
 use crate::{
-    collection::can_collect,GcHeader, Heap, Mutator, ObjectModel, collect_garbage};
+    collection::{collector_running, on_collector_thread},GcHeader, Heap, Mutator, ObjectModel, collect_garbage};
 
 const DEFAULT_HEAP_SIZE: usize = 512 * 1024 * 1024;
 
@@ -72,13 +72,18 @@ fn try_alloc(layout: Layout) -> Option<NonNull<u8>> {
 }
 
 /// Allocates a `Gc` object. When the heap is full, forces two collections
-/// (freed lines are reusable only after two sweeps) and retries once. On the
-/// collector thread, or before `init_gc`, a full heap fails at once.
+/// (freed lines are reusable only after two sweeps) and retries once. Before
+/// `init_gc`, a full heap fails at once.
+///
+/// # Panics
+///
+/// On the collector thread: finalizers must not allocate.
 pub fn alloc(layout: Layout) -> NonNull<u8> {
+    assert!(!on_collector_thread(), "Gc allocated during finalization");
     if let Some(obj) = try_alloc(layout) {
         return obj;
     }
-    if can_collect() {
+    if collector_running() {
         collect_garbage();
         collect_garbage();
         if let Some(obj) = try_alloc(layout) {
