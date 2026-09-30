@@ -5,7 +5,7 @@
 use std::{
     alloc::Layout,
     any::TypeId,
-    cell::UnsafeCell,
+    cell::{Cell, UnsafeCell},
     fmt::{self, Debug, Formatter},
     mem::take,
     ptr::{NonNull, null_mut},
@@ -421,8 +421,19 @@ struct CycleCollector {
     release_stack: Vec<DropAction>,
 }
 
+thread_local! {
+    static ON_COLLECTOR_THREAD: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Whether `collect_garbage` can make progress from this thread: the
+/// collector runs, and this is not the collector thread waiting on itself.
+pub(crate) fn can_collect() -> bool {
+    COLLECTOR_TASK.get().is_some() && !ON_COLLECTOR_THREAD.get()
+}
+
 fn run() -> JoinHandle<()> {
     spawn(|| {
+        ON_COLLECTOR_THREAD.set(true);
         let mut collector = CycleCollector::new();
         loop {
             collector.epoch();

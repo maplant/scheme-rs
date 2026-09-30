@@ -8,7 +8,8 @@ use std::{
     },
 };
 
-use crate::{GcHeader, Heap, Mutator, ObjectModel, collect_garbage};
+use crate::{
+    collection::can_collect,GcHeader, Heap, Mutator, ObjectModel, collect_garbage};
 
 const DEFAULT_HEAP_SIZE: usize = 512 * 1024 * 1024;
 
@@ -71,12 +72,18 @@ fn try_alloc(layout: Layout) -> Option<NonNull<u8>> {
 }
 
 /// Allocates a `Gc` object. When the heap is full, forces two collections
-/// (freed lines are reusable only after two sweeps) and retries once.
+/// (freed lines are reusable only after two sweeps) and retries once. On the
+/// collector thread, or before `init_gc`, a full heap fails at once.
 pub fn alloc(layout: Layout) -> NonNull<u8> {
     if let Some(obj) = try_alloc(layout) {
         return obj;
     }
-    collect_garbage();
-    collect_garbage();
-    try_alloc(layout).unwrap_or_else(|| handle_alloc_error(layout))
+    if can_collect() {
+        collect_garbage();
+        collect_garbage();
+        if let Some(obj) = try_alloc(layout) {
+            return obj;
+        }
+    }
+    handle_alloc_error(layout)
 }
