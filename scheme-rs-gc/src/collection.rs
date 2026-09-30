@@ -8,6 +8,8 @@ use std::{
     cell::{Cell, UnsafeCell},
     fmt::{self, Debug, Formatter},
     mem::take,
+    panic::{AssertUnwindSafe, catch_unwind},
+    process::abort,
     ptr::{NonNull, null_mut},
     sync::{
         OnceLock,
@@ -437,8 +439,12 @@ fn run() -> JoinHandle<()> {
     spawn(|| {
         ON_COLLECTOR_THREAD.set(true);
         let mut collector = CycleCollector::new();
-        loop {
+        if catch_unwind(AssertUnwindSafe(|| loop {
             collector.epoch();
+        }))
+        .is_err()
+        {
+            abort();
         }
     })
 }
