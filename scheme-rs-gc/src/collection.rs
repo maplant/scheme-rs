@@ -307,6 +307,7 @@ unsafe impl Sync for HeapObject<()> {}
 /// visit and free the object from its own thread. `vtable` builds the vtable
 /// for `type_id`; the first one registered for a `type_id` is used for every
 /// later object of it.
+#[inline]
 pub unsafe fn unroot(
     header: NonNull<GcHeader>,
     type_id: TypeId,
