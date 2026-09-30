@@ -6,9 +6,9 @@ use core::{
     ptr::NonNull,
     sync::atomic::{AtomicUsize, Ordering},
 };
-use std::{alloc::alloc, any::TypeId};
+use std::any::TypeId;
 
-use scheme_rs_gc::{GcHeader, OpaqueGcPtr, VTable, collect_garbage, init_gc, unroot};
+use scheme_rs_gc::{GcHeader, OpaqueGcPtr, VTable, alloc, collect_garbage, init_gc, unroot};
 
 struct Node {
     next: Option<OpaqueGcPtr>,
@@ -38,7 +38,7 @@ fn node_vtable() -> VTable {
 fn new_node() -> OpaqueGcPtr {
     let layout = Layout::new::<Obj>();
     unsafe {
-        let obj = alloc(layout) as *mut Obj;
+        let obj = alloc(layout).cast::<Obj>().as_ptr();
         obj.write(Obj {
             header: UnsafeCell::new(GcHeader::new(layout)),
             data: UnsafeCell::new(Node { next: None }),
