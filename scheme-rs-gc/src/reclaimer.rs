@@ -9,18 +9,15 @@ use crate::{
     sync::{MutexGuard, lock},
 };
 
-/// Everything only the reclaimer uses. Lives behind the heap's reclaimer
-/// mutex, so only a `Reclaimer` can reach it.
+/// State only a `Reclaimer` can reach, behind the heap's reclaimer mutex.
 pub(crate) struct ReclaimerState {
     pub(crate) token: ReclaimerToken,
-    /// Blocks that took a free since the last sweep, and one flag per block
-    /// saying which are in that list.
+    /// Blocks freed into since the last sweep; the flags dedupe the list.
     dirty: Vec<BlockId>,
     dirty_flags: Vec<bool>,
-    /// Blocks the reclaimer owns that are in no pool: full ones, waiting for
-    /// a free. Each sweep also passes retired blocks through here.
+    /// Full blocks waiting for a free.
     held: Vec<Option<OwnedBlock>>,
-    /// Blocks and free lines found by the last sweep, published by the next.
+    /// Found by the last sweep, published by the next.
     quarantine: Vec<(OwnedBlock, u128)>,
 }
 
@@ -44,11 +41,8 @@ impl ReclaimerState {
     }
 }
 
-/// The one handle that frees objects and reclaims lines. At most one exists
-/// per heap at a time.
-///
-/// It holds the heap's reclaimer lock, so it is `!Send`: take it on the
-/// thread that will collect.
+/// The heap's one handle for freeing objects and sweeping. `!Send`: it holds
+/// the reclaimer lock.
 pub struct Reclaimer<'h, M: ObjectModel, A: Allocator = Global> {
     heap: &'h Heap<M, A>,
     state: MutexGuard<'h, ReclaimerState>,
@@ -64,9 +58,7 @@ impl<'h, M: ObjectModel, A: Allocator> Reclaimer<'h, M, A> {
         Self { heap, state }
     }
 
-    /// Frees a dead object. Its lines become allocatable after the second
-    /// `sweep` from now, or, in a block a mutator owns, after the block's
-    /// retirement and the two sweeps that follow.
+    /// Frees a dead object. Its lines are reusable after two sweeps.
     ///
     /// # Safety
     ///
@@ -90,8 +82,8 @@ impl<'h, M: ObjectModel, A: Allocator> Reclaimer<'h, M, A> {
         self.state.mark_dirty(id);
     }
 
-    /// Epoch boundary. Publishes the lines found by the previous sweep, then
-    /// looks for free lines in blocks that were retired or freed into since.
+    /// Publishes the last sweep's finds, then looks for free lines in blocks
+    /// retired or freed into since.
     pub fn sweep(&mut self) {
         let heap = self.heap;
         let region = &heap.region;
@@ -105,11 +97,7 @@ impl<'h, M: ObjectModel, A: Allocator> Reclaimer<'h, M, A> {
                 lock(&heap.recycled).push((block, holes));
             }
         }
-        // Recycled blocks freed into since the last sweep have more free lines
-        // than their pool entry says. Take them back; under the pool lock no
-        // mutator can be taking them at the same time. This includes blocks
-        // just published from quarantine that took a free meanwhile: their
-        // older holes wait one more sweep, as the new ones must.
+        // Recycled blocks freed into have stale holes; take them back.
         let reclaimed: Vec<_> = lock(&heap.recycled)
             .extract_if(.., |entry| state.dirty_flags[entry.0.id().index()])
             .map(|(block, _)| block)
@@ -124,8 +112,7 @@ impl<'h, M: ObjectModel, A: Allocator> Reclaimer<'h, M, A> {
             candidates.push(id);
             state.held[id.index()] = Some(block);
         }
-        // A candidate the reclaimer does not hold belongs to a mutator (seen
-        // at its retirement) or to a pool (seen at the next reclaim).
+        // Unheld candidates are seen at retirement or the next reclaim.
         for id in candidates {
             if let Some(block) = state.held[id.index()].take() {
                 queue(region, state, block, State::Full);
