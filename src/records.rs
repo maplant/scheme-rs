@@ -211,7 +211,7 @@
 //! ```
 
 use std::{
-    alloc::{self, Layout},
+    alloc::Layout,
     any::{Any, TypeId},
     collections::HashMap,
     fmt,
@@ -226,6 +226,7 @@ use std::{
 
 use by_address::ByAddress;
 use indexmap::{IndexMap, IndexSet};
+use scheme_rs_gc::alloc;
 
 use crate::{
     exceptions::Exception,
@@ -383,7 +384,7 @@ impl Record {
         let layout = layout.pad_to_align();
 
         let ptr = unsafe {
-            let record = alloc::alloc(layout) as *mut GcInner<RecordInner>;
+            let record = alloc(layout).as_ptr() as *mut GcInner<RecordInner>;
             ptr::write(
                 record,
                 GcInner::new(RecordInner {
@@ -1315,7 +1316,7 @@ fn constructor(
     let layout = layout.pad_to_align();
 
     let record = unsafe {
-        let record = alloc::alloc(layout) as *mut GcInner<RecordInner>;
+        let record = alloc(layout).as_ptr() as *mut GcInner<RecordInner>;
         ptr::write(
             record,
             GcInner::new(RecordInner {

@@ -3,7 +3,7 @@
 //! V.T. Rajan.
 
 use std::{
-    alloc::{Layout, dealloc},
+    alloc::Layout,
     any::TypeId,
     cell::UnsafeCell,
     fmt::{self, Debug, Formatter},
@@ -18,6 +18,11 @@ use std::{
 
 use parking_lot::{Condvar, Mutex};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+
+use crate::{
+    Reclaimer,
+    global::{HeaderModel, heap},
+};
 
 #[derive(Debug)]
 #[repr(C, align(8))]
@@ -54,6 +59,10 @@ impl GcHeader {
     #[inline]
     pub fn shared_rc(&self) -> &AtomicUsize {
         &self.shared_rc
+    }
+
+    pub(crate) fn layout(&self) -> Layout {
+        self.layout
     }
 
     fn get_color(&self) -> Color {
@@ -255,10 +264,6 @@ impl HeapObject<()> {
         unsafe { (*self.header.as_ref().get()).vtable.finalize }
     }
 
-    unsafe fn layout(&self) -> Layout {
-        unsafe { (*self.header.as_ref().get()).layout }
-    }
-
     /// # Safety
     ///
     /// The object is live.
@@ -301,12 +306,12 @@ unsafe impl Sync for HeapObject<()> {}
 ///
 /// # Safety
 ///
-/// `header` starts an allocation made by `std::alloc` with exactly `layout`,
-/// holds a live `GcHeader` not yet linked, and is followed by the object's
-/// data, which stays valid until the collector frees it. The collector may
-/// visit and free the object from its own thread. `vtable` builds the vtable
-/// for `type_id`; the first one registered for a `type_id` is used for every
-/// later object of it.
+/// `header` starts an allocation made by this crate's `alloc` with exactly
+/// `layout`, holds a live `GcHeader` not yet linked, and is followed by the
+/// object's data, which stays valid until the collector frees it. The
+/// collector may visit and free the object from its own thread. `vtable`
+/// builds the vtable for `type_id`; the first one registered for a `type_id`
+/// is used for every later object of it.
 #[inline]
 pub unsafe fn unroot(
     header: NonNull<GcHeader>,
@@ -392,7 +397,7 @@ const MIN_ALLOCS_TO_COLLECT: usize = 10_000;
 /// Calling this function multiple times does nothing, there is only one
 /// collector thread allowed at a time.
 pub fn init_gc() {
-    let _ = COLLECTOR_TASK.get_or_init(|| Collector::new().run());
+    let _ = COLLECTOR_TASK.get_or_init(run);
 }
 
 /// Force a garbage collection pause.
@@ -404,8 +409,8 @@ pub fn collect_garbage() {
     COLLECTION_DONE_SIGNAL.wait_while(&mut heap, |heap| heap.epoch < target_epoch);
 }
 
-#[derive(Debug)]
-pub struct Collector {
+struct CycleCollector {
+    reclaimer: Reclaimer<'static, HeaderModel>,
     roots: HashSet<OpaqueGcPtr>,
     cycles: Vec<Vec<OpaqueGcPtr>>,
     freed_objs: HashSet<OpaqueGcPtr>,
@@ -416,6 +421,15 @@ pub struct Collector {
     release_stack: Vec<DropAction>,
 }
 
+fn run() -> JoinHandle<()> {
+    spawn(|| {
+        let mut collector = CycleCollector::new();
+        loop {
+            collector.epoch();
+        }
+    })
+}
+
 #[derive(Debug)]
 enum DropAction {
     Decrement(OpaqueGcPtr),
@@ -423,11 +437,10 @@ enum DropAction {
     Free(OpaqueGcPtr),
 }
 
-unsafe impl Send for Collector {}
-
-impl Collector {
+impl CycleCollector {
     fn new() -> Self {
         Self {
+            reclaimer: heap().reclaimer(),
             roots: HashSet::default(),
             cycles: Vec::new(),
             freed_objs: HashSet::default(),
@@ -436,14 +449,6 @@ impl Collector {
             next: null_mut(),
             release_stack: Vec::new(),
         }
-    }
-
-    fn run(mut self) -> JoinHandle<()> {
-        spawn(move || {
-            loop {
-                self.epoch();
-            }
-        })
     }
 
     fn await_epoch(&mut self) {
@@ -517,6 +522,8 @@ impl Collector {
         // any pending cycle; drop them now so recycled addresses never purge
         // a fresh parking in a later epoch.
         self.freed_objs.clear();
+
+        self.reclaimer.sweep();
 
         let mut heap = HEAP.lock();
         if !self.head.is_null() {
@@ -736,8 +743,7 @@ impl Collector {
             // Finalize the object:
             (s.finalize())(s.data_mut());
 
-            // Deallocate the object:
-            dealloc(s.header.as_ptr() as *mut u8, s.layout());
+            self.reclaimer.free(s.header.cast());
         }
     }
 }
