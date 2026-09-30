@@ -12,7 +12,7 @@
 //! providing all of the semantics Scheme expects and also plays nicely as a
 //! Rust type (no need to root/unroot).
 
-pub use scheme_rs_gc::{OpaqueGcPtr, init_gc};
+pub use scheme_rs_gc::{HeapAlreadyCreated, OpaqueGcPtr, init_gc, set_heap_size};
 pub use scheme_rs_macros::Trace;
 
 use std::{
@@ -29,7 +29,7 @@ use std::{
     sync::atomic::Ordering,
 };
 
-use scheme_rs_gc::{GcHeader, VTable, collect_garbage as collect_garbage_sync};
+use scheme_rs_gc::{GcHeader, VTable, alloc, collect_garbage as collect_garbage_sync};
 use scheme_rs_macros::{maybe_async, maybe_await};
 #[cfg(feature = "tokio")]
 use tokio::task::spawn_blocking;
@@ -58,11 +58,16 @@ impl<T: Send + GcOrTrace + 'static> Gc<T> {
     /// Allocate a new object and do not track it. The object will only become
     /// tracked when it is called with `unroot`.
     pub(crate) fn rooted(data: T) -> Gc<T> {
-        Self {
-            ptr: Box::into_non_null(Box::new(GcInner {
-                header: UnsafeCell::new(GcHeader::new(Layout::new::<GcInner<T>>())),
+        let layout = Layout::new::<GcInner<T>>();
+        let ptr = alloc(layout).cast::<GcInner<T>>();
+        unsafe {
+            ptr.write(GcInner {
+                header: UnsafeCell::new(GcHeader::new(layout)),
                 data: UnsafeCell::new(data),
-            })),
+            })
+        };
+        Self {
+            ptr,
             marker: PhantomData,
         }
     }
@@ -73,17 +78,18 @@ impl<T: Send + GcOrTrace + 'static> Gc<T> {
     ///
     /// `T` must be valid with a zeroed bit pattern
     pub(crate) unsafe fn new_zeroed() -> Gc<T> {
-        let mut new_zeroed = Box::<GcInner<T>>::new_zeroed();
+        let layout = Layout::new::<GcInner<T>>();
+        let ptr = alloc(layout).cast::<GcInner<T>>();
         unsafe {
-            addr_of_mut!((*new_zeroed.as_mut_ptr()).header)
-                .write(UnsafeCell::new(GcHeader::new(Layout::new::<GcInner<T>>())));
+            ptr.write_bytes(0, 1);
+            addr_of_mut!((*ptr.as_ptr()).header).write(UnsafeCell::new(GcHeader::new(layout)));
         }
         let new_gc = Self {
-            ptr: Box::into_non_null(unsafe { new_zeroed.assume_init() }),
+            ptr,
             marker: PhantomData,
         };
         unsafe {
-            unroot(&new_gc, Layout::new::<GcInner<T>>());
+            unroot(&new_gc, layout);
         }
         new_gc
     }
