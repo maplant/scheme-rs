@@ -5,7 +5,7 @@ use allocator_api2::alloc::{Allocator, Global};
 
 use crate::{
     Heap, ObjectModel,
-    region::{ALL_LINES, BlockId, MIN_SIZE, OwnedBlock, ReclaimerToken, State, is_large},
+    region::{ALL_LINES, BlockId, MIN_SIZE, OwnedBlock, ReclaimerToken, Region, State, is_large},
     sync::{MutexGuard, lock},
 };
 
@@ -126,7 +126,7 @@ impl<'h, M: ObjectModel, A: Allocator> Reclaimer<'h, M, A> {
 
 /// Queues a block the reclaimer holds if it has free lines; keeps it otherwise.
 fn queue<A: Allocator>(
-    region: &crate::region::Region<A>,
+    region: &Region<A>,
     state: &mut ReclaimerState,
     block: OwnedBlock,
     from: State,
