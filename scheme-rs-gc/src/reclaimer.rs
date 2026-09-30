@@ -16,7 +16,7 @@ pub(crate) struct ReclaimerState {
     dirty: Vec<BlockId>,
     dirty_flags: Vec<bool>,
     /// Full blocks waiting for a free.
-    held: Vec<Option<OwnedBlock>>,
+    full: Vec<Option<OwnedBlock>>,
     /// Found by the last sweep, published by the next.
     quarantine: Vec<(OwnedBlock, u128)>,
 }
@@ -27,7 +27,7 @@ impl ReclaimerState {
             token,
             dirty: Vec::new(),
             dirty_flags: vec![false; capacity],
-            held: (0..capacity).map(|_| None).collect(),
+            full: (0..capacity).map(|_| None).collect(),
             quarantine: Vec::new(),
         }
     }
@@ -110,22 +110,22 @@ impl<'h, M: ObjectModel, A: Allocator> Reclaimer<'h, M, A> {
         for block in retired {
             let id = block.id();
             candidates.push(id);
-            state.held[id.index()] = Some(block);
+            state.full[id.index()] = Some(block);
         }
-        // Unheld candidates are seen at retirement or the next reclaim.
+        // Candidates not in `full` are seen at retirement or the next reclaim.
         for id in candidates {
-            if let Some(block) = state.held[id.index()].take() {
-                queue(region, state, block, State::Full);
+            if let Some(block) = state.full[id.index()].take() {
+                quarantine_or_hold(region, state, block, State::Full);
             }
         }
         for block in reclaimed {
-            queue(region, state, block, State::Recycled);
+            quarantine_or_hold(region, state, block, State::Recycled);
         }
     }
 }
 
-/// Queues a block the reclaimer holds if it has free lines; keeps it otherwise.
-fn queue<A: Allocator>(
+/// Quarantines a block with free lines; otherwise keeps it in `full`.
+fn quarantine_or_hold<A: Allocator>(
     region: &Region<A>,
     state: &mut ReclaimerState,
     block: OwnedBlock,
@@ -136,7 +136,7 @@ fn queue<A: Allocator>(
         // A reclaimed block had holes, and frees only add more.
         debug_assert_eq!(from, State::Full, "reclaimed block without holes");
         let index = block.id().index();
-        state.held[index] = Some(block);
+        state.full[index] = Some(block);
         return;
     }
     region.moved(&block, &[from], State::AwaitingClearance);
