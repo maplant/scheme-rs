@@ -54,3 +54,9 @@ $ cargo install scheme-rs --features "async,tokio"
 
 If you have any questions or comments about the project, feel free to join 
 [the scheme-rs discord server](https://discord.gg/sR4TttzGv5).
+
+### AI policy
+
+AI authored contributions to scheme-rs are expressively disallowed. You may use
+LLM tools for debuging or interacting with the codebase, but all PRs must be 
+hand written by humans.
