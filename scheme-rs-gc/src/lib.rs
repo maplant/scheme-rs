@@ -10,6 +10,8 @@ mod mutator;
 mod reclaimer;
 mod region;
 mod sync;
+mod safepoint;
+mod gc_stack;
 
 #[cfg(all(test, loom))]
 mod loom_tests;
