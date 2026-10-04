@@ -582,12 +582,11 @@ impl Procedure {
         cont: impl IntoRustContinuation<A, N>,
         barrier: &mut ContBarrier<'_>,
     ) -> Application {
-        let (req_args, variadic) = cont.formals();
         barrier.cont_stack.push(
             ContPtr::RustCont(cont.into_rust_cont()),
             cont_env,
-            req_args,
-            variadic,
+            0,
+            true,
         );
         Application::new(self.clone(), args)
     }
@@ -827,8 +826,6 @@ where
 }
 
 pub(crate) trait IntoRustContinuation<A, const N: usize> {
-    fn formals(&self) -> (usize, bool);
-
     fn into_rust_cont(self) -> RustContinuation;
 }
 
@@ -865,10 +862,6 @@ where
     F: Fn([Value; N], &mut ContBarrier) -> R + Send + Sync + 'static,
     R: IntoApplication + 'static,
 {
-    fn formals(&self) -> (usize, bool) {
-        (0, false)
-    }
-
     fn into_rust_cont(self) -> RustContinuation {
         RustContinuation(|args, barrier: &mut ContBarrier<'_>| {
             let env = barrier.pop_env_n::<N>();
@@ -885,10 +878,6 @@ where
     F: Fn([Value; N], Rest, &mut ContBarrier) -> R + Send + Sync + 'static,
     R: IntoApplication + 'static,
 {
-    fn formals(&self) -> (usize, bool) {
-        (0, true)
-    }
-
     fn into_rust_cont(self) -> RustContinuation {
         RustContinuation(|args, barrier: &mut ContBarrier<'_>| {
             let env = barrier.pop_env_n::<N>();
@@ -998,10 +987,6 @@ macro_rules! impl_rust_cont {
             <Value as TryInto<$arg>>::Error: Into<Value>,
         )*
         {
-            fn formals(&self) -> (usize, bool) {
-                (count!($( $arg, )*), false)
-            }
-
             fn into_rust_cont(self) -> RustContinuation {
                 RustContinuation(|args, barrier: &mut ContBarrier<'_>| {
                     let env = barrier.pop_env_n::<N>();
@@ -1030,10 +1015,6 @@ macro_rules! impl_rust_cont {
             <Value as TryInto<$arg>>::Error: Into<Value>,
         )*
         {
-            fn formals(&self) -> (usize, bool) {
-                (count!($( $arg, )*), true)
-            }
-
             fn into_rust_cont(self) -> RustContinuation {
                 RustContinuation(|args, barrier: &mut ContBarrier<'_>| {
                     let env = barrier.pop_env_n::<N>();
@@ -1338,12 +1319,11 @@ impl<'a> ContBarrier<'a> {
         env: [Value; N],
         cont: impl IntoRustContinuation<A, N>,
     ) {
-        let (num_required_args, variadic) = cont.formals();
         self.cont_stack.push(
             ContPtr::RustCont(cont.into_rust_cont()),
             env,
-            num_required_args,
-            variadic,
+            0,
+            true,
         );
     }
 

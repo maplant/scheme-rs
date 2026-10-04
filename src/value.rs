@@ -550,6 +550,12 @@ impl Drop for Value {
     }
 }
 
+impl Default for Value {
+    fn default() -> Self {
+        Self::undefined()
+    }
+}
+
 /// Default Hash implementation for Value is [Value::eqv_hash]. This produces
 /// reasonable hash maps.
 impl Hash for Value {
