@@ -1,14 +1,11 @@
 use core::ptr::NonNull;
-use std:collections::BTreeMap;
+use std::collections::BTreeMap;
 
 use crate::sync::{AtomicU64, Mutex, Ordering, lock};
 
-type PageIndex = usize;
-type Address = NonNull<u8>;
+pub(crate) const PAGE: usize = 4096; // bytes
 
-const PAGE: usize = 4096; // bytes
-
-struct LargeSpace {
+pub(crate) struct LargeSpace {
     bitmap: NonNull<AtomicU64>,
     first_page: NonNull<u8>,
     n_pages: usize,
@@ -33,11 +30,13 @@ impl LargeSpace {
         }
     }
 
+
+    /// Safety: start has to be 8-byte aligned.
     pub(crate) unsafe fn init(start: NonNull<u8>, n_pages: usize) -> Self {
         let free_holes = if n_pages == 0 { BTreeMap::new() } else { BTreeMap::from([(0, n_pages)]) };
         let offset = LargeSpace::bitmap_bytes_needed_for(n_pages);
         let space = LargeSpace {
-            bitmap: start,
+            bitmap: start.cast(),
             first_page: unsafe { start.byte_add(offset) },
             n_pages: n_pages,
             free_holes: Mutex::new(free_holes)
@@ -46,12 +45,12 @@ impl LargeSpace {
         space
     }
 
-    pub(crate) fn page_addr_for_index(&self, page: usize) -> usize {
-        self.first_page.addr().get() + page * PAGE
+    pub(crate) fn page_addr_for_index(&self, page: usize) -> NonNull<u8> {
+        unsafe { self.first_page.add(page * PAGE) }
     }
 
-    pub(crate) fn page_of(&self, obj_addr: usize) -> Option<usize> {
-        let offset = obj_addr.wrapping_sub(self.first_page.addr().get());
+    pub(crate) fn page_of(&self, obj_addr: NonNull<u8>) -> Option<usize> {
+        let offset = obj_addr.addr().get().wrapping_sub(self.first_page.addr().get());
         (offset < self.n_pages * PAGE).then_some(offset / PAGE)
     }
 
@@ -107,13 +106,13 @@ impl LargeSpace {
         self.bitmap_word_for(page).fetch_and(!(1 << (page % 64)), Ordering::Relaxed);
     }
 
-    pub(crate) fn object_at_or_prior_to(&self, addr: usize) -> Option<NonNull<u8>> {
+    pub(crate) fn object_at_or_prior_to(&self, addr: NonNull<u8>) -> Option<NonNull<u8>> {
         let page = self.page_of(addr)?;
         let mut mask = u64::MAX >> (63 - page % 64);
         for word in (0..=page / 64).rev() {
             let bits = self.bitmap_word_for(word * 64).load(Ordering::Relaxed) & mask;
             if bits != 0 {
-                return Some(self.object_at(page * 64 + 63 - bits.leading_zeros() as usize));
+                return Some(self.object_at(word * 64 + 63 - bits.leading_zeros() as usize));
             }
             mask = u64::MAX;
         }
@@ -123,5 +122,56 @@ impl LargeSpace {
     pub(crate) fn object_at(&self, page: usize) -> NonNull<u8> {
         // large objects are always at page starts.
         unsafe { self.first_page.byte_add(page * PAGE) }
+    }
+}
+
+#[cfg(test)] mod tests {
+    use core::ptr::NonNull;
+    use std::alloc::alloc;
+    use std::alloc::Layout;
+    use crate::large::LargeSpace;
+    use crate::large::PAGE;
+
+    fn test_space(pages: usize) -> LargeSpace {
+        let layout = Layout::from_size_align(LargeSpace::bytes_needed_for(pages), PAGE).expect("Failed to align to page");
+        let addr = NonNull::new(unsafe { alloc(layout) }).expect("Test allocation failed");
+        unsafe { LargeSpace::init(addr, pages) }
+    }
+
+    #[test]
+    fn holes_are_first_fit_and_aligned() {
+        let space = test_space(16);
+        assert_eq!(space.claim_hole(3, 1 * PAGE), Some(0));
+        assert_eq!(space.claim_hole(2, 4 * PAGE), Some(4));
+        assert_eq!(space.claim_hole(1, 1 * PAGE), Some(3));
+        assert_eq!(space.claim_hole(16, 1 * PAGE), None);
+    }
+
+    #[test]
+    fn freed_runs_coalesce() {
+        let space = test_space(8);
+        let a = space.claim_hole(2, 1).unwrap();
+        let b = space.claim_hole(2, 1).unwrap();
+        let _c = space.claim_hole(4, 1).unwrap();
+        space.release_hole(a, 2);
+        space.release_hole(b, 2);
+        assert_eq!(space.claim_hole(4, 1), Some(0));
+    }
+
+    #[test]
+    fn starts_resolve_interior_pages() {
+        let space = test_space(8);
+        space.set_start(2);
+        space.set_start(5);
+        assert_eq!(space.object_at_or_prior_to(space.page_addr_for_index(2)),
+                   Some(space.page_addr_for_index(2)));
+        assert_eq!(space.object_at_or_prior_to(unsafe { space.page_addr_for_index(4).byte_add(100) }),
+                   Some(space.page_addr_for_index(2)));
+        assert_eq!(space.object_at_or_prior_to(space.page_addr_for_index(5)),
+                   Some(space.page_addr_for_index(5)));
+        assert_eq!(space.object_at_or_prior_to(space.page_addr_for_index(1)), None);
+        space.clear_start(2);
+        assert_eq!(space.object_at_or_prior_to(space.page_addr_for_index(2)), None);
+        assert_eq!(space.object_at_or_prior_to(space.page_addr_for_index(8)), None);
     }
 }
