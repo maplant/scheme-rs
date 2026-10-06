@@ -27,6 +27,8 @@ pub struct Heap<M: ObjectModel, A: Allocator = Global> {
     pub(crate) bytes_allocated: AtomicUsize,
     pub(crate) overflow_bytes: AtomicUsize,
     pub(crate) large_objects: AtomicUsize,
+    pub(crate) budget: usize,
+    pub(crate) used: AtomicUsize,
     _model: PhantomData<fn() -> M>,
 }
 
@@ -70,9 +72,10 @@ impl<M: ObjectModel, A: Allocator> Heap<M, A> {
         })
     }
 
-    /// Bytes of block space, a multiple of `BLOCK_SIZE`.
-    pub fn capacity(&self) -> usize {
-        self.region.capacity() * BLOCK_SIZE
+    /// Bytes of small block space, a multiple of `BLOCK_SIZE`.
+    /// Does not take budget in to account.
+    pub fn small_capacity(&self) -> usize {
+        self.region.n_blocks() * BLOCK_SIZE
     }
 
     pub fn mutator(&self) -> Mutator<'_, M, A> {
@@ -108,10 +111,15 @@ impl<M: ObjectModel, A: Allocator> Heap<M, A> {
 
     /// A block with every line free.
     pub(crate) fn acquire_clean(&self) -> Result<OwnedBlock, AllocError> {
-        let block = lock(&self.free).pop().ok_or(AllocError)?;
-        self.region
-            .moved(&block, &[State::Free], State::MutatorOwned);
-        Ok(block)
+        let mut lock = lock(&self.free);
+
+        if let Ok(_) = self.claim_space(BLOCK_SIZE) {
+            let block = lock.pop().ok_or(AllocError)?;
+            self.region.moved(&block, &[State::Free], State::MutatorOwned);
+            Ok(block)
+        } else {
+            Result::Err(AllocError)
+        }
     }
 
     /// Hands an owned block to the reclaimer.
@@ -121,7 +129,21 @@ impl<M: ObjectModel, A: Allocator> Heap<M, A> {
         lock(&self.retired).push(block);
     }
 
+    fn claim_space(&self, bytes: usize) -> Result<(), AllocError> {
+        self.used
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+                (used + bytes <= self.budget).then_some(used+bytes)
+            })
+            .map(drop)
+            .map_err(|_| AllocError)
+    }
+
+    fn return_space(&self, bytes: usize) {
+        self.used.fetch_sub(bytes, Ordering::Relaxed);
+    }
+
     pub(crate) fn alloc_large(&self, layout: Layout) -> Result<NonNull<u8>, AllocError> {
+
         let obj = self.region.alloc.allocate(layout)?.cast::<u8>();
         self.large_objects.fetch_add(1, Ordering::Relaxed);
         Ok(obj)

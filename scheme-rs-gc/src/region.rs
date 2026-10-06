@@ -137,15 +137,15 @@ impl<A: Allocator> Region<A> {
     /// Allocates at least `bytes` of blocks, plus their line counts, from
     /// `alloc`. Returns the owner of every block.
     pub(crate) fn new_in(alloc: A, bytes: usize) -> Result<(Self, Vec<OwnedBlock>), AllocError> {
-        let capacity = bytes.div_ceil(BLOCK_SIZE).max(1);
-        if capacity > u32::MAX as usize {
+        let capacity_blocks = bytes.div_ceil(BLOCK_SIZE).max(1);
+        if capacity_blocks > u32::MAX as usize {
             return Err(AllocError);
         }
 
         // The largest product; once it fits, `capacity * LINES_PER_BLOCK` does.
-        let blocks_size = capacity.checked_mul(BLOCK_SIZE).ok_or(AllocError)?;
+        let blocks_size = capacity_blocks.checked_mul(BLOCK_SIZE).ok_or(AllocError)?;
         let table =
-            Layout::array::<AtomicU8>(capacity * LINES_PER_BLOCK).map_err(|_| AllocError)?;
+            Layout::array::<AtomicU8>(capacity_blocks * LINES_PER_BLOCK).map_err(|_| AllocError)?;
         let blocks_at = table.size().next_multiple_of(BLOCK_SIZE);
 
         // Large space
@@ -169,18 +169,18 @@ impl<A: Allocator> Region<A> {
             line_live: base.cast(),
             blocks: unsafe { base.byte_add(blocks_at) },
             large: large,
-            capacity,
+            capacity: capacity_blocks,
             #[cfg(debug_assertions)]
             id: NEXT_HEAP.fetch_add(1, Ordering::Relaxed),
             #[cfg(debug_assertions)]
-            states: (0..capacity)
+            states: (0..capacity_blocks)
                 .map(|_| AtomicU8::new(State::Free as u8))
                 .collect(),
         };
-        for i in 0..capacity * LINES_PER_BLOCK {
+        for i in 0..capacity_blocks * LINES_PER_BLOCK {
             unsafe { region.line_live.add(i).write(AtomicU8::new(0)) };
         }
-        let owners = (0..capacity as u32)
+        let owners = (0..capacity_blocks as u32)
             .map(|index| OwnedBlock {
                 id: BlockId(index),
                 #[cfg(debug_assertions)]
@@ -201,7 +201,7 @@ impl<A: Allocator> Region<A> {
     }
 
     /// Number of blocks.
-    pub(crate) fn capacity(&self) -> usize {
+    pub(crate) fn n_blocks(&self) -> usize {
         self.capacity
     }
 
