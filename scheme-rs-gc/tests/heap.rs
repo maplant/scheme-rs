@@ -25,7 +25,7 @@ fn allocations_are_aligned_disjoint_and_inside_a_block() {
     for i in 0..5000 {
         let size = 16 + (i * 37) % 2000;
         let align = [8, 16, 32, 64][i % 4];
-        let p = obj(&mut m, size, align).addr().get();
+        let p = init_obj(&mut m, size, align).addr().get();
         assert_eq!(p % align, 0);
         assert!(p % BLOCK_SIZE + size <= BLOCK_SIZE);
         ranges.push((p, p + size));
@@ -40,9 +40,9 @@ fn allocations_are_aligned_disjoint_and_inside_a_block() {
 fn small_objects_share_a_block() {
     let heap = test_heap();
     let mut m = heap.mutator();
-    let first = block_of(obj(&mut m, 32, 16));
+    let first = block_of(init_obj(&mut m, 32, 16));
     for _ in 0..100 {
-        assert_eq!(block_of(obj(&mut m, 32, 16)), first);
+        assert_eq!(block_of(init_obj(&mut m, 32, 16)), first);
     }
     assert_eq!(heap.stats().free_blocks, total_blocks(&heap) - 1);
 }
@@ -53,10 +53,10 @@ fn the_region_and_large_objects_come_from_the_allocator() {
     let heap = TestHeap::new_in(&counting, HEAP_BYTES).unwrap();
     assert_eq!(counting.allocs(), 1);
     let mut m = heap.mutator();
-    obj(&mut m, 32, 16);
+    init_obj(&mut m, 32, 16);
     assert_eq!(counting.allocs(), 1);
-    obj(&mut m, LOS_MAX_SIZE + 16, 16);
-    obj(&mut m, 32, 128);
+    init_obj(&mut m, LOS_MAX_SIZE + 16, 16);
+    init_obj(&mut m, 32, 128);
     assert_eq!(counting.allocs(), 3);
     assert_eq!(heap.stats().large_objects, 2);
 }

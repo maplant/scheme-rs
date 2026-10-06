@@ -37,7 +37,7 @@ pub fn stamp(obj: NonNull<u8>, layout: Layout) -> NonNull<u8> {
     obj
 }
 
-pub fn obj<A: Allocator>(
+pub fn init_obj<A: Allocator>(
     m: &mut Mutator<'_, TestModel, A>,
     size: usize,
     align: usize,
@@ -55,7 +55,7 @@ pub fn block_of(obj: NonNull<u8>) -> usize {
 pub fn full_block<A: Allocator>(heap: &TestHeap<A>) -> Vec<NonNull<u8>> {
     let mut m = heap.mutator();
     let objs: Vec<_> = (0..LINES_PER_BLOCK)
-        .map(|_| obj(&mut m, LINE_SIZE, 16))
+        .map(|_| init_obj(&mut m, LINE_SIZE, 16))
         .collect();
     assert!(objs.iter().all(|&o| block_of(o) == block_of(objs[0])));
     objs
