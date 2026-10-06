@@ -9,6 +9,7 @@ mod mutator;
 mod reclaimer;
 mod region;
 mod sync;
+mod large;
 
 #[cfg(all(test, loom))]
 mod loom_tests;
