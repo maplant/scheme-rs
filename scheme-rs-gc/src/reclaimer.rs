@@ -98,7 +98,10 @@ impl<'h, M: ObjectModel, A: Allocator> Reclaimer<'h, M, A> {
             .large
             .page_of(obj)
             .expect("Large pointer not in this heap");
-        debug_assert!(self.heap.region.large.is_occupied(page), "Unmarked page being freed; double free, or incorrect bookkeeping.");
+        debug_assert!(
+            self.heap.region.large.is_occupied(page),
+            "Unmarked page being freed; double free, or incorrect bookkeeping."
+        );
         self.heap.region.large.mark_unoccupied(page);
         self.state.large_freed.push(Run {
             start_index: page,
