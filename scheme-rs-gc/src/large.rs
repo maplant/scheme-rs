@@ -128,6 +128,10 @@ impl LargeSpace {
             .fetch_and(!(1 << (page % 64)), Ordering::Relaxed);
     }
 
+    pub(crate) fn is_occupied(&self, page: usize) -> bool {
+        self.bitmap_word_for(page).load(Ordering::Relaxed) & (1 << (page % 64)) != 0
+    }
+
     pub(crate) fn object_at_or_prior_to(&self, addr: NonNull<u8>) -> Option<NonNull<u8>> {
         let page = self.page_of(addr)?;
         let mut mask = u64::MAX >> (63 - page % 64);
