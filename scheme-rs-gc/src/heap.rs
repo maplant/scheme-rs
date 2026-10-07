@@ -140,6 +140,7 @@ impl<M: ObjectModel, A: Allocator> Heap<M, A> {
     }
 
     pub(crate) fn claim_space(&self, bytes: usize) -> Result<(), AllocError> {
+        #[allow(deprecated)]
         self.used
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
                 (used + bytes <= self.budget).then_some(used + bytes)
