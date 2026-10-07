@@ -9,10 +9,10 @@ use common::*;
 use scheme_rs_gc::{BLOCK_SIZE, LINE_SIZE, LOS_MAX_SIZE, Mutator};
 
 #[test]
-fn capacity_rounds_up_to_whole_blocks() {
-    assert_eq!(TestHeap::new(1).unwrap().capacity(), BLOCK_SIZE);
+fn budget_rounds_up_to_whole_blocks() {
+    assert_eq!(TestHeap::new(1).unwrap().budget(), BLOCK_SIZE);
     assert_eq!(
-        TestHeap::new(BLOCK_SIZE + 1).unwrap().capacity(),
+        TestHeap::new(BLOCK_SIZE + 1).unwrap().budget(),
         2 * BLOCK_SIZE
     );
 }
@@ -48,7 +48,7 @@ fn small_objects_share_a_block() {
 }
 
 #[test]
-fn the_region_and_large_objects_come_from_the_allocator() {
+fn large_objects_do_not_go_through_allocator() {
     let counting = Counting::default();
     let heap = TestHeap::new_in(&counting, HEAP_BYTES).unwrap();
     assert_eq!(counting.allocs(), 1);
@@ -57,7 +57,7 @@ fn the_region_and_large_objects_come_from_the_allocator() {
     assert_eq!(counting.allocs(), 1);
     init_obj(&mut m, LOS_MAX_SIZE + 16, 16);
     init_obj(&mut m, 32, 128);
-    assert_eq!(counting.allocs(), 3);
+    assert_eq!(counting.allocs(), 1);
     assert_eq!(heap.stats().large_objects, 2);
 }
 
@@ -67,13 +67,6 @@ fn allocator_failure_is_reported_and_recoverable() {
     counting.fail.store(true, Ordering::Relaxed);
     assert!(TestHeap::new_in(&counting, HEAP_BYTES).is_err());
     counting.fail.store(false, Ordering::Relaxed);
-    let heap = TestHeap::new_in(&counting, HEAP_BYTES).unwrap();
-    let mut m = heap.mutator();
-    let large = Layout::from_size_align(LOS_MAX_SIZE + 16, 16).unwrap();
-    counting.fail.store(true, Ordering::Relaxed);
-    assert!(m.alloc(large).is_err());
-    counting.fail.store(false, Ordering::Relaxed);
-    assert!(m.alloc(large).is_ok());
 }
 
 #[test]
@@ -87,7 +80,7 @@ fn a_full_heap_fails_and_recovers_after_a_free() {
     unsafe { c.free(first[0]) };
     c.sweep();
     c.sweep();
-    assert_eq!(obj(&mut heap.mutator(), LINE_SIZE, 16), first[0]);
+    assert_eq!(init_obj(&mut heap.mutator(), LINE_SIZE, 16), first[0]);
 }
 
 #[test]
@@ -105,11 +98,11 @@ fn freed_lines_are_reused_only_after_the_next_sweep() {
     c.sweep();
     {
         let mut m2 = heap.mutator();
-        assert_ne!(obj(&mut m2, LINE_SIZE, 16), x);
+        assert_ne!(init_obj(&mut m2, LINE_SIZE, 16), x);
     }
     c.sweep();
     let mut m3 = heap.mutator();
-    assert_eq!(obj(&mut m3, LINE_SIZE, 16), x);
+    assert_eq!(init_obj(&mut m3, LINE_SIZE, 16), x);
 }
 
 #[test]
@@ -126,17 +119,7 @@ fn a_fully_freed_block_is_reused_before_a_fresh_one() {
     assert_eq!(heap.stats().free_blocks, total - 1);
     c.sweep();
     assert_eq!(heap.stats().free_blocks, total);
-    assert_eq!(block_of(obj(&mut heap.mutator(), 32, 16)), freed);
-}
-
-#[test]
-fn freeing_a_large_object_returns_it_to_the_allocator() {
-    let counting = Counting::default();
-    let heap = TestHeap::new_in(&counting, HEAP_BYTES).unwrap();
-    let p = obj(&mut heap.mutator(), LOS_MAX_SIZE + 16, 16);
-    unsafe { heap.reclaimer().free(p) };
-    assert_eq!(counting.deallocs(), 1);
-    assert_eq!(heap.stats().large_objects, 0);
+    assert_eq!(block_of(init_obj(&mut heap.mutator(), 32, 16)), freed);
 }
 
 #[test]
@@ -144,7 +127,7 @@ fn freeing_a_large_object_returns_it_to_the_allocator() {
 fn freeing_a_pointer_from_another_heap_panics() {
     let a = test_heap();
     let b = test_heap();
-    let p = obj(&mut a.mutator(), 32, 16);
+    let p = init_obj(&mut a.mutator(), 32, 16);
     unsafe { b.reclaimer().free(p) };
 }
 
@@ -160,9 +143,9 @@ fn medium_objects_overflow_without_discarding_holes() {
     c.sweep();
     let recycled = block_of(objs[0]);
     let mut m2 = heap.mutator();
-    assert_eq!(block_of(obj(&mut m2, 32, 16)), recycled);
-    assert_ne!(block_of(obj(&mut m2, 4 * LINE_SIZE, 16)), recycled);
-    assert_eq!(block_of(obj(&mut m2, 32, 16)), recycled);
+    assert_eq!(block_of(init_obj(&mut m2, 32, 16)), recycled);
+    assert_ne!(block_of(init_obj(&mut m2, 4 * LINE_SIZE, 16)), recycled);
+    assert_eq!(block_of(init_obj(&mut m2, 32, 16)), recycled);
     drop(m2);
     assert!(heap.stats().overflow_bytes >= 4 * LINE_SIZE);
 }
@@ -201,8 +184,8 @@ fn a_free_into_a_quarantined_block_is_found() {
     c.sweep();
     c.sweep();
     let mut m = heap.mutator();
-    assert_eq!(obj(&mut m, LINE_SIZE, 16), objs[0]);
-    assert_eq!(obj(&mut m, LINE_SIZE, 16), objs[1]);
+    assert_eq!(init_obj(&mut m, LINE_SIZE, 16), objs[0]);
+    assert_eq!(init_obj(&mut m, LINE_SIZE, 16), objs[1]);
 }
 
 #[test]
@@ -231,7 +214,7 @@ fn dropping_the_heap_returns_the_region() {
 #[test]
 fn a_temporary_mutator_hands_its_block_back() {
     let heap = test_heap();
-    let p = obj(&mut heap.mutator(), 32, 16);
+    let p = init_obj(&mut heap.mutator(), 32, 16);
     let mut c = heap.reclaimer();
     unsafe { c.free(p) };
     c.sweep();

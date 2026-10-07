@@ -36,7 +36,7 @@ fn mutators_and_a_reclaimer_under_churn() {
                 let mut m = heap.mutator();
                 for i in 0..PER_THREAD {
                     let size = [24, 48, 200, 256, 700, 3000][i % 6];
-                    let p = obj(&mut m, size, 16);
+                    let p = init_obj(&mut m, size, 16);
                     let fill = (t * 31 + i) as u8;
                     unsafe { p.add(16).write_bytes(fill, size - 16) };
                     tx.send(Sent(p, size, fill)).unwrap();

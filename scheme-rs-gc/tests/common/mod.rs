@@ -29,7 +29,7 @@ pub fn test_heap() -> TestHeap {
 }
 
 pub fn total_blocks<A: Allocator>(heap: &TestHeap<A>) -> usize {
-    heap.capacity() / BLOCK_SIZE
+    heap.budget() / BLOCK_SIZE
 }
 
 pub fn stamp(obj: NonNull<u8>, layout: Layout) -> NonNull<u8> {
