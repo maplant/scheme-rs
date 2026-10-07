@@ -157,7 +157,7 @@ impl<M: ObjectModel, A: Allocator> Heap<M, A> {
         let alignment = layout.align();
         let bytes = n_pages * PAGE;
 
-        if alignment > 8192 {
+        if alignment > BLOCK_SIZE {
             return Err(AllocError);
         }
 
