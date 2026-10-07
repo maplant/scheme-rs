@@ -32,7 +32,6 @@ use crate::{
     syntax::{Span, lex::Lexer},
     value::{FIXNUM_MAX, FIXNUM_MIN, Value, ValueType},
 };
-use core::f64;
 use malachite::{
     Integer,
     base::{
