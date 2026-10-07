@@ -65,10 +65,10 @@ fn large_objects_with_high_alignment_are_aligned() {
 }
 
 #[test]
-fn large_objects_with_over_8k_alignment_are_rejected() {
+fn large_objects_with_over_32k_alignment_are_rejected() {
     let heap = test_heap();
     let mut m = heap.mutator();
-    let layout = Layout::from_size_align(16, 8192 * 2).expect("Test failed");
+    let layout = Layout::from_size_align(16, BLOCK_SIZE * 2).expect("Test failed");
     let err = m.alloc(layout);
     assert!(err.is_err());
     assert_eq!(heap.stats().budget_used, 0);
