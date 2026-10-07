@@ -4,6 +4,8 @@ use allocator_api2::alloc::{AllocError, Allocator, Global};
 
 use crate::{
     Mutator, ObjectModel, Reclaimer,
+    large::PAGE,
+    large::Run,
     reclaimer::ReclaimerState,
     region::{ALL_LINES, BLOCK_SIZE, OwnedBlock, Region, State},
     sync::{AtomicUsize, Mutex, Ordering, lock},
@@ -27,6 +29,7 @@ pub struct Heap<M: ObjectModel, A: Allocator = Global> {
     pub(crate) bytes_allocated: AtomicUsize,
     pub(crate) overflow_bytes: AtomicUsize,
     pub(crate) large_objects: AtomicUsize,
+    pub(crate) large_bytes: AtomicUsize,
     pub(crate) budget: usize,
     pub(crate) used: AtomicUsize,
     _model: PhantomData<fn() -> M>,
@@ -41,6 +44,8 @@ pub struct HeapStats {
     /// The part of `bytes_allocated` that went to overflow blocks.
     pub overflow_bytes: usize,
     pub large_objects: usize,
+    pub large_bytes: usize,
+    pub budget_used: usize,
 }
 
 impl<M: ObjectModel> Heap<M, Global> {
@@ -55,10 +60,11 @@ impl<M: ObjectModel, A: Allocator> Heap<M, A> {
     /// in one region.
     pub fn new_in(alloc: A, bytes: usize) -> Result<Self, AllocError> {
         let (region, mut blocks) = Region::new_in(alloc, bytes)?;
+        let bytes = region.n_blocks() * BLOCK_SIZE;
         // Popped from the end, so blocks are handed out in address order.
         blocks.reverse();
         let token = unsafe { region.reclaimer_token() };
-        let reclaimer = ReclaimerState::new(token, region.capacity());
+        let reclaimer = ReclaimerState::new(token, region.n_blocks());
         Ok(Self {
             region,
             free: Mutex::new(blocks),
@@ -68,14 +74,15 @@ impl<M: ObjectModel, A: Allocator> Heap<M, A> {
             bytes_allocated: AtomicUsize::new(0),
             overflow_bytes: AtomicUsize::new(0),
             large_objects: AtomicUsize::new(0),
+            large_bytes: AtomicUsize::new(0),
+            budget: bytes,
+            used: AtomicUsize::new(0),
             _model: PhantomData,
         })
     }
 
-    /// Bytes of small block space, a multiple of `BLOCK_SIZE`.
-    /// Does not take budget in to account.
-    pub fn small_capacity(&self) -> usize {
-        self.region.n_blocks() * BLOCK_SIZE
+    pub fn budget(&self) -> usize {
+        self.budget
     }
 
     pub fn mutator(&self) -> Mutator<'_, M, A> {
@@ -96,6 +103,8 @@ impl<M: ObjectModel, A: Allocator> Heap<M, A> {
             bytes_allocated: self.bytes_allocated.load(Ordering::Relaxed),
             overflow_bytes: self.overflow_bytes.load(Ordering::Relaxed),
             large_objects: self.large_objects.load(Ordering::Relaxed),
+            large_bytes: self.large_bytes.load(Ordering::Relaxed),
+            budget_used: self.used.load(Ordering::Relaxed),
         }
     }
 
@@ -113,9 +122,10 @@ impl<M: ObjectModel, A: Allocator> Heap<M, A> {
     pub(crate) fn acquire_clean(&self) -> Result<OwnedBlock, AllocError> {
         let mut lock = lock(&self.free);
 
-        if let Ok(_) = self.claim_space(BLOCK_SIZE) {
+        if self.claim_space(BLOCK_SIZE).is_ok() {
             let block = lock.pop().ok_or(AllocError)?;
-            self.region.moved(&block, &[State::Free], State::MutatorOwned);
+            self.region
+                .moved(&block, &[State::Free], State::MutatorOwned);
             Ok(block)
         } else {
             Result::Err(AllocError)
@@ -129,31 +139,43 @@ impl<M: ObjectModel, A: Allocator> Heap<M, A> {
         lock(&self.retired).push(block);
     }
 
-    fn claim_space(&self, bytes: usize) -> Result<(), AllocError> {
+    pub(crate) fn claim_space(&self, bytes: usize) -> Result<(), AllocError> {
         self.used
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
-                (used + bytes <= self.budget).then_some(used+bytes)
+                (used + bytes <= self.budget).then_some(used + bytes)
             })
             .map(drop)
             .map_err(|_| AllocError)
     }
 
-    fn return_space(&self, bytes: usize) {
+    pub(crate) fn return_space(&self, bytes: usize) {
         self.used.fetch_sub(bytes, Ordering::Relaxed);
     }
 
     pub(crate) fn alloc_large(&self, layout: Layout) -> Result<NonNull<u8>, AllocError> {
+        let n_pages = layout.size().div_ceil(PAGE);
+        let alignment = layout.align();
+        let bytes = n_pages * PAGE;
 
-        let obj = self.region.alloc.allocate(layout)?.cast::<u8>();
+        if alignment > 8192 {
+            return Err(AllocError);
+        }
+
+        self.claim_space(bytes)?;
+
+        let Some(Run {
+            start_index: page,
+            n_pages: _,
+        }) = self.region.large.claim_run(n_pages, alignment)
+        else {
+            self.return_space(bytes);
+            return Err(AllocError);
+        };
+
+        self.region.large.mark_occupied(page);
         self.large_objects.fetch_add(1, Ordering::Relaxed);
-        Ok(obj)
-    }
+        self.large_bytes.fetch_add(bytes, Ordering::Relaxed);
 
-    /// # Safety
-    ///
-    /// `obj` came from `alloc_large` with `layout` and is dead.
-    pub(crate) unsafe fn free_large(&self, obj: NonNull<u8>, layout: Layout) {
-        unsafe { self.region.alloc.deallocate(obj, layout) };
-        self.large_objects.fetch_sub(1, Ordering::Relaxed);
+        Ok(self.region.large.object_at(page))
     }
 }

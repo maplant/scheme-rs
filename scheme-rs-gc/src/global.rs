@@ -58,9 +58,9 @@ pub(crate) fn heap() -> &'static Heap<HeaderModel> {
     })
 }
 
-/// Bytes of block space in the global heap.
-pub fn heap_capacity() -> usize {
-    heap().capacity()
+/// Bytes of space in the heap
+pub fn budget() -> usize {
+    heap().budget()
 }
 
 thread_local! {

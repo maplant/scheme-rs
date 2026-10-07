@@ -10,9 +10,9 @@ use allocator_api2::alloc::{AllocError, Allocator};
 #[cfg(debug_assertions)]
 use std::sync::atomic::AtomicU32;
 
-use crate::sync::{AtomicU8, Ordering};
 use crate::large::LargeSpace;
 use crate::large::PAGE;
+use crate::sync::{AtomicU8, Ordering};
 
 pub const BLOCK_SIZE: usize = 32 * 1024;
 pub const LINE_SIZE: usize = 256;
@@ -121,7 +121,7 @@ pub(crate) struct Region<A: Allocator> {
     /// the reclaimer decrements.
     line_live: NonNull<AtomicU8>,
     blocks: NonNull<u8>,
-    large: LargeSpace,
+    pub(crate) large: LargeSpace,
     capacity: usize,
     #[cfg(debug_assertions)]
     id: u32,
@@ -168,7 +168,7 @@ impl<A: Allocator> Region<A> {
             layout,
             line_live: base.cast(),
             blocks: unsafe { base.byte_add(blocks_at) },
-            large: large,
+            large,
             capacity: capacity_blocks,
             #[cfg(debug_assertions)]
             id: NEXT_HEAP.fetch_add(1, Ordering::Relaxed),
