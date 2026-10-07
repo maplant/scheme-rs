@@ -439,8 +439,10 @@ fn run() -> JoinHandle<()> {
     spawn(|| {
         ON_COLLECTOR_THREAD.set(true);
         let mut collector = CycleCollector::new();
-        if catch_unwind(AssertUnwindSafe(|| loop {
-            collector.epoch();
+        if catch_unwind(AssertUnwindSafe(|| {
+            loop {
+                collector.epoch();
+            }
         }))
         .is_err()
         {
