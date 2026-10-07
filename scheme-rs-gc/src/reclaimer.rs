@@ -1,4 +1,5 @@
 use core::{mem::take, ptr::NonNull};
+use std::alloc::Layout;
 use std::sync::TryLockError;
 
 use allocator_api2::alloc::{Allocator, Global};
@@ -76,19 +77,11 @@ impl<'h, M: ObjectModel, A: Allocator> Reclaimer<'h, M, A> {
     ///
     /// # Panics
     ///
-    /// If a small object's pointer is not in this heap. A large object from
-    /// another heap is not detected.
+    /// If an object's pointer is not in this heap.
     pub unsafe fn free(&mut self, obj: NonNull<u8>) {
         let layout = M::layout(unsafe { obj.cast::<M::Header>().as_ref() });
-        if is_large(layout)
-            && let Some(page) = self.heap.region.large.page_of(obj)
-        {
-            self.heap.region.large.mark_unoccupied(page);
-            self.state.large_freed.push(Run {
-                start_index: page,
-                n_pages: layout.size().div_ceil(PAGE),
-            });
-            self.heap.large_objects.fetch_sub(1, Ordering::Relaxed);
+        if is_large(layout) {
+            self.free_large(layout, obj);
             return;
         }
         let region = &self.heap.region;
@@ -96,6 +89,22 @@ impl<'h, M: ObjectModel, A: Allocator> Reclaimer<'h, M, A> {
         let offset = region.offset_of(id, obj);
         region.on_free(&self.state.token, id, offset, layout.size().max(MIN_SIZE));
         self.state.mark_dirty(id);
+    }
+
+    fn free_large(&mut self, layout: Layout, obj: NonNull<u8>) {
+        let page = self
+            .heap
+            .region
+            .large
+            .page_of(obj)
+            .expect("Large pointer not in this heap");
+        debug_assert!(self.heap.region.large.is_occupied(page), "Unmarked page being freed; double free, or incorrect bookkeeping.");
+        self.heap.region.large.mark_unoccupied(page);
+        self.state.large_freed.push(Run {
+            start_index: page,
+            n_pages: layout.size().div_ceil(PAGE),
+        });
+        self.heap.large_objects.fetch_sub(1, Ordering::Relaxed);
     }
 
     /// Publishes the last sweep's finds, then looks for free lines in blocks
