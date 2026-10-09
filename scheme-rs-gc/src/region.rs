@@ -61,7 +61,6 @@ pub(crate) fn take_hole(holes: &mut u128) -> Option<(usize, usize)> {
 pub(crate) enum State {
     MutatorOwned,
     Full,
-    #[expect(dead_code, reason = "the collector uses it")]
     AwaitingClearance,
     Recycled,
     Free,
@@ -79,7 +78,7 @@ impl BlockId {
 
 /// The one owner of a block. Only `Region::new_in` makes them, one per block,
 /// so a block is always in exactly one place: a pool, a mutator's window, the
-/// retired list, or the collector.
+/// retired list, or the reclaimer.
 #[derive(Debug)]
 pub(crate) struct OwnedBlock {
     id: BlockId,
@@ -88,15 +87,14 @@ pub(crate) struct OwnedBlock {
 }
 
 impl OwnedBlock {
-    #[expect(dead_code, reason = "the collector uses it")]
     pub(crate) fn id(&self) -> BlockId {
         self.id
     }
 }
 
-/// Proof of being the heap's one collector.
+/// Proof of being the heap's one reclaimer.
 #[derive(Debug)]
-pub(crate) struct CollectorToken {
+pub(crate) struct ReclaimerToken {
     #[cfg(debug_assertions)]
     heap: u32,
 }
@@ -118,7 +116,7 @@ pub(crate) struct Region<A: Allocator> {
     base: NonNull<u8>,
     layout: Layout,
     /// `LINES_PER_BLOCK` live-object counts per block. The owner increments,
-    /// the collector decrements.
+    /// the reclaimer decrements.
     line_live: NonNull<AtomicU8>,
     blocks: NonNull<u8>,
     capacity: usize,
@@ -179,10 +177,9 @@ impl<A: Allocator> Region<A> {
 
     /// # Safety
     ///
-    /// At most one per region, held by the heap's collector mutex.
-    #[expect(dead_code, reason = "the collector uses it")]
-    pub(crate) unsafe fn collector_token(&self) -> CollectorToken {
-        CollectorToken {
+    /// At most one per region, held by the heap's reclaimer mutex.
+    pub(crate) unsafe fn reclaimer_token(&self) -> ReclaimerToken {
+        ReclaimerToken {
             #[cfg(debug_assertions)]
             heap: self.id,
         }
@@ -198,7 +195,6 @@ impl<A: Allocator> Region<A> {
     /// # Panics
     ///
     /// If `obj` is not in this heap's blocks.
-    #[expect(dead_code, reason = "the collector uses it")]
     pub(crate) fn block_of(&self, obj: NonNull<u8>) -> BlockId {
         let offset = obj.addr().get().wrapping_sub(self.blocks.addr().get());
         assert!(
@@ -220,7 +216,6 @@ impl<A: Allocator> Region<A> {
         self.start(block.id)
     }
 
-    #[expect(dead_code, reason = "the collector uses it")]
     pub(crate) fn offset_of(&self, id: BlockId, obj: NonNull<u8>) -> usize {
         obj.addr().get() - self.start(id).addr().get()
     }
@@ -240,9 +235,9 @@ impl<A: Allocator> Region<A> {
         debug_assert_eq!(_block.heap, self.id, "block from another heap");
     }
 
-    fn check_token(&self, _token: &CollectorToken) {
+    fn check_token(&self, _token: &ReclaimerToken) {
         #[cfg(debug_assertions)]
-        debug_assert_eq!(_token.heap, self.id, "collector of another heap");
+        debug_assert_eq!(_token.heap, self.id, "reclaimer of another heap");
     }
 
     #[inline]
@@ -254,9 +249,8 @@ impl<A: Allocator> Region<A> {
         }
     }
 
-    /// The collector frees into blocks it may not own.
-    #[expect(dead_code, reason = "the collector uses it")]
-    pub(crate) fn on_free(&self, token: &CollectorToken, id: BlockId, offset: usize, size: usize) {
+    /// The reclaimer frees into blocks it may not own.
+    pub(crate) fn on_free(&self, token: &ReclaimerToken, id: BlockId, offset: usize, size: usize) {
         self.check_token(token);
         for line in lines(offset, size) {
             let prev = self.line(id, line).fetch_sub(1, Ordering::Relaxed);
@@ -266,13 +260,12 @@ impl<A: Allocator> Region<A> {
 
     #[cfg(all(test, loom))]
     #[expect(dead_code, reason = "the loom models use it")]
-    pub(crate) fn line_count(&self, token: &CollectorToken, id: BlockId, line: usize) -> u8 {
+    pub(crate) fn line_count(&self, token: &ReclaimerToken, id: BlockId, line: usize) -> u8 {
         self.check_token(token);
         self.line(id, line).load(Ordering::Relaxed)
     }
 
     /// Lines with no live objects, for the block's holder.
-    #[expect(dead_code, reason = "the collector uses it")]
     pub(crate) fn free_lines(&self, block: &OwnedBlock) -> u128 {
         self.check_owner(block);
         (0..LINES_PER_BLOCK)
