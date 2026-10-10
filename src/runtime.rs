@@ -8,7 +8,10 @@ use crate::{
     ast::{Definitions, Primitive},
     cps::{
         Cps,
-        codegen::{JitEntryFn, RuntimeFunctionsBuilder, codegen_jit_entry_fn},
+        codegen::{
+            JitContEntryFn, JitUserEntryFn, RuntimeFunctionsBuilder, codegen_jit_cont_entry_fn,
+            codegen_jit_user_entry_fn,
+        },
         compile::Compiler,
     },
     env::{Environment, Global, TopLevelEnvironment},
@@ -167,11 +170,11 @@ impl Runtime {
         let _ = maybe_await!(sender.send(task));
         let jit = maybe_await!(recv_continuation(completion_rx));
         let mut barrier = ContBarrier::new();
-        let app = self.enter_jit(jit, Args::empty(), &mut barrier);
+        let app = self.enter_jit_cont(jit, Args::empty(), &mut barrier);
         maybe_await!(app.eval(&mut barrier))
     }
 
-    pub(crate) fn enter_jit(
+    pub(crate) fn enter_jit_cont(
         &self,
         jit: ReturnAddress,
         args: Args,
@@ -179,7 +182,20 @@ impl Runtime {
     ) -> Application {
         let mut out = MaybeUninit::uninit();
         let Args([arg1, arg2, arg3, arg4, argn]) = args;
-        (self.0.jit_entry_fn)(jit, arg1, arg2, arg3, arg4, argn, barrier, &mut out);
+        (self.0.jit_cont_entry_fn)(jit, arg1, arg2, arg3, arg4, argn, barrier, &mut out);
+        unsafe { out.assume_init() }
+    }
+
+    pub(crate) fn enter_jit_user(
+        &self,
+        jit: ReturnAddress,
+        proc: Procedure,
+        args: Args,
+        barrier: &mut ContBarrier,
+    ) -> Application {
+        let mut out = MaybeUninit::uninit();
+        let Args([arg1, arg2, arg3, arg4, argn]) = args;
+        (self.0.jit_user_entry_fn)(jit, proc, arg1, arg2, arg3, arg4, argn, barrier, &mut out);
         unsafe { out.assume_init() }
     }
 
@@ -218,8 +234,9 @@ pub(crate) struct RuntimeInner {
     pub(crate) constants_pool: Mutex<EqualHashSet>,
     pub(crate) globals_pool: Mutex<HashSet<Global>>,
     pub(crate) source_cache: Mutex<SourceCache>,
-    /// Function for jumping into JIT code
-    jit_entry_fn: JitEntryFn,
+    /// Functions for jumping into JIT code
+    jit_cont_entry_fn: JitContEntryFn,
+    jit_user_entry_fn: JitUserEntryFn,
 }
 
 impl Default for RuntimeInner {
@@ -245,9 +262,10 @@ impl RuntimeInner {
         // Ensure the GC is initialized:
         init_gc();
 
-        // Obtain the JIT entry function:
+        // Obtain the JIT entry functions:
         let mut module = make_jit_module();
-        let jit_entry_fn = codegen_jit_entry_fn(&mut module);
+        let jit_cont_entry_fn = codegen_jit_cont_entry_fn(&mut module);
+        let jit_user_entry_fn = codegen_jit_user_entry_fn(&mut module);
 
         // Spawn the compilation task:
         let (compilation_buffer_tx, compilation_buffer_rx) = compilation_buffer();
@@ -259,7 +277,8 @@ impl RuntimeInner {
             constants_pool: Mutex::new(EqualHashSet::new()),
             globals_pool: Mutex::new(HashSet::new()),
             source_cache: Mutex::new(SourceCache::default()),
-            jit_entry_fn,
+            jit_cont_entry_fn,
+            jit_user_entry_fn,
         }
     }
 }
@@ -583,10 +602,11 @@ unsafe extern "C" fn get_frame(op: *const (), span: *const ()) -> *const () {
 #[cfg(feature = "continuation-marks")]
 #[runtime_fn]
 unsafe extern "C" fn set_continuation_mark(
-    tag: *const (),
-    val: *const (),
-    barrier: *mut ContBarrier,
+    _tag: *const (),
+    _val: *const (),
+    _barrier: *mut ContBarrier,
 ) {
+    /*
     unsafe {
         let tag = Value::from_raw_inc_rc(tag);
         let val = Value::from_raw_inc_rc(val);
@@ -595,6 +615,7 @@ unsafe extern "C" fn set_continuation_mark(
             .unwrap()
             .set_continuation_mark(tag.cast().unwrap(), val);
     }
+     */
 }
 
 /// Create a boxed application that simply returns its arguments

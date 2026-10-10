@@ -140,7 +140,7 @@ pub(crate) struct RuntimeFunctions {
     lesser_equal: FuncId,
 }
 
-pub(crate) type JitEntryFn = extern "C" fn(
+pub(crate) type JitContEntryFn = extern "C" fn(
     ReturnAddress,
     arg1: RuntimeValue,
     arg2: RuntimeValue,
@@ -151,7 +151,7 @@ pub(crate) type JitEntryFn = extern "C" fn(
     out: &mut MaybeUninit<Application>,
 );
 
-pub(crate) fn codegen_jit_entry_fn(module: &mut JITModule) -> JitEntryFn {
+pub(crate) fn codegen_jit_cont_entry_fn(module: &mut JITModule) -> JitContEntryFn {
     let mut sig = module.make_signature();
     sig.params.push(AbiParam::new(types::I64)); // Return address
     sig.params
@@ -182,7 +182,58 @@ pub(crate) fn codegen_jit_entry_fn(module: &mut JITModule) -> JitEntryFn {
     module.clear_context(&mut ctx);
     module.finalize_definitions().unwrap();
 
-    unsafe { std::mem::transmute::<*const u8, JitEntryFn>(module.get_finalized_function(entry)) }
+    unsafe {
+        std::mem::transmute::<*const u8, JitContEntryFn>(module.get_finalized_function(entry))
+    }
+}
+
+pub(crate) type JitUserEntryFn = extern "C" fn(
+    ReturnAddress,
+    Procedure,
+    arg1: RuntimeValue,
+    arg2: RuntimeValue,
+    arg3: RuntimeValue,
+    arg4: RuntimeValue,
+    argn: RuntimeValue,
+    barrier: &mut ContBarrier<'_>,
+    out: &mut MaybeUninit<Application>,
+);
+
+pub(crate) fn codegen_jit_user_entry_fn(module: &mut JITModule) -> JitUserEntryFn {
+    let mut sig = module.make_signature();
+    sig.params.push(AbiParam::new(types::I64)); // Return address
+    sig.params.push(AbiParam::new(types::I64)); // Proc
+    sig.params
+        .extend((0..NUM_ARG_SLOTS).map(|_| AbiParam::new(types::I64))); // Arg1..Arg4, Argn
+    sig.params.push(AbiParam::new(types::I64)); // ContBarrier
+    sig.params.push(AbiParam::new(types::I64)); // Application out-pointer
+
+    let entry = module.declare_anonymous_function(&sig).unwrap();
+
+    let mut ctx = module.make_context();
+    ctx.func.signature = sig;
+    let mut builder_ctx = FunctionBuilderContext::new();
+    let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
+
+    let entry_block = builder.create_block();
+    builder.append_block_params_for_function_params(entry_block);
+    builder.switch_to_block(entry_block);
+    builder.seal_block(entry_block);
+
+    let args = builder.block_params(entry_block).to_vec();
+    let callee_sig = builder.import_signature(user_sig());
+
+    builder.ins().call_indirect(callee_sig, args[0], &args[1..]);
+    builder.ins().return_(&[]);
+    builder.finalize(module.target_config());
+
+    module.define_function(entry, &mut ctx).unwrap();
+    module.clear_context(&mut ctx);
+    module.finalize_definitions().unwrap();
+
+    unsafe {
+        std::mem::transmute::<*const u8, JitUserEntryFn>(module.get_finalized_function(entry))
+    }
 }
 
 impl Cps {
@@ -1582,9 +1633,8 @@ impl CompilationUnit<'_, '_> {
             .iconst(types::I8, bundle.args.variadic as i64);
         assert_eq!(std::mem::size_of::<bool>(), 1);
 
-        let mut args = vec![func_ptr, env_addr, env_len, num_required, is_variadic];
-
         if bundle.args.continuation.is_some() {
+            let mut args = vec![func_ptr, env_addr, env_len, num_required, is_variadic];
             args.push(if let Some(ref loc) = bundle.loc {
                 let debug_info = Arc::new(ProcDebugInfo::new(
                     bundle.val.name,
@@ -1604,7 +1654,7 @@ impl CompilationUnit<'_, '_> {
             let proc = self.builder.inst_results(call)[0];
             self.live.bind(bundle.val, IrValue::Owned(proc));
         } else {
-            args.push(self.get_barrier());
+            let args = [func_ptr, env_addr, env_len, self.get_barrier()];
             let push_cont = self
                 .module
                 .declare_func_in_func(self.runtime_funcs.push_continuation, self.builder.func);

@@ -115,12 +115,6 @@ pub struct ReturnAddress(#[trace(skip)] pub(crate) NonNull<u8>);
 unsafe impl Send for ReturnAddress {}
 unsafe impl Sync for ReturnAddress {}
 
-impl ReturnAddress {
-    fn call(&self, args: Args, barrier: &mut ContBarrier) -> Application {
-        Runtime::handle().enter_jit(*self, args, barrier)
-    }
-}
-
 /// A function pointer to a sync Rust bridge function.
 pub type BridgePtr = extern "C" fn(
     proc: Procedure,
@@ -423,7 +417,7 @@ impl Procedure {
             FuncPtr::Bridge(sbridge) => apply_bridge(self, sbridge, args, barrier),
             #[cfg(feature = "async")]
             FuncPtr::AsyncBridge(abridge) => apply_async_bridge(self, abridge, args, barrier).await,
-            FuncPtr::User(addr) => addr.call(args, barrier),
+            FuncPtr::User(addr) => Runtime::handle().enter_jit_user(addr, self, args, barrier),
             FuncPtr::Known(known) => known.apply(args, barrier),
         }
     }
@@ -437,7 +431,7 @@ impl Procedure {
                 Exception::error("attempt to apply async function in a sync-only context").into(),
                 barrier,
             ),
-            FuncPtr::User(addr) => addr.call(args, barrier),
+            FuncPtr::User(addr) => Runtime::handle().enter_jit_user(addr, self, args, barrier),
             FuncPtr::Known(known) => known.apply(args, barrier),
         }
     }
@@ -675,7 +669,7 @@ impl Application {
             let Application { op, args } = self;
             self = match op {
                 OpType::Proc(proc) => maybe_await!(proc.apply(args, barrier)),
-                OpType::ReturnAddr(ret) => ret.call(args, barrier),
+                OpType::ReturnAddr(ret) => Runtime::handle().enter_jit_cont(ret, args, barrier),
                 OpType::HaltOk => return Ok(args.into_vec()),
                 OpType::HaltErr => {
                     let Args([err, _, _, _, _]) = args;
@@ -692,7 +686,7 @@ impl Application {
             let Application { op, args } = self;
             self = match op {
                 OpType::Proc(proc) => proc.apply_sync(args, barrier),
-                OpType::ReturnAddr(ret) => ret.call(args, barrier),
+                OpType::ReturnAddr(ret) => Runtime::handle().enter_jit_cont(ret, args, barrier),
                 OpType::HaltOk => return Ok(args.into_vec()),
                 OpType::HaltErr => {
                     let Args([err, _, _, _, _]) = args;
@@ -1440,6 +1434,7 @@ pub(crate) fn pop_dyn_stack(
     barrier.call_cont(Args::from_list(args.0))
 }
 
+/*
 #[cfg(feature = "continuation-marks")]
 #[bridge(name = "print-trace", lib = "(scheme-rs tracing (6))")]
 pub fn print_trace(barrier: &mut ContBarrier) {
@@ -1448,6 +1443,7 @@ pub fn print_trace(barrier: &mut ContBarrier) {
         barrier.current_marks(Symbol::intern("trace"))
     );
 }
+*/
 
 ////////////////////////////////////////////////////////////////////////////////
 //
