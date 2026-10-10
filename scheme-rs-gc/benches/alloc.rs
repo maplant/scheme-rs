@@ -20,7 +20,8 @@ const OBJ: Layout = match Layout::from_size_align(64, 16) {
 };
 
 fn churn(c: &mut Criterion) {
-    let heap = Heap::<Model>::new(64 << 20).unwrap();
+    let mb_64 = 64 << 20;
+    let heap = Heap::<Model>::new(mb_64).unwrap();
     c.bench_function("heap: 1000 x 64B alloc, free, sweep", |b| {
         b.iter(|| {
             let mut m = heap.mutator();

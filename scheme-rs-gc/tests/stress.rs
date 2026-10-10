@@ -25,8 +25,9 @@ fn check_and_free(c: &mut Reclaimer<'_, TestModel>, Sent(p, size, fill): Sent) {
 fn mutators_and_a_reclaimer_under_churn() {
     const THREADS: usize = 4;
     const PER_THREAD: usize = 50_000;
+    const MB_32: usize = 32 << 20;
     // About 3x what the live set needs; poor reclamation runs out of blocks.
-    let heap = TestHeap::new(32 << 20).unwrap();
+    let heap = TestHeap::new(MB_32).unwrap();
     let (tx, rx) = mpsc::sync_channel(1024);
     thread::scope(|s| {
         for t in 0..THREADS {
@@ -50,9 +51,10 @@ fn mutators_and_a_reclaimer_under_churn() {
         let mut held = Vec::new();
         for (n, sent) in rx.iter().enumerate() {
             if n % 5 == 0 {
+                let mb_2 = 2_654_435_761;
                 held.push(sent);
                 if held.len() > 2000 {
-                    let i = n.wrapping_mul(2_654_435_761) % held.len();
+                    let i = n.wrapping_mul(mb_2) % held.len();
                     check_and_free(&mut c, held.swap_remove(i));
                 }
             } else {
