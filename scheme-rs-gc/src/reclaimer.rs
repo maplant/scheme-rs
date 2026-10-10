@@ -1,12 +1,18 @@
 use core::{mem::take, ptr::NonNull};
+use std::alloc::Layout;
 use std::sync::TryLockError;
 
 use allocator_api2::alloc::{Allocator, Global};
 
 use crate::{
     Heap, ObjectModel,
-    region::{ALL_LINES, BlockId, MIN_SIZE, OwnedBlock, ReclaimerToken, Region, State, is_large},
-    sync::{MutexGuard, lock},
+    large::PAGE,
+    large::Run,
+    region::{
+        ALL_LINES, BLOCK_SIZE, BlockId, MIN_SIZE, OwnedBlock, ReclaimerToken, Region, State,
+        is_large,
+    },
+    sync::{MutexGuard, Ordering, lock},
 };
 
 /// State only a `Reclaimer` can reach, behind the heap's reclaimer mutex.
@@ -19,6 +25,8 @@ pub(crate) struct ReclaimerState {
     full: Vec<Option<OwnedBlock>>,
     /// Found by the last sweep, published by the next.
     quarantine: Vec<(OwnedBlock, u128)>,
+    large_freed: Vec<Run>,
+    large_quarantined: Vec<Run>,
 }
 
 impl ReclaimerState {
@@ -29,6 +37,8 @@ impl ReclaimerState {
             dirty_flags: vec![false; capacity],
             full: (0..capacity).map(|_| None).collect(),
             quarantine: Vec::new(),
+            large_freed: Vec::new(),
+            large_quarantined: Vec::new(),
         }
     }
 
@@ -67,12 +77,11 @@ impl<'h, M: ObjectModel, A: Allocator> Reclaimer<'h, M, A> {
     ///
     /// # Panics
     ///
-    /// If a small object's pointer is not in this heap. A large object from
-    /// another heap is not detected.
+    /// If an object's pointer is not in this heap.
     pub unsafe fn free(&mut self, obj: NonNull<u8>) {
         let layout = M::layout(unsafe { obj.cast::<M::Header>().as_ref() });
         if is_large(layout) {
-            unsafe { self.heap.free_large(obj, layout) };
+            self.free_large(layout, obj);
             return;
         }
         let region = &self.heap.region;
@@ -82,21 +91,53 @@ impl<'h, M: ObjectModel, A: Allocator> Reclaimer<'h, M, A> {
         self.state.mark_dirty(id);
     }
 
+    fn free_large(&mut self, layout: Layout, obj: NonNull<u8>) {
+        let page = self
+            .heap
+            .region
+            .large
+            .page_of(obj)
+            .expect("Large pointer not in this heap");
+        debug_assert!(
+            self.heap.region.large.is_occupied(page),
+            "Unmarked page being freed; double free, or incorrect bookkeeping."
+        );
+        self.heap.region.large.mark_unoccupied(page);
+        self.state.large_freed.push(Run {
+            start_index: page,
+            n_pages: layout.size().div_ceil(PAGE),
+        });
+        self.heap.large_objects.fetch_sub(1, Ordering::Relaxed);
+    }
+
     /// Publishes the last sweep's finds, then looks for free lines in blocks
     /// retired or freed into since.
     pub fn sweep(&mut self) {
         let heap = self.heap;
         let region = &heap.region;
         let state = &mut *self.state;
+
+        // Block quarantine
         for (block, holes) in state.quarantine.drain(..) {
             if holes == ALL_LINES {
                 region.moved(&block, &[State::AwaitingClearance], State::Free);
                 lock(&heap.free).push(block);
+                heap.return_space(BLOCK_SIZE);
             } else {
                 region.moved(&block, &[State::AwaitingClearance], State::Recycled);
                 lock(&heap.recycled).push((block, holes));
             }
         }
+
+        // Large quarantine
+        for run in state.large_quarantined.drain(..) {
+            let bytes = run.n_pages * PAGE;
+            region.large.release_run(run);
+            heap.return_space(bytes);
+            heap.large_bytes.fetch_sub(bytes, Ordering::Relaxed);
+        }
+        state.large_quarantined = take(&mut state.large_freed);
+
         // Recycled blocks freed into have stale holes; take them back.
         let reclaimed: Vec<_> = lock(&heap.recycled)
             .extract_if(.., |entry| state.dirty_flags[entry.0.id().index()])

@@ -9,7 +9,9 @@ use std::{
 };
 
 use crate::{
-    collection::{collector_running, on_collector_thread},GcHeader, Heap, Mutator, ObjectModel, collect_garbage};
+    GcHeader, Heap, Mutator, ObjectModel, collect_garbage,
+    collection::{collector_running, on_collector_thread},
+};
 
 const DEFAULT_HEAP_SIZE: usize = 512 * 1024 * 1024;
 
@@ -56,9 +58,9 @@ pub(crate) fn heap() -> &'static Heap<HeaderModel> {
     })
 }
 
-/// Bytes of block space in the global heap.
-pub fn heap_capacity() -> usize {
-    heap().capacity()
+/// Bytes of space in the heap
+pub fn budget() -> usize {
+    heap().budget()
 }
 
 thread_local! {

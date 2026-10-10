@@ -5,6 +5,7 @@ mod collection;
 #[cfg(not(loom))]
 mod global;
 mod heap;
+mod large;
 mod mutator;
 mod reclaimer;
 mod region;
@@ -19,7 +20,7 @@ pub use allocator_api2::alloc::{AllocError, Allocator, Global};
 #[cfg(not(loom))]
 pub use collection::{GcHeader, OpaqueGcPtr, VTable, collect_garbage, init_gc, unroot};
 #[cfg(not(loom))]
-pub use global::{HeapAlreadyCreated, alloc, heap_capacity, set_heap_size};
+pub use global::{HeapAlreadyCreated, alloc, budget, set_heap_size};
 pub use heap::{Heap, HeapStats};
 pub use mutator::Mutator;
 pub use reclaimer::Reclaimer;

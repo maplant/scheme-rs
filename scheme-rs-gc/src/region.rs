@@ -10,6 +10,8 @@ use allocator_api2::alloc::{AllocError, Allocator};
 #[cfg(debug_assertions)]
 use std::sync::atomic::AtomicU32;
 
+use crate::large::LargeSpace;
+use crate::large::PAGE;
 use crate::sync::{AtomicU8, Ordering};
 
 pub const BLOCK_SIZE: usize = 32 * 1024;
@@ -106,7 +108,7 @@ static NEXT_HEAP: AtomicU32 = AtomicU32::new(0);
 /// blocks.
 ///
 /// ```text
-/// [ line_live | pad to BLOCK_SIZE | block 0 | block 1 | ... ]
+/// [ line_live | pad to BLOCK_SIZE | block 0 | block 1 | block n - 1 | large start | pad | page 0 | ... ]
 /// ```
 ///
 /// It owns the allocator the memory came from and returns the memory to it
@@ -119,6 +121,7 @@ pub(crate) struct Region<A: Allocator> {
     /// the reclaimer decrements.
     line_live: NonNull<AtomicU8>,
     blocks: NonNull<u8>,
+    pub(crate) large: LargeSpace,
     capacity: usize,
     #[cfg(debug_assertions)]
     id: u32,
@@ -134,38 +137,50 @@ impl<A: Allocator> Region<A> {
     /// Allocates at least `bytes` of blocks, plus their line counts, from
     /// `alloc`. Returns the owner of every block.
     pub(crate) fn new_in(alloc: A, bytes: usize) -> Result<(Self, Vec<OwnedBlock>), AllocError> {
-        let capacity = bytes.div_ceil(BLOCK_SIZE).max(1);
-        if capacity > u32::MAX as usize {
+        let capacity_blocks = bytes.div_ceil(BLOCK_SIZE).max(1);
+        if capacity_blocks > u32::MAX as usize {
             return Err(AllocError);
         }
+
         // The largest product; once it fits, `capacity * LINES_PER_BLOCK` does.
-        let blocks_size = capacity.checked_mul(BLOCK_SIZE).ok_or(AllocError)?;
+        let blocks_size = capacity_blocks.checked_mul(BLOCK_SIZE).ok_or(AllocError)?;
         let table =
-            Layout::array::<AtomicU8>(capacity * LINES_PER_BLOCK).map_err(|_| AllocError)?;
+            Layout::array::<AtomicU8>(capacity_blocks * LINES_PER_BLOCK).map_err(|_| AllocError)?;
         let blocks_at = table.size().next_multiple_of(BLOCK_SIZE);
+
+        // Large space
+        // Large space gets the same heap, so that you can fill the entire heap with large objects if you want to.
+        let n_pages = blocks_size / PAGE;
+        let large_space_at = blocks_at + blocks_size;
+
         let layout = blocks_size
             .checked_add(blocks_at)
+            .expect("Allocation error in allocating amount of blocks")
+            .checked_add(LargeSpace::bytes_needed_for(n_pages))
             .and_then(|size| Layout::from_size_align(size, BLOCK_SIZE).ok())
             .ok_or(AllocError)?;
         let base = alloc.allocate(layout)?.cast::<u8>();
+
+        let large = unsafe { LargeSpace::init(base.byte_add(large_space_at).cast(), n_pages) };
         let region = Region {
             alloc,
             base,
             layout,
             line_live: base.cast(),
             blocks: unsafe { base.byte_add(blocks_at) },
-            capacity,
+            large,
+            capacity: capacity_blocks,
             #[cfg(debug_assertions)]
             id: NEXT_HEAP.fetch_add(1, Ordering::Relaxed),
             #[cfg(debug_assertions)]
-            states: (0..capacity)
+            states: (0..capacity_blocks)
                 .map(|_| AtomicU8::new(State::Free as u8))
                 .collect(),
         };
-        for i in 0..capacity * LINES_PER_BLOCK {
+        for i in 0..capacity_blocks * LINES_PER_BLOCK {
             unsafe { region.line_live.add(i).write(AtomicU8::new(0)) };
         }
-        let owners = (0..capacity as u32)
+        let owners = (0..capacity_blocks as u32)
             .map(|index| OwnedBlock {
                 id: BlockId(index),
                 #[cfg(debug_assertions)]
@@ -186,7 +201,7 @@ impl<A: Allocator> Region<A> {
     }
 
     /// Number of blocks.
-    pub(crate) fn capacity(&self) -> usize {
+    pub(crate) fn n_blocks(&self) -> usize {
         self.capacity
     }
 
