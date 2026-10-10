@@ -1,7 +1,6 @@
 use std::thread::ThreadId;
 use std::collections::HashMap;
 use std::sync::LazyLock;
-use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
