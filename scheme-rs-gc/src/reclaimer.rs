@@ -9,7 +9,7 @@ use crate::{
     large::PAGE,
     large::Run,
     region::{
-        ALL_LINES, BLOCK_SIZE, BlockId, MIN_SIZE, OwnedBlock, ReclaimerToken, Region, State,
+        ALL_LINES, BLOCK_SIZE, BlockId, GRANULE, OwnedBlock, ReclaimerToken, Region, State,
         is_large,
     },
     sync::{MutexGuard, Ordering, lock},
@@ -87,7 +87,7 @@ impl<'h, M: ObjectModel, A: Allocator> Reclaimer<'h, M, A> {
         let region = &self.heap.region;
         let id = region.block_of(obj);
         let offset = region.offset_of(id, obj);
-        region.on_free(&self.state.token, id, offset, layout.size().max(MIN_SIZE));
+        region.on_free(&self.state.token, id, offset, layout.size().max(GRANULE));
         self.state.mark_dirty(id);
     }
 

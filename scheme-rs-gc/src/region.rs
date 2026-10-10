@@ -12,7 +12,7 @@ use std::sync::atomic::AtomicU32;
 
 use crate::large::LargeSpace;
 use crate::large::PAGE;
-use crate::sync::{AtomicU8, Ordering};
+use crate::sync::{AtomicU64, AtomicU8, Ordering};
 
 pub const BLOCK_SIZE: usize = 32 * 1024;
 pub const LINE_SIZE: usize = 256;
@@ -21,7 +21,8 @@ pub const MAX_ALIGN: usize = 64;
 
 /// Allocations are rounded up to this, which bounds a line's live count
 /// at 17 and matches LXR's RC granule.
-pub const MIN_SIZE: usize = 16;
+pub const GRANULE: usize = 16;
+pub const BITMAP_WORDS_PER_BLOCK: usize = BLOCK_SIZE / GRANULE / 64;
 
 pub(crate) const LINES_PER_BLOCK: usize = BLOCK_SIZE / LINE_SIZE;
 /// Every line of a block is a bump line.
@@ -44,7 +45,7 @@ pub(crate) fn lines(offset: usize, size: usize) -> RangeInclusive<usize> {
 /// `(start, end)` with `end` exclusive.
 pub(crate) fn take_hole(holes: &mut u128) -> Option<(usize, usize)> {
     if *holes == 0 {
-        return None;
+        return None
     }
     let start = holes.trailing_zeros() as usize;
     let end = start + (!(*holes >> start)).trailing_zeros() as usize;
@@ -104,18 +105,22 @@ pub(crate) struct ReclaimerToken {
 #[cfg(debug_assertions)]
 static NEXT_HEAP: AtomicU32 = AtomicU32::new(0);
 
+
+
 /// The heap's memory, allocated once: the line-count table first, then the
 /// blocks.
 ///
 /// ```text
-/// [ line_live | pad to BLOCK_SIZE | block 0 | block 1 | block n - 1 | large start | pad | page 0 | ... ]
+/// [ line_live | bitmap | pad to BLOCK_SIZE | block 0 | block 1 | block n - 1 | large start | pad | page 0 | ... ]
 /// ```
 ///
 /// It owns the allocator the memory came from and returns the memory to it
 /// on drop.
 pub(crate) struct Region<A: Allocator> {
     pub(crate) alloc: A,
-    base: NonNull<u8>,
+    // One bit per granule. A bit marks the first granule of an object.
+    bitmap: NonNull<AtomicU64>,
+    arena: NonNull<u8>,
     layout: Layout,
     /// `LINES_PER_BLOCK` live-object counts per block. The owner increments,
     /// the reclaimer decrements.
@@ -143,30 +148,29 @@ impl<A: Allocator> Region<A> {
         }
 
         // The largest product; once it fits, `capacity * LINES_PER_BLOCK` does.
-        let blocks_size = capacity_blocks.checked_mul(BLOCK_SIZE).ok_or(AllocError)?;
-        let table =
+        let line_table =
             Layout::array::<AtomicU8>(capacity_blocks * LINES_PER_BLOCK).map_err(|_| AllocError)?;
-        let blocks_at = table.size().next_multiple_of(BLOCK_SIZE);
+        let bitmap_at = line_table.size().next_multiple_of(align_of::<AtomicU64>());
+        let bitmap_layout = Layout::array::<AtomicU64>(capacity_blocks * BITMAP_WORDS_PER_BLOCK).map_err(|_| AllocError)?;
+        let blocks_at = (bitmap_at + bitmap_layout.size()).next_multiple_of(BLOCK_SIZE);
 
-        // Large space
-        // Large space gets the same heap, so that you can fill the entire heap with large objects if you want to.
-        let n_pages = blocks_size / PAGE;
-        let large_space_at = blocks_at + blocks_size;
+        // Large space gets the same address space as the heap, so that you can fill the entire heap with large objects if you want to.
+        let blocks_bytes = capacity_blocks.checked_mul(BLOCK_SIZE).ok_or(AllocError)?;
+        let n_pages = blocks_bytes / PAGE;
+        let large_space_at = blocks_at.checked_add(blocks_bytes).ok_or(AllocError)?;
+        let size = large_space_at.checked_add(LargeSpace::bytes_needed_for(n_pages)).ok_or(AllocError)?;
 
-        let layout = blocks_size
-            .checked_add(blocks_at)
-            .expect("Allocation error in allocating amount of blocks")
-            .checked_add(LargeSpace::bytes_needed_for(n_pages))
-            .and_then(|size| Layout::from_size_align(size, BLOCK_SIZE).ok())
-            .ok_or(AllocError)?;
+        let layout = Layout::from_size_align(size, BLOCK_SIZE)
+            .map_err(|_| AllocError)?;
         let base = alloc.allocate(layout)?.cast::<u8>();
 
         let large = unsafe { LargeSpace::init(base.byte_add(large_space_at).cast(), n_pages) };
         let region = Region {
             alloc,
-            base,
+            arena: base,
             layout,
             line_live: base.cast(),
+            bitmap: unsafe { base.byte_add(bitmap_at).cast() },
             blocks: unsafe { base.byte_add(blocks_at) },
             large,
             capacity: capacity_blocks,
@@ -180,6 +184,9 @@ impl<A: Allocator> Region<A> {
         for i in 0..capacity_blocks * LINES_PER_BLOCK {
             unsafe { region.line_live.add(i).write(AtomicU8::new(0)) };
         }
+        for i in 0..(capacity_blocks * BITMAP_WORDS_PER_BLOCK) {
+            unsafe { region.bitmap.add(i).write(AtomicU64::new(0)) };
+        }
         let owners = (0..capacity_blocks as u32)
             .map(|index| OwnedBlock {
                 id: BlockId(index),
@@ -190,6 +197,39 @@ impl<A: Allocator> Region<A> {
         Ok((region, owners))
     }
 
+    #[inline]
+    fn bitmap_word(&self, id: BlockId, granule: usize) -> &AtomicU64 {
+        unsafe { self.bitmap.add(id.index() * BITMAP_WORDS_PER_BLOCK + granule / 64).as_ref() }
+    }
+
+    #[inline]
+    fn mark_object_start(&self, id: BlockId, granule: usize) {
+        self.bitmap_word(id, granule).fetch_or(1 << (granule % 64), Ordering::Relaxed);
+    }
+
+    #[inline]
+    fn clear_object_start(&self, id: BlockId, granule: usize) {
+        self.bitmap_word(id, granule).fetch_and(!(1 << (granule % 64)), Ordering::Relaxed);
+    }
+
+    pub(crate) fn object_started_at_or_before(&self, addr: usize) -> Option<(BlockId, usize)> {
+        let offset = addr.wrapping_sub(self.blocks.addr().get());
+        if offset >= self.capacity * BLOCK_SIZE {
+            return None;
+        }
+        let id = BlockId((offset / BLOCK_SIZE) as u32);
+        let granule = offset % BLOCK_SIZE / GRANULE;
+        let mut mask = u64::MAX >> (63 - granule % 64);
+        for word in (0..=granule / 64).rev() {
+            let bits = self.bitmap_word(id, word * 64).load(Ordering::Relaxed) & mask;
+            if bits != 0 {
+                let start = word * 64 + 63 - bits.leading_zeros() as usize;
+                return Some((id, start * GRANULE));
+            }
+            mask = u64::MAX;
+        }
+        None
+    }
     /// # Safety
     ///
     /// At most one per region, held by the heap's reclaimer mutex.
@@ -219,8 +259,12 @@ impl<A: Allocator> Region<A> {
         BlockId((offset / BLOCK_SIZE) as u32)
     }
 
+    pub(crate) fn object_at(&self, id: BlockId, offset: usize) -> NonNull<u8> {
+        unsafe { self.block_start(id).byte_add(offset) }
+    }
+
     #[inline]
-    fn start(&self, id: BlockId) -> NonNull<u8> {
+    fn block_start(&self, id: BlockId) -> NonNull<u8> {
         unsafe { self.blocks.byte_add(id.index() * BLOCK_SIZE) }
     }
 
@@ -228,11 +272,11 @@ impl<A: Allocator> Region<A> {
     #[inline]
     pub(crate) fn base(&self, block: &OwnedBlock) -> NonNull<u8> {
         self.check_owner(block);
-        self.start(block.id)
+        self.block_start(block.id)
     }
 
     pub(crate) fn offset_of(&self, id: BlockId, obj: NonNull<u8>) -> usize {
-        obj.addr().get() - self.start(id).addr().get()
+        obj.addr().get() - self.block_start(id).addr().get()
     }
 
     #[inline]
@@ -262,6 +306,7 @@ impl<A: Allocator> Region<A> {
             let prev = self.line(block.id, line).fetch_add(1, Ordering::Relaxed);
             debug_assert!(prev < u8::MAX, "line {line} count overflow");
         }
+        self.mark_object_start(block.id, offset / GRANULE);
     }
 
     /// The reclaimer frees into blocks it may not own.
@@ -271,6 +316,7 @@ impl<A: Allocator> Region<A> {
             let prev = self.line(id, line).fetch_sub(1, Ordering::Relaxed);
             debug_assert!(prev > 0, "line {line} count underflow");
         }
+        self.clear_object_start(id, offset / GRANULE);
     }
 
     #[cfg(all(test, loom))]
@@ -307,9 +353,12 @@ impl<A: Allocator> Region<A> {
 impl<A: Allocator> Drop for Region<A> {
     fn drop(&mut self) {
         unsafe {
+            // this is needed because Loom makes real objects for atomics
             slice_from_raw_parts_mut(self.line_live.as_ptr(), self.capacity * LINES_PER_BLOCK)
                 .drop_in_place();
-            self.alloc.deallocate(self.base, self.layout);
+            slice_from_raw_parts_mut(self.bitmap.as_ptr(), self.capacity * BITMAP_WORDS_PER_BLOCK)
+                .drop_in_place();
+            self.alloc.deallocate(self.arena, self.layout);
         }
     }
 }
@@ -356,5 +405,21 @@ mod tests {
         assert_eq!(take_hole(&mut holes), None);
         let mut empty = 0;
         assert_eq!(take_hole(&mut empty), None);
+    }
+
+    #[test]
+    fn starts_are_found_from_interior_offsets() {
+        use allocator_api2::alloc::Global;
+        let (region, mut blocks) = Region::new_in(Global, BLOCK_SIZE).unwrap();
+        let block = blocks.pop().unwrap();
+        let base = region.base(&block).addr().get();
+        region.on_alloc(&block, 0, 32);
+        region.on_alloc(&block, 32, 1000);
+        assert_eq!(region.object_started_at_or_before(base), Some((block.id(), 0)));
+        assert_eq!(region.object_started_at_or_before(base + 31), Some((block.id(), 0)));
+        assert_eq!(region.object_started_at_or_before(base + 32), Some((block.id(), 32)));
+        assert_eq!(region.object_started_at_or_before(base + 1031), Some((block.id(), 32)));
+        assert_eq!(region.object_started_at_or_before(base - 1), None);
+        assert_eq!(region.object_started_at_or_before(base + BLOCK_SIZE), None);
     }
 }
