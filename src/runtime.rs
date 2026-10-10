@@ -6,7 +6,11 @@
 
 use crate::{
     ast::{Definitions, Primitive},
-    cps::{Cps, codegen::RuntimeFunctionsBuilder, compile::Compiler},
+    cps::{
+        Cps,
+        codegen::{JitEntryFn, RuntimeFunctionsBuilder, codegen_jit_entry_fn},
+        compile::Compiler,
+    },
     env::{Environment, Global, TopLevelEnvironment},
     exceptions::{Exception, SourceCache, raise},
     gc::{Gc, GcInner, Trace, init_gc},
@@ -15,20 +19,22 @@ use crate::{
     num,
     ports::{BufferMode, Port, Transcoder},
     proc::{
-        Application, Args, ContBarrier, ContPtr, ContinuationPtr, FuncPtr, JitPtr, ProcDebugInfo,
-        Procedure, ProcedureInner, UserPtr,
+        Application, Args, ContBarrier, FuncPtr, ProcDebugInfo, Procedure, ProcedureInner,
+        ReturnAddress,
     },
     registry::Registry,
     symbols::Symbol,
     syntax::{Span, Syntax},
     value::{Cell, TAG, UnpackedValue, Value},
 };
+use cranelift_jit::JITModule;
 use parking_lot::{Mutex, MutexGuard, RwLock};
 use scheme_rs_macros::{maybe_async, maybe_await, runtime_fn};
 use std::{
     collections::HashSet,
     mem::{ManuallyDrop, MaybeUninit},
     path::Path,
+    ptr::NonNull,
     sync::{Arc, LazyLock},
 };
 
@@ -159,20 +165,22 @@ impl Runtime {
         };
         let sender = { self.0.compilation_buffer_tx.clone() };
         let _ = maybe_await!(sender.send(task));
-        let entry_cont = maybe_await!(recv_continuation(completion_rx));
+        let jit = maybe_await!(recv_continuation(completion_rx));
         let mut barrier = ContBarrier::new();
-        let mut app = std::mem::MaybeUninit::<Application>::uninit();
-        entry_cont(
-            Value::undefined(),
-            Value::undefined(),
-            Value::undefined(),
-            Value::undefined(),
-            Value::null(),
-            &mut barrier,
-            &mut app,
-        );
-        let app = unsafe { app.assume_init() };
+        let app = self.enter_jit(jit, Args::empty(), &mut barrier);
         maybe_await!(app.eval(&mut barrier))
+    }
+
+    pub(crate) fn enter_jit(
+        &self,
+        jit: ReturnAddress,
+        args: Args,
+        barrier: &mut ContBarrier,
+    ) -> Application {
+        let mut out = MaybeUninit::uninit();
+        let Args([arg1, arg2, arg3, arg4, argn]) = args;
+        (self.0.jit_entry_fn)(jit, arg1, arg2, arg3, arg4, argn, barrier, &mut out);
+        unsafe { out.assume_init() }
     }
 
     pub fn source_cache(&self) -> MutexGuard<'_, SourceCache> {
@@ -202,7 +210,6 @@ type CompilationBufferTx = tokio::sync::mpsc::Sender<CompilationTask>;
 #[cfg(feature = "async")]
 type CompilationBufferRx = tokio::sync::mpsc::Receiver<CompilationTask>;
 
-#[derive(Trace)]
 pub(crate) struct RuntimeInner {
     /// Package registry
     pub(crate) registry: Registry,
@@ -210,8 +217,9 @@ pub(crate) struct RuntimeInner {
     compilation_buffer_tx: CompilationBufferTx,
     pub(crate) constants_pool: Mutex<EqualHashSet>,
     pub(crate) globals_pool: Mutex<HashSet<Global>>,
-    pub(crate) debug_info: DebugInfo,
     pub(crate) source_cache: Mutex<SourceCache>,
+    /// Function for jumping into JIT code
+    jit_entry_fn: JitEntryFn,
 }
 
 impl Default for RuntimeInner {
@@ -236,15 +244,22 @@ impl RuntimeInner {
     fn new() -> Self {
         // Ensure the GC is initialized:
         init_gc();
+
+        // Obtain the JIT entry function:
+        let mut module = make_jit_module();
+        let jit_entry_fn = codegen_jit_entry_fn(&mut module);
+
+        // Spawn the compilation task:
         let (compilation_buffer_tx, compilation_buffer_rx) = compilation_buffer();
-        std::thread::spawn(move || compilation_task(compilation_buffer_rx));
+        std::thread::spawn(move || compilation_task(module, compilation_buffer_rx));
+
         RuntimeInner {
             registry: Registry::new(),
             compilation_buffer_tx,
             constants_pool: Mutex::new(EqualHashSet::new()),
             globals_pool: Mutex::new(HashSet::new()),
-            debug_info: DebugInfo::default(),
             source_cache: Mutex::new(SourceCache::default()),
+            jit_entry_fn,
         }
     }
 }
@@ -262,14 +277,14 @@ impl DebugInfo {
 }
 
 #[cfg(not(feature = "async"))]
-type CompletionTx = std::sync::mpsc::SyncSender<ContinuationPtr>;
+type CompletionTx = std::sync::mpsc::SyncSender<ReturnAddress>;
 #[cfg(not(feature = "async"))]
-type CompletionRx = std::sync::mpsc::Receiver<ContinuationPtr>;
+type CompletionRx = std::sync::mpsc::Receiver<ReturnAddress>;
 
 #[cfg(feature = "async")]
-type CompletionTx = tokio::sync::oneshot::Sender<ContinuationPtr>;
+type CompletionTx = tokio::sync::oneshot::Sender<ReturnAddress>;
 #[cfg(feature = "async")]
-type CompletionRx = tokio::sync::oneshot::Receiver<ContinuationPtr>;
+type CompletionRx = tokio::sync::oneshot::Receiver<ReturnAddress>;
 
 #[cfg(not(feature = "async"))]
 fn completion() -> (CompletionTx, CompletionRx) {
@@ -282,12 +297,12 @@ fn completion() -> (CompletionTx, CompletionRx) {
 }
 
 #[cfg(not(feature = "async"))]
-fn recv_continuation(rx: CompletionRx) -> ContinuationPtr {
+fn recv_continuation(rx: CompletionRx) -> ReturnAddress {
     rx.recv().unwrap()
 }
 
 #[cfg(feature = "async")]
-async fn recv_continuation(rx: CompletionRx) -> ContinuationPtr {
+async fn recv_continuation(rx: CompletionRx) -> ReturnAddress {
     rx.await.unwrap()
 }
 
@@ -306,19 +321,24 @@ fn recv_compilation_task(rx: &mut CompilationBufferRx) -> Option<CompilationTask
     rx.blocking_recv()
 }
 
-fn compilation_task(mut compilation_queue_rx: CompilationBufferRx) {
+fn make_jit_module() -> JITModule {
     use cranelift::prelude::*;
-    use cranelift_jit::{JITBuilder, JITModule};
+    use cranelift_jit::JITBuilder;
 
     let mut flag_builder = settings::builder();
-    flag_builder.set("use_colocated_libcalls", "false").unwrap();
-    // FIXME set back to true once the x64 backend supports it.
-    flag_builder.set("is_pic", "false").unwrap();
+
+    // Return addresses must be 16 byte aligned to be stored in values:
+    flag_builder
+        .set("log2_min_function_alignment", "4")
+        .unwrap();
+
     // Cranelift's tail call implementation requires frame pointers:
     flag_builder.set("preserve_frame_pointers", "true").unwrap();
+
     let isa_builder = cranelift_native::builder().unwrap_or_else(|msg| {
         panic!("host machine is not supported: {msg}");
     });
+
     let isa = isa_builder
         .finish(settings::Flags::new(flag_builder))
         .unwrap();
@@ -329,7 +349,10 @@ fn compilation_task(mut compilation_queue_rx: CompilationBufferRx) {
         (runtime_fn.install_symbol)(&mut jit_builder);
     }
 
-    let mut module = JITModule::new(jit_builder);
+    JITModule::new(jit_builder)
+}
+
+fn compilation_task(mut module: JITModule, mut compilation_queue_rx: CompilationBufferRx) {
     let mut runtime_funcs_builder = RuntimeFunctionsBuilder::default();
 
     for runtime_fn in inventory::iter::<RuntimeFn> {
@@ -469,15 +492,15 @@ unsafe extern "C" fn apply(
 /// Return a pointer to a cranelift ABI function that can be tail-called, or a
 /// null ptr if it cannot.
 #[runtime_fn]
-unsafe extern "C" fn tail_callable(op: *const ()) -> *const u8 {
+unsafe extern "C" fn tail_callable(op: *const ()) -> Option<NonNull<u8>> {
     unsafe {
         let op = ManuallyDrop::new(Value::from_raw(op));
         if let UnpackedValue::Procedure(proc) = &*op.unpacked_ref()
-            && let FuncPtr::User(func, _) = proc.0.func
+            && let FuncPtr::User(func) = proc.0.func
         {
-            func.0
+            Some(func.0)
         } else {
-            std::ptr::null()
+            None
         }
     }
 }
@@ -678,22 +701,19 @@ unsafe extern "C" fn list(vals: *const *const (), num_vals: u32) -> *const () {
 /// Allocate a continuation
 #[runtime_fn]
 unsafe extern "C" fn push_continuation(
-    fn_ptr: *const u8,
-    entry: ContinuationPtr,
+    fn_ptr: NonNull<u8>,
     env: *const *const (),
     num_envs: u32,
-    num_required_args: u32,
-    variadic: bool,
     barrier: *mut ContBarrier,
 ) {
     unsafe {
         let barrier = barrier.as_mut().unwrap();
-        barrier.cont_stack.push(
-            ContPtr::JitCont(JitPtr(fn_ptr), entry),
-            (0..num_envs).map(|i| Value::from_raw_inc_rc(env.add(i as usize).read())),
-            num_required_args as usize,
-            variadic,
-        );
+        for i in 0..num_envs {
+            barrier
+                .call_stack
+                .push(Value::from_raw_inc_rc(env.add(i as usize).read()));
+        }
+        barrier.call_stack.push(Value::from(ReturnAddress(fn_ptr)));
     }
 }
 
@@ -720,21 +740,14 @@ unsafe extern "C" fn call_continuation(
 
 /// Pop the JIT continuation at the top of the stack, returning null if none exists.
 #[runtime_fn]
-unsafe extern "C" fn pop_jit_continuation(barrier: *mut ContBarrier) -> *const u8 {
-    unsafe {
-        barrier
-            .as_mut()
-            .unwrap()
-            .pop_jit_cont()
-            .map_or(std::ptr::null(), |func| func.as_ptr().cast_const())
-    }
+unsafe extern "C" fn pop_return_address(barrier: *mut ContBarrier) -> Option<ReturnAddress> {
+    unsafe { barrier.as_mut().unwrap().pop_return_address() }
 }
 
 /// Allocate a user function
 #[runtime_fn]
 unsafe extern "C" fn make_user(
-    fn_ptr: *const u8,
-    entry: UserPtr,
+    fn_ptr: NonNull<u8>,
     env: *const *const (),
     num_envs: u32,
     num_required_args: u32,
@@ -749,7 +762,7 @@ unsafe extern "C" fn make_user(
 
         let proc = Procedure(Gc::rooted(ProcedureInner::new(
             env,
-            FuncPtr::User(JitPtr(fn_ptr), entry),
+            FuncPtr::User(ReturnAddress(fn_ptr)),
             num_required_args as usize,
             variadic,
             arc_from_ptr(debug_info),

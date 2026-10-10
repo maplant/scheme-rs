@@ -4,21 +4,15 @@
 //! Presence of First-Class Continuations" by Robert Hieb, R. Kent Dybvig, and
 //! Carl Bruggeman.
 
-use scheme_rs_macros::rtd;
-
 use crate::{
     gc::{Gc, Trace},
-    records::{Embeddable, RecordTypeDescriptor},
     value::Value,
 };
 use std::{
     cell::UnsafeCell,
     mem::ManuallyDrop,
     ptr::NonNull,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 const BLOCK_SIZE: usize = 2048;
@@ -70,42 +64,52 @@ unsafe impl Trace for StackBlock {
     }
 }
 
+#[derive(Trace, Clone)]
+#[repr(transparent)]
+pub struct SealedStackRecord(Gc<SealedStackRecordInner>);
+
+impl SealedStackRecord {
+    fn split(&self) -> Option<SealedStackRecord> {
+        const MAX_CAP: usize = 1024;
+
+        (self.0.cap > MAX_CAP).then(|| {
+            // Split the next stack record into two
+            Self(Gc::new(SealedStackRecordInner {
+                segment: unsafe { self.0.segment.add(self.0.cap - MAX_CAP) },
+                cap: MAX_CAP,
+                block: self.0.block.clone(),
+                // Second part of the split:
+                next: Some(SealedStackRecord(Gc::new(SealedStackRecordInner {
+                    next: self.0.next.clone(),
+                    segment: self.0.segment,
+                    cap: self.0.cap - MAX_CAP,
+                    block: self.0.block.clone(),
+                }))),
+            }))
+        })
+    }
+}
+
+impl PartialEq for SealedStackRecord {
+    fn eq(&self, other: &Self) -> bool {
+        Gc::ptr_eq(&self.0, &other.0)
+    }
+}
+
 #[derive(Trace)]
-struct SealedStackRecord {
-    next: Option<Gc<SealedStackRecord>>,
+struct SealedStackRecordInner {
+    next: Option<SealedStackRecord>,
     #[trace(skip)]
     segment: NonNull<Value>,
     cap: usize,
     block: Gc<StackBlock>,
 }
 
-impl SealedStackRecord {
-    fn split(this: &Gc<Self>) -> Option<SealedStackRecord> {
-        const MAX_CAP: usize = 1024;
-
-        (this.cap > MAX_CAP).then(|| {
-            // Split the next stack record into two
-            SealedStackRecord {
-                segment: unsafe { this.segment.add(this.cap - MAX_CAP) },
-                cap: MAX_CAP,
-                block: this.block.clone(),
-                // Second part of the split:
-                next: Some(Gc::new(SealedStackRecord {
-                    next: this.next.clone(),
-                    segment: this.segment,
-                    cap: this.cap - MAX_CAP,
-                    block: this.block.clone(),
-                })),
-            }
-        })
-    }
-}
-
-unsafe impl Send for SealedStackRecord {}
-unsafe impl Sync for SealedStackRecord {}
+unsafe impl Send for SealedStackRecordInner {}
+unsafe impl Sync for SealedStackRecordInner {}
 
 pub struct StackRecord {
-    next: Option<Gc<SealedStackRecord>>,
+    next: Option<SealedStackRecord>,
     segment: NonNull<Value>,
     len: usize,
     cap: usize,
@@ -120,11 +124,11 @@ impl StackRecord {
         self.len == 0
     }
 
-    fn next(&self) -> &Gc<SealedStackRecord> {
+    fn next(&self) -> &SealedStackRecord {
         self.next.as_ref().unwrap()
     }
 
-    fn alloc(next: Option<Gc<SealedStackRecord>>) -> Self {
+    pub fn alloc(next: Option<SealedStackRecord>) -> Self {
         let block = StackBlock::new();
         Self {
             next,
@@ -135,17 +139,17 @@ impl StackRecord {
         }
     }
 
-    pub fn seal(&mut self) -> Gc<SealedStackRecord> {
+    pub fn seal(&mut self) -> SealedStackRecord {
         if self.is_empty() {
             return self.next().clone();
         }
 
-        let sealed = Gc::new(SealedStackRecord {
+        let sealed = SealedStackRecord(Gc::new(SealedStackRecordInner {
             next: self.next.clone(),
             cap: self.len,
             segment: self.segment,
             block: self.block.clone(),
-        });
+        }));
 
         self.block.sealed.fetch_add(self.len, Ordering::Release);
 
@@ -158,9 +162,9 @@ impl StackRecord {
     }
 
     #[inline]
-    pub fn reinstate(&mut self, new_stack: Gc<SealedStackRecord>) {
-        let new_stack = if let Some(new_next) = SealedStackRecord::split(&new_stack) {
-            Gc::new(new_next)
+    pub fn reinstate(&mut self, new_stack: SealedStackRecord) {
+        let new_stack = if let Some(new_next) = new_stack.split() {
+            new_next
         } else {
             new_stack
         };
@@ -174,24 +178,24 @@ impl StackRecord {
 
         // Copy the next segment into the current stack; allocate a new
         // segment if there's no room (or just enough room).
-        if new_stack.cap >= self.cap {
+        if new_stack.0.cap >= self.cap {
             *self = Self::alloc(self.next.clone());
         }
-        self.len = new_stack.cap;
+        self.len = new_stack.0.cap;
 
         // Clone over all of the values:
-        for i in 0..new_stack.cap {
+        for i in 0..new_stack.0.cap {
             unsafe {
                 self.segment
                     .add(i)
                     .write(Value::from_raw_inc_rc(Value::as_raw(
-                        new_stack.segment.add(i).as_ref(),
+                        new_stack.0.segment.add(i).as_ref(),
                     )));
             }
         }
 
         // Point to the next region:
-        self.next = new_stack.next.clone();
+        self.next = new_stack.0.next.clone();
     }
 
     pub fn pop(&mut self) -> Value {
@@ -221,6 +225,16 @@ impl StackRecord {
             *self = Self::alloc(next);
         }
     }
+
+    /// Returns the value on the top of the stack, panicking if none exists
+    pub fn top(&self) -> &Value {
+        if self.len == 0 {
+            let next_record = self.next.as_ref().unwrap();
+            unsafe { next_record.0.segment.add(next_record.0.cap - 1).as_ref() }
+        } else {
+            unsafe { self.segment.add(self.len - 1).as_ref() }
+        }
+    }
 }
 
 impl Drop for StackRecord {
@@ -229,23 +243,6 @@ impl Drop for StackRecord {
             unsafe {
                 let _ = self.segment.add(i).replace(Value::undefined());
             }
-        }
-    }
-}
-
-#[derive(Copy, Clone, Trace)]
-struct PromptBarrier(usize);
-
-unsafe impl Embeddable for PromptBarrier {
-    fn rtd() -> Arc<RecordTypeDescriptor>
-    where
-        Self: Sized,
-    {
-        rtd! {
-            name: "%prompt-barrier",
-            ty: PromptBarrier,
-            sealed: true,
-            opaque: true,
         }
     }
 }

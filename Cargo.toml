@@ -55,7 +55,7 @@ default = ["load-libraries-from-fs"]
 async = ["dep:futures", "dep:async-stream", "dep:async-lock"]
 lsp = ["dep:lsp-server", "dep:lsp-types", "dep:serde", "dep:serde_json"]
 load-libraries-from-fs = []
-continuation-marks = []
+# continuation-marks = []
 
 [profile.release]
 lto = true
