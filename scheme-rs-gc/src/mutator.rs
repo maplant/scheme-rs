@@ -4,7 +4,7 @@ use allocator_api2::alloc::{AllocError, Allocator, Global};
 
 use crate::{
     Heap, ObjectModel,
-    region::{ALL_LINES, LINE_SIZE, MIN_SIZE, OwnedBlock, Region, is_large, take_hole},
+    region::{ALL_LINES, LINE_SIZE, GRANULE, OwnedBlock, Region, is_large, take_hole},
     sync::Ordering,
 };
 
@@ -78,7 +78,7 @@ impl Bump {
         if is_large(layout) {
             return heap.alloc_large(layout);
         }
-        let layout = Layout::from_size_align(layout.size().max(MIN_SIZE), layout.align())
+        let layout = Layout::from_size_align(layout.size().max(GRANULE), layout.align().max(GRANULE))
             .expect("rounding up a valid layout");
         let obj = self.alloc_small(heap, layout)?;
         self.bytes += layout.size();

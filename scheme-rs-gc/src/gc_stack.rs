@@ -1,6 +1,10 @@
-use std::sync::atomic::AtomicUsize;
+#![allow(dead_code)]
+
 use std::sync::atomic::Ordering;
+
 use std::hint::black_box;
+
+use crate::sync::AtomicUsize;
 
 use parking_lot::{Mutex, MutexGuard};
 
