@@ -23,6 +23,7 @@ pub mod proc;
 pub mod records;
 pub mod registry;
 pub mod runtime;
+pub mod stack;
 pub mod strings;
 pub mod symbols;
 pub mod syntax;

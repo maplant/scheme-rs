@@ -91,8 +91,8 @@ use crate::{
     gc::{Gc, GcInner, Trace},
     lists::{self, Pair, PairInner},
     num::{ComplexNumber, Number, NumberInner, NumberRepr, SimpleNumber},
-    proc::{ContBarrier, Procedure, ProcedureInner},
-    records::{Embedded, Record, RecordInner, RecordTypeDescriptor},
+    proc::{ContBarrier, Procedure, ProcedureInner, ReturnAddress},
+    records::{Embeddable, Embedded, Record, RecordInner, RecordTypeDescriptor},
     registry::bridge,
     strings::WideString,
     symbols::Symbol,
@@ -107,7 +107,7 @@ use std::{
     marker::PhantomData,
     mem::ManuallyDrop,
     ops::Deref,
-    ptr::null,
+    ptr::{NonNull, null},
     sync::Arc,
 };
 
@@ -188,7 +188,7 @@ impl Value {
                 Tag::Cell => {
                     Gc::increment_reference_count(untagged as *mut GcInner<Value>);
                 }
-                Tag::FixNum | Tag::SmallValue => (),
+                Tag::ReturnAddress | Tag::FixNum | Tag::SmallValue => (),
             }
         }
         Self(raw)
@@ -264,7 +264,25 @@ impl Value {
     where
         for<'a> &'a Self: Into<Option<T>>,
     {
+        // TODO: this needs to be improved dramatically.
         self.into().is_some()
+    }
+
+    #[inline]
+    pub fn is_embedded<T: Embeddable>(&self) -> bool {
+        let tag = Tag::from(self.0 as usize & TAG);
+        if tag == Tag::Record
+            && let untagged = self.0.map_addr(|raw| raw & !TAG)
+            && !untagged.is_null()
+        {
+            let rec =
+                ManuallyDrop::new(unsafe { Gc::from_raw(untagged as *mut GcInner<RecordInner>) });
+            // TODO: Optimize by checking that both types aren't sealed before
+            // checking the inherits list.
+            rec.rtd().is_subtype_of(&T::rtd())
+        } else {
+            false
+        }
     }
 
     /// Attempt to cast the value and return a descriptive error on failure.
@@ -307,31 +325,28 @@ impl Value {
                 let clos = unsafe { Gc::from_raw(untagged as *mut GcInner<ProcedureInner>) };
                 UnpackedValue::Procedure(Procedure(clos))
             }
+            Tag::Record if untagged.is_null() => UnpackedValue::Undefined,
             Tag::Record => {
-                if untagged.is_null() {
-                    UnpackedValue::Undefined
-                } else {
-                    let rec = unsafe { Gc::from_raw(untagged as *mut GcInner<RecordInner>) };
-                    UnpackedValue::Record(Record(rec))
-                }
+                let rec = unsafe { Gc::from_raw(untagged as *mut GcInner<RecordInner>) };
+                UnpackedValue::Record(Record(rec))
             }
             Tag::RecordTypeDescriptor => {
                 let rt = unsafe { Arc::from_raw(untagged as *const RecordTypeDescriptor) };
                 UnpackedValue::RecordTypeDescriptor(rt)
             }
+            Tag::Pair if untagged.is_null() => UnpackedValue::Null,
             Tag::Pair => {
-                if untagged.is_null() {
-                    UnpackedValue::Null
-                } else {
-                    let pair = unsafe { Gc::from_raw(untagged as *mut GcInner<PairInner>) };
-                    UnpackedValue::Pair(Pair(pair))
-                }
+                let pair = unsafe { Gc::from_raw(untagged as *mut GcInner<PairInner>) };
+                UnpackedValue::Pair(Pair(pair))
             }
             Tag::Cell => {
                 let cell = unsafe { Gc::from_raw(untagged as *mut GcInner<RwLock<Value>>) };
                 UnpackedValue::Cell(Cell(cell))
             }
             Tag::FixNum => UnpackedValue::Number(Number(NumberRepr::Fixed(raw as i64 >> 1))),
+            Tag::ReturnAddress => UnpackedValue::ReturnAddress(ReturnAddress(
+                NonNull::new(untagged as *mut u8).unwrap(),
+            )),
         }
     }
 
@@ -393,6 +408,7 @@ impl Value {
             UnpackedValue::Record(record) => record.display_fmt(circular_values, f),
             UnpackedValue::RecordTypeDescriptor(rtd) => write!(f, "{rtd:?}"),
             UnpackedValue::Cell(cell) => cell.0.read().display_fmt(circular_values, f),
+            UnpackedValue::ReturnAddress(_) => write!(f, "%return-address"),
         }
     }
 
@@ -417,6 +433,7 @@ impl Value {
             UnpackedValue::Record(record) => record.debug_fmt(circular_values, f),
             UnpackedValue::RecordTypeDescriptor(rtd) => write!(f, "{rtd:?}"),
             UnpackedValue::Cell(cell) => cell.0.read().debug_fmt(circular_values, f),
+            UnpackedValue::ReturnAddress(_) => write!(f, "%return-address"),
         }
     }
 
@@ -447,6 +464,7 @@ impl Value {
         match &*unpacked {
             UnpackedValue::Undefined => (),
             UnpackedValue::Null => (),
+            UnpackedValue::ReturnAddress(_) => (),
             UnpackedValue::Boolean(b) => b.hash(state),
             UnpackedValue::Character(c) => c.hash(state),
             UnpackedValue::Number(n) => n.eq_hash(state),
@@ -466,6 +484,7 @@ impl Value {
         match &*unpacked {
             UnpackedValue::Undefined => (),
             UnpackedValue::Null => (),
+            UnpackedValue::ReturnAddress(_) => (),
             UnpackedValue::Boolean(b) => b.hash(state),
             UnpackedValue::Character(c) => c.hash(state),
             UnpackedValue::Number(n) => n.hash(state),
@@ -493,6 +512,7 @@ impl Value {
         match &*unpacked {
             UnpackedValue::Undefined => (),
             UnpackedValue::Null => (),
+            UnpackedValue::ReturnAddress(_) => (),
             UnpackedValue::Boolean(b) => b.hash(state),
             UnpackedValue::Character(c) => c.hash(state),
             UnpackedValue::Number(n) => n.hash(state),
@@ -544,9 +564,15 @@ impl Drop for Value {
                     }
                 }
                 Tag::Cell => drop(Gc::from_raw(untagged as *mut GcInner<RwLock<Value>>)),
-                Tag::FixNum | Tag::SmallValue => (),
+                Tag::ReturnAddress | Tag::FixNum | Tag::SmallValue => (),
             }
         }
+    }
+}
+
+impl Default for Value {
+    fn default() -> Self {
+        Self::undefined()
     }
 }
 
@@ -682,6 +708,7 @@ pub(crate) enum Tag {
     Record = 4 << 1,
     RecordTypeDescriptor = 5 << 1,
     Cell = 6 << 1,
+    ReturnAddress = 7 << 1,
 }
 
 // TODO: Make TryFrom with error
@@ -703,6 +730,8 @@ impl From<usize> for Tag {
             Self::RecordTypeDescriptor
         } else if tag == Self::Cell as usize {
             Self::Cell
+        } else if tag == Self::ReturnAddress as usize {
+            Self::ReturnAddress
         } else {
             panic!("Invalid tag: {tag}")
         }
@@ -742,6 +771,7 @@ pub enum UnpackedValue {
     RecordTypeDescriptor(Arc<RecordTypeDescriptor>),
     Pair(Pair),
     Cell(Cell),
+    ReturnAddress(ReturnAddress),
 }
 
 impl UnpackedValue {
@@ -786,6 +816,9 @@ impl UnpackedValue {
             Self::Cell(cell) => {
                 let untagged = Gc::into_raw(cell.0);
                 Value::from_mut_ptr_and_tag(untagged, Tag::Cell)
+            }
+            Self::ReturnAddress(ret) => {
+                Value::from_ptr_and_tag(ret.0.as_ptr() as *const u8, Tag::ReturnAddress)
             }
         }
     }
@@ -844,6 +877,7 @@ impl UnpackedValue {
             Self::Procedure(_) => Symbol::intern("procedure").to_str(),
             Self::Record(record) => record.rtd().name.to_str(),
             Self::RecordTypeDescriptor(_) => Symbol::intern("rtd").to_str(),
+            Self::ReturnAddress(_) => Symbol::intern("%return-address").to_str(),
             Self::Cell(cell) => cell.0.read().type_name(),
         }
     }
@@ -857,7 +891,7 @@ impl UnpackedValue {
             Self::Character(_) => ValueType::Character,
             Self::Symbol(_) => ValueType::Symbol,
             Self::Pair(_) => ValueType::Pair,
-            Self::Procedure(_) => ValueType::Procedure,
+            Self::Procedure(_) | Self::ReturnAddress(_) => ValueType::Procedure,
             Self::Record(_) => ValueType::Record,
             Self::RecordTypeDescriptor(_) => ValueType::RecordTypeDescriptor,
             Self::Cell(cell) => cell.0.read().type_of(),
@@ -1178,6 +1212,7 @@ impl_try_from_value_for!(Symbol, Symbol, "symbol");
 impl_try_from_value_for!(Procedure, Procedure, "procedure");
 impl_try_from_value_for!(Pair, Pair, "pair");
 impl_try_from_value_for!(Record, Record, "record");
+impl_try_from_value_for!(ReturnAddress, ReturnAddress, "%return-address");
 impl_try_from_value_for!(Arc<RecordTypeDescriptor>, RecordTypeDescriptor, "rt");
 
 impl From<UnpackedValue> for Option<(Value, Value)> {

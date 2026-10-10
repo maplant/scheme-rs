@@ -644,6 +644,11 @@ impl RecordInner {
             Some(fields_end.add(fields_end.align_offset(vtable.layout.align())) as *mut ())
         }
     }
+
+    #[inline]
+    pub(crate) fn rtd(&self) -> &Arc<RecordTypeDescriptor> {
+        &self.rtd
+    }
 }
 
 unsafe impl Trace for RecordInner {
