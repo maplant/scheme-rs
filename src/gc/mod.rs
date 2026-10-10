@@ -15,7 +15,7 @@
 mod collection;
 
 pub use collection::collect_garbage;
-pub use scheme_rs_gc::{OpaqueGcPtr, init_gc};
+pub use scheme_rs_gc::{HeapAlreadyCreated, OpaqueGcPtr, init_gc, set_heap_size};
 pub use scheme_rs_macros::Trace;
 
 use std::{
@@ -32,7 +32,7 @@ use std::{
     sync::atomic::Ordering,
 };
 
-use scheme_rs_gc::{GcHeader, VTable};
+use scheme_rs_gc::{GcHeader, VTable, alloc};
 
 use crate::Either;
 
@@ -58,11 +58,16 @@ impl<T: Send + GcOrTrace + 'static> Gc<T> {
     /// Allocate a new object and do not track it. The object will only become
     /// tracked when it is called with `unroot`.
     pub(crate) fn rooted(data: T) -> Gc<T> {
-        Self {
-            ptr: NonNull::from(Box::leak(Box::new(GcInner {
-                header: UnsafeCell::new(GcHeader::new(Layout::new::<GcInner<T>>())),
+        let layout = Layout::new::<GcInner<T>>();
+        let ptr = alloc(layout).cast::<GcInner<T>>();
+        unsafe {
+            ptr.write(GcInner {
+                header: UnsafeCell::new(GcHeader::new(layout)),
                 data: UnsafeCell::new(data),
-            }))),
+            })
+        };
+        Self {
+            ptr,
             marker: PhantomData,
         }
     }
