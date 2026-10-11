@@ -117,9 +117,9 @@ unsafe impl Sync for ReturnAddress {}
 
 /// An opaque pointer to the tail calling convention body of a JIT compiled
 /// user function
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Trace)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[repr(transparent)]
-pub struct UserPtr(#[trace(skip)] pub(crate) NonNull<u8>);
+pub struct UserPtr(pub(crate) NonNull<u8>);
 
 unsafe impl Send for UserPtr {}
 unsafe impl Sync for UserPtr {}
