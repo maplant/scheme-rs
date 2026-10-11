@@ -141,7 +141,7 @@ pub(crate) struct RuntimeFunctions {
 }
 
 pub(crate) type JitContEntryFn = extern "C" fn(
-    ReturnAddress,
+    ret_addr: ReturnAddress,
     arg1: RuntimeValue,
     arg2: RuntimeValue,
     arg3: RuntimeValue,
@@ -188,8 +188,8 @@ pub(crate) fn codegen_jit_cont_entry_fn(module: &mut JITModule) -> JitContEntryF
 }
 
 pub(crate) type JitUserEntryFn = extern "C" fn(
-    UserPtr,
-    Procedure,
+    user_ptr: UserPtr,
+    env: Procedure,
     arg1: RuntimeValue,
     arg2: RuntimeValue,
     arg3: RuntimeValue,

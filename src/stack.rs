@@ -28,8 +28,7 @@ unsafe impl Sync for StackBlock {}
 
 impl StackBlock {
     fn new() -> Gc<Self> {
-        let slots =
-            unsafe { NonNull::new_unchecked(Box::into_raw(Box::new_zeroed().assume_init())) };
+        let slots = unsafe { Box::into_non_null(Box::new_zeroed().assume_init()) };
         Gc::new(Self {
             slots,
             sealed: AtomicUsize::new(0),
@@ -41,9 +40,9 @@ unsafe impl Trace for StackBlock {
     unsafe fn visit_children(&self, visitor: &mut dyn FnMut(crate::gc::OpaqueGcPtr)) {
         let sealed = self.sealed.load(Ordering::Acquire);
         let slots = unsafe { self.slots.as_ref() };
-        for i in 0..sealed {
+        for slot in slots.iter().take(sealed) {
             unsafe {
-                (*slots[i].get()).visit_children(visitor);
+                (*slot.get()).visit_children(visitor);
             }
         }
     }

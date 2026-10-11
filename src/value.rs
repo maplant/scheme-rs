@@ -771,7 +771,7 @@ pub enum UnpackedValue {
     RecordTypeDescriptor(Arc<RecordTypeDescriptor>),
     Pair(Pair),
     Cell(Cell),
-    ReturnAddress(ReturnAddress),
+    ReturnAddress(#[trace(skip)] ReturnAddress),
 }
 
 impl UnpackedValue {

@@ -108,9 +108,9 @@ use std::{
 
 /// An opaque pointer to the tail calling convention body of a JIT compiled
 /// continuation
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Trace)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[repr(transparent)]
-pub struct ReturnAddress(#[trace(skip)] pub(crate) NonNull<u8>);
+pub struct ReturnAddress(pub(crate) NonNull<u8>);
 
 unsafe impl Send for ReturnAddress {}
 unsafe impl Sync for ReturnAddress {}
@@ -1379,7 +1379,7 @@ impl From<CapturedProgramState> for ContBarrier<'_> {
     fn from(value: CapturedProgramState) -> Self {
         ContBarrier {
             state: value.state,
-            call_stack: StackRecord::alloc(Some(value.call_stack.clone())),
+            call_stack: StackRecord::alloc(Some(value.call_stack)),
             ..Default::default()
         }
     }
@@ -1727,19 +1727,25 @@ fn unwind_to_prompt(env: [Value; 3], _args: Rest, barrier: &mut ContBarrier) -> 
 
 #[bridge]
 fn delimited_continuation(
-    #[env] saved_state: Embedded<CapturedProgramState>,
+    #[env] new_program_state: Embedded<CapturedProgramState>,
     #[rest_args] rest_args: Value,
     barrier: &mut ContBarrier,
 ) -> Result<Application, Exception> {
+    if new_program_state.id != barrier.id {
+        return Err(Exception::error("attempt to cross continuation barrier"));
+    }
+
     let caller = barrier.call_stack.seal();
-    barrier.call_stack.reinstate(saved_state.call_stack.clone());
+    barrier
+        .call_stack
+        .reinstate(new_program_state.call_stack.clone());
     barrier.push_dyn_stack(DynStackElem::ContSwap(caller));
 
     // Restore the captured dynamic stack entries and rewind
     barrier.push_cont(
         [
             rest_args,
-            Value::from(saved_state),
+            Value::from(new_program_state),
             Value::from(0),
             Value::from(false),
         ],
