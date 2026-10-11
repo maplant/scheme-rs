@@ -115,6 +115,15 @@ pub struct ReturnAddress(#[trace(skip)] pub(crate) NonNull<u8>);
 unsafe impl Send for ReturnAddress {}
 unsafe impl Sync for ReturnAddress {}
 
+/// An opaque pointer to the tail calling convention body of a JIT compiled
+/// user function
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Trace)]
+#[repr(transparent)]
+pub struct UserPtr(#[trace(skip)] pub(crate) NonNull<u8>);
+
+unsafe impl Send for UserPtr {}
+unsafe impl Sync for UserPtr {}
+
 /// A function pointer to a sync Rust bridge function.
 pub type BridgePtr = extern "C" fn(
     proc: Procedure,
@@ -330,7 +339,7 @@ pub(crate) enum FuncPtr {
     /// An async function defined in Rust
     AsyncBridge(AsyncBridgePtr),
     /// A JIT compiled user function: its tail callable body
-    User(ReturnAddress),
+    User(UserPtr),
     /// A known function
     Known(KnownFunc),
 }
@@ -1294,21 +1303,17 @@ impl<'a> ContBarrier<'a> {
     }
 
     pub fn call_cont(&mut self, args: Args) -> Application {
-        loop {
-            let ret_addr = self.call_stack.pop();
-            if let Some(ret_addr) = ret_addr.cast::<ReturnAddress>() {
-                // Return the JIT continuation to the trampoline. When
-                // `become` is stabalized this will no longer be necessary.
-                return Application {
-                    op: OpType::ReturnAddr(ret_addr),
-                    args,
-                };
-            } else if let Some(rust_cont) = ret_addr.cast::<Embedded<RustContinuation>>() {
-                return (rust_cont.0)(args, self);
-            } else {
-                // Must be a prompt barrier
-                self.pop_dyn_stack();
+        let ret_addr = self.call_stack.pop();
+        if let Some(ret_addr) = ret_addr.cast::<ReturnAddress>() {
+            // Return the JIT continuation to the trampoline. When
+            // `become` is stabalized this will no longer be necessary.
+            Application {
+                op: OpType::ReturnAddr(ret_addr),
+                args,
             }
+        } else {
+            let rust_cont = ret_addr.cast::<Embedded<RustContinuation>>().unwrap();
+            (rust_cont.0)(args, self)
         }
     }
 
@@ -1324,10 +1329,11 @@ impl<'a> ContBarrier<'a> {
 
     pub(crate) fn pop_return_address(&mut self) -> Option<ReturnAddress> {
         let top = self.call_stack.top();
-        if top.is_embedded::<RustContinuation>() {
-            None
+        if let Some(ret_addr) = top.cast() {
+            let _ = self.call_stack.pop();
+            Some(ret_addr)
         } else {
-            self.call_stack.pop().cast()
+            None
         }
     }
 }
@@ -1657,14 +1663,8 @@ pub fn call_with_prompt(
 }
 
 pub(crate) fn exit_prompt(_env: [Value; 0], args: Rest, barrier: &mut ContBarrier) -> Application {
-    match barrier.pop_dyn_stack() {
-        Some(DynStackElem::Prompt(Prompt { k, .. })) => {
-            barrier.call_stack.reinstate(k);
-        }
-        Some(DynStackElem::ContSwap(k)) => {
-            barrier.call_stack.reinstate(k);
-        }
-        _ => unreachable!(),
+    if let Some(DynStackElem::ContSwap(k)) = barrier.pop_dyn_stack() {
+        barrier.call_stack.reinstate(k);
     }
     barrier.call_cont(Args::from_list(args.0))
 }

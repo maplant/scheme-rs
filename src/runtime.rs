@@ -23,7 +23,7 @@ use crate::{
     ports::{BufferMode, Port, Transcoder},
     proc::{
         Application, Args, ContBarrier, FuncPtr, ProcDebugInfo, Procedure, ProcedureInner,
-        ReturnAddress,
+        ReturnAddress, UserPtr,
     },
     registry::Registry,
     symbols::Symbol,
@@ -188,7 +188,7 @@ impl Runtime {
 
     pub(crate) fn enter_jit_user(
         &self,
-        jit: ReturnAddress,
+        jit: UserPtr,
         proc: Procedure,
         args: Args,
         barrier: &mut ContBarrier,
@@ -783,7 +783,7 @@ unsafe extern "C" fn make_user(
 
         let proc = Procedure(Gc::rooted(ProcedureInner::new(
             env,
-            FuncPtr::User(ReturnAddress(fn_ptr)),
+            FuncPtr::User(UserPtr(fn_ptr)),
             num_required_args as usize,
             variadic,
             arc_from_ptr(debug_info),

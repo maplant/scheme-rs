@@ -17,7 +17,7 @@ use crate::{
         Value as CpsValue,
         analysis::{Escaping, FreeVariables, Liveness},
     },
-    proc::{Application, ContBarrier, ProcDebugInfo, Procedure, ReturnAddress},
+    proc::{Application, ContBarrier, ProcDebugInfo, Procedure, ReturnAddress, UserPtr},
     runtime::{DebugInfo, Runtime},
     value::{
         FALSE_VALUE, FIXNUM_MAX, FIXNUM_MIN, NULL_VALUE, TAG, TRUE_VALUE, Tag, UNDEFINED_VALUE,
@@ -188,7 +188,7 @@ pub(crate) fn codegen_jit_cont_entry_fn(module: &mut JITModule) -> JitContEntryF
 }
 
 pub(crate) type JitUserEntryFn = extern "C" fn(
-    ReturnAddress,
+    UserPtr,
     Procedure,
     arg1: RuntimeValue,
     arg2: RuntimeValue,
