@@ -87,6 +87,40 @@ impl SealedStackRecord {
             }))
         })
     }
+
+    fn relink(&self, skip: usize, next: Option<Self>) -> Option<Self> {
+        let cap = self.0.cap - skip;
+        if cap == 0 {
+            next
+        } else {
+            Some(Self(Gc::new(SealedStackRecordInner {
+                next,
+                segment: unsafe { self.0.segment.add(skip) },
+                cap,
+                block: self.0.block.clone(),
+            })))
+        }
+    }
+
+    #[stacksafe::stacksafe]
+    pub fn delimit(&self, base: &Self) -> Option<Self> {
+        let next = self.0.next.as_ref().unwrap();
+        if next == base {
+            // Drop the exit return address
+            self.relink(1, None)
+        } else {
+            self.relink(0, next.delimit(base))
+        }
+    }
+
+    #[stacksafe::stacksafe]
+    pub fn splice_onto(&self, bottom: Self) -> Self {
+        let below = match &self.0.next {
+            Some(next) => next.splice_onto(bottom),
+            None => bottom,
+        };
+        self.relink(0, Some(below)).unwrap()
+    }
 }
 
 impl PartialEq for SealedStackRecord {

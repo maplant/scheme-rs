@@ -1105,12 +1105,12 @@ pub struct ContBarrier<'a> {
     params: HashMap<Symbol, Param<'a>>,
 }
 
+static NEXT_BARRIER_ID: AtomicUsize = AtomicUsize::new(0);
+
 impl<'a> ContBarrier<'a> {
     pub fn new() -> Self {
-        static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
-
         let mut this = Self {
-            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+            id: NEXT_BARRIER_ID.fetch_add(1, Ordering::Relaxed),
             state: DynState::default(),
             call_stack: StackRecord::alloc(None),
             params: HashMap::new(),
@@ -1122,8 +1122,8 @@ impl<'a> ContBarrier<'a> {
         this
     }
 
-    pub fn save(&mut self) -> CapturedProgramState {
-        CapturedProgramState {
+    pub fn save(&mut self) -> CapturedContinuation {
+        CapturedContinuation {
             id: self.id,
             state: self.state.clone(),
             call_stack: self.call_stack.seal(),
@@ -1359,13 +1359,13 @@ where
 
 /// A copy of [`ContBarrier`] without mutable parameters
 #[derive(Clone, Trace)]
-pub struct CapturedProgramState {
+pub struct CapturedContinuation {
     id: usize,
     state: DynState,
     call_stack: SealedStackRecord,
 }
 
-impl CapturedProgramState {
+impl CapturedContinuation {
     pub(crate) fn dyn_stack_get(&self, idx: usize) -> Option<&DynStackElem> {
         self.state.dyn_stack.get(idx)
     }
@@ -1375,12 +1375,13 @@ impl CapturedProgramState {
     }
 }
 
-impl From<CapturedProgramState> for ContBarrier<'_> {
-    fn from(value: CapturedProgramState) -> Self {
+impl From<CapturedContinuation> for ContBarrier<'_> {
+    fn from(value: CapturedContinuation) -> Self {
         ContBarrier {
+            id: NEXT_BARRIER_ID.fetch_add(1, Ordering::Relaxed),
             state: value.state,
             call_stack: StackRecord::alloc(Some(value.call_stack)),
-            ..Default::default()
+            params: HashMap::default(),
         }
     }
 }
@@ -1405,16 +1406,15 @@ impl DynState {
     }
 }
 
-unsafe impl Embeddable for CapturedProgramState {
+unsafe impl Embeddable for CapturedContinuation {
     fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(ty: CapturedProgramState, name: "%dynamic-state", sealed: true, opaque: true)
+        rtd!(ty: CapturedContinuation, name: "%dynamic-state", sealed: true, opaque: true)
     }
 }
 
 #[derive(Clone, PartialEq, Trace)]
 pub(crate) enum DynStackElem {
     Prompt(Prompt),
-    ContSwap(SealedStackRecord),
     Winder(Winder),
     ExceptionHandler(Procedure),
     CurrentInputPort(Port),
@@ -1475,7 +1475,7 @@ pub fn call_with_current_continuation(proc: Procedure, barrier: &mut ContBarrier
 /// and creates a closure that calls the appropriate winders.
 #[bridge]
 fn escape_proc(
-    #[env] new_program_state: Embedded<CapturedProgramState>,
+    #[env] new_program_state: Embedded<CapturedContinuation>,
     #[rest_args] args: Value,
     barrier: &mut ContBarrier,
 ) -> Result<Application, Exception> {
@@ -1495,7 +1495,7 @@ fn unwind(env: [Value; 2], _args: Rest, barrier: &mut ContBarrier) -> Applicatio
     let [args, dest_stack_val] = env;
     let dest_stack = dest_stack_val
         .clone()
-        .try_to::<Embedded<CapturedProgramState>>()
+        .try_to::<Embedded<CapturedContinuation>>()
         .unwrap();
     let dest_stack_read = dest_stack.as_ref();
 
@@ -1526,7 +1526,7 @@ fn wind(env: [Value; 3], _args: Rest, barrier: &mut ContBarrier) -> Application 
     let [args, dest_stack_val, winder] = env;
     let dest_stack = dest_stack_val
         .clone()
-        .try_to::<Embedded<CapturedProgramState>>()
+        .try_to::<Embedded<CapturedContinuation>>()
         .unwrap();
     let dest_stack_read = dest_stack.as_ref();
 
@@ -1648,6 +1648,33 @@ pub(crate) struct Prompt {
     k: SealedStackRecord,
 }
 
+#[derive(Trace)]
+struct DelimitedContinuation {
+    id: usize,
+    state: DynState,
+    delim_call_stack: Option<SealedStackRecord>,
+}
+
+unsafe impl Embeddable for DelimitedContinuation {
+    fn rtd() -> Arc<RecordTypeDescriptor>
+    where
+        Self: Sized,
+    {
+        rtd! {
+            ty: DelimitedContinuation,
+            name: "%delimited-continuation",
+            sealed: true,
+            opaque: true,
+        }
+    }
+}
+
+impl DelimitedContinuation {
+    pub(crate) fn dyn_stack_get(&self, idx: usize) -> Option<&DynStackElem> {
+        self.state.dyn_stack.get(idx)
+    }
+}
+
 #[bridge(name = "call-with-prompt", lib = "(prompts)")]
 pub fn call_with_prompt(
     tag: Symbol,
@@ -1657,16 +1684,8 @@ pub fn call_with_prompt(
 ) -> Application {
     let k = barrier.call_stack.seal();
     barrier.push_dyn_stack(DynStackElem::Prompt(Prompt { tag, handler, k }));
-    barrier.push_cont([], exit_prompt);
-
+    barrier.push_cont([], pop_dyn_stack);
     Application::new(thunk, Args::pack([]))
-}
-
-pub(crate) fn exit_prompt(_env: [Value; 0], args: Rest, barrier: &mut ContBarrier) -> Application {
-    if let Some(DynStackElem::ContSwap(k)) = barrier.pop_dyn_stack() {
-        barrier.call_stack.reinstate(k);
-    }
-    barrier.call_cont(Args::from_list(args.0))
 }
 
 #[bridge(name = "abort-to-prompt", lib = "(prompts)")]
@@ -1695,19 +1714,19 @@ fn unwind_to_prompt(env: [Value; 3], _args: Rest, barrier: &mut ContBarrier) -> 
                 k,
             })) if prompt_tag == tag => {
                 let saved_barrier = saved_barrier
-                    .try_to::<Embedded<CapturedProgramState>>()
+                    .try_to::<Embedded<CapturedContinuation>>()
                     .unwrap();
-                let delimited_state = CapturedProgramState {
+                let delimited = DelimitedContinuation {
                     id: saved_barrier.id,
                     state: DynState {
                         dyn_stack: saved_barrier.as_ref().state.dyn_stack
                             [barrier.dyn_stack_len() + 1..]
                             .to_vec(),
                     },
-                    call_stack: barrier.call_stack.seal(),
+                    delim_call_stack: saved_barrier.call_stack.delimit(&k),
                 };
                 let delimited_escape_proc = Procedure::new(
-                    vec![Value::from(delimited_state)],
+                    vec![Value::from(delimited)],
                     FuncPtr::Bridge(delimited_continuation),
                     0,
                     true,
@@ -1727,7 +1746,7 @@ fn unwind_to_prompt(env: [Value; 3], _args: Rest, barrier: &mut ContBarrier) -> 
 
 #[bridge]
 fn delimited_continuation(
-    #[env] new_program_state: Embedded<CapturedProgramState>,
+    #[env] new_program_state: Embedded<DelimitedContinuation>,
     #[rest_args] rest_args: Value,
     barrier: &mut ContBarrier,
 ) -> Result<Application, Exception> {
@@ -1736,10 +1755,11 @@ fn delimited_continuation(
     }
 
     let caller = barrier.call_stack.seal();
-    barrier
-        .call_stack
-        .reinstate(new_program_state.call_stack.clone());
-    barrier.push_dyn_stack(DynStackElem::ContSwap(caller));
+    if let Some(delim_call_stack) = &new_program_state.delim_call_stack {
+        barrier
+            .call_stack
+            .reinstate(delim_call_stack.splice_onto(caller));
+    }
 
     // Restore the captured dynamic stack entries and rewind
     barrier.push_cont(
@@ -1758,7 +1778,7 @@ fn wind_delim(env: [Value; 4], _args: Rest, barrier: &mut ContBarrier) -> Applic
     let [args, dest_stack_val, idx, winder] = env;
     let dest_stack = dest_stack_val
         .clone()
-        .try_to::<Embedded<CapturedProgramState>>()
+        .try_to::<Embedded<DelimitedContinuation>>()
         .unwrap();
     let mut idx: usize = idx.cast().unwrap();
 
