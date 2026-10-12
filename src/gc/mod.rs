@@ -27,7 +27,7 @@ use std::{
     mem::ManuallyDrop,
     ops::Deref,
     path::PathBuf,
-    ptr::{NonNull, drop_in_place},
+    ptr::{NonNull, addr_of_mut, drop_in_place},
 };
 
 pub(crate) use collection::unroot;
@@ -57,12 +57,33 @@ impl<T: Send + GcOrTrace + 'static> Gc<T> {
     /// tracked when it is called with `unroot`.
     pub(crate) fn rooted(data: T) -> Gc<T> {
         Self {
-            ptr: NonNull::from(Box::leak(Box::new(GcInner {
+            ptr: Box::into_non_null(Box::new(GcInner {
                 header: UnsafeCell::new(GcHeader::new::<T>()),
                 data: UnsafeCell::new(data),
-            }))),
+            })),
             marker: PhantomData,
         }
+    }
+
+    /// Allocate a new, zeroed `T` in place.
+    ///
+    /// # Safety
+    ///
+    /// `T` must be valid with a zeroed bit pattern
+    pub(crate) unsafe fn new_zeroed() -> Gc<T> {
+        let mut new_zeroed = Box::<GcInner<T>>::new_zeroed();
+        unsafe {
+            addr_of_mut!((*new_zeroed.as_mut_ptr()).header)
+                .write(UnsafeCell::new(GcHeader::new::<T>()));
+        }
+        let new_gc = Self {
+            ptr: Box::into_non_null(unsafe { new_zeroed.assume_init() }),
+            marker: PhantomData,
+        };
+        unsafe {
+            unroot(&new_gc, Layout::new::<GcInner<T>>());
+        }
+        new_gc
     }
 }
 

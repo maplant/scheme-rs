@@ -947,6 +947,7 @@ pub fn raise_builtin(obj: Value, barrier: &mut ContBarrier) -> Application {
 
 /// Raises a non-continuable exception to the current exception handler.
 pub fn raise(raised: Value, barrier: &mut ContBarrier) -> Application {
+    /*
     #[cfg(feature = "continuation-marks")]
     let raised = if let Some(condition) = raised.cast::<Exception>() {
         let trace = barrier.current_marks(crate::symbols::Symbol::intern("trace"));
@@ -954,6 +955,7 @@ pub fn raise(raised: Value, barrier: &mut ContBarrier) -> Application {
     } else {
         raised
     };
+    */
 
     barrier.push_cont([raised], unwind_to_exception_handler);
     barrier.call_cont(Args::pack([]))
