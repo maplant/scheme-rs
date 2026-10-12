@@ -516,11 +516,46 @@ impl CompilationUnit<'_, '_> {
         cell_value
     }
 
+    /// branch on whether the value is on the heap before calling the runtime, bceause immediates
+    /// non heap values dont need reference-count interaction(s)
+    fn needs_rc_codegen(&mut self, val: Value) -> Value {
+        // bit 0 set = fixnum
+        let fix = self.builder.ins().band_imm_s(val, 1);
+        let not_fix = self.builder.ins().icmp_imm_s(IntCC::Equal, fix, 0);
+        // tag 2 = SmallValue (char/bool/symbol); note Procedure (6) and RecordTypeDescriptor (10)
+        // also have bit 1 set, so the tag must be compared whole
+        let tag = self.builder.ins().band_imm_s(val, TAG as i64);
+        let not_small = self
+            .builder
+            .ins()
+            .icmp_imm_s(IntCC::NotEqual, tag, Tag::SmallValue as i64);
+        // null and undefined are a null pointer with a tag, so the pointer part is zero
+        let upper = self.builder.ins().band_imm_s(val, !(TAG as i64));
+        let upper_nonzero = self.builder.ins().icmp_imm_s(IntCC::NotEqual, upper, 0);
+        let heap = self.builder.ins().band(not_fix, not_small);
+        self.builder.ins().band(heap, upper_nonzero)
+    }
+
     fn drop_value_codegen(&mut self, val: Value) {
+        let needs_rc = self.needs_rc_codegen(val);
+        let slow_block = self.builder.create_block();
+        let merge_block = self.builder.create_block();
+
+        // immediates skip, heap values use dropv
+        self.builder
+            .ins()
+            .brif(needs_rc, slow_block, &[], merge_block, &[]);
+        self.builder.switch_to_block(slow_block);
+        self.builder.seal_block(slow_block);
         let dropv = self
             .module
             .declare_func_in_func(self.runtime_funcs.dropv, self.builder.func);
         self.builder.ins().call(dropv, &[val]);
+        self.builder.ins().jump(merge_block, &[]);
+
+        // both predecessors of merge are emitted above, so it can be sealed here
+        self.builder.switch_to_block(merge_block);
+        self.builder.seal_block(merge_block);
     }
 
     fn matches_codegen(
@@ -1063,11 +1098,7 @@ impl CompilationUnit<'_, '_> {
         deferred_local_conts: &mut Vec<ProcedureBundle>,
     ) {
         let value = self.value_codegen(from);
-        let clonev = self
-            .module
-            .declare_func_in_func(self.runtime_funcs.clonev, self.builder.func);
-        let call = self.builder.ins().call(clonev, &[value]);
-        let value = self.builder.inst_results(call)[0];
+        let value = self.clone_value_codegen(value);
         self.live.bind(result, IrValue::Owned(value));
         self.cps_codegen(cexpr, deferred_procs, deferred_local_conts);
     }
@@ -1088,11 +1119,24 @@ impl CompilationUnit<'_, '_> {
     }
 
     fn clone_value_codegen(&mut self, val: Value) -> Value {
+        let needs_rc = self.needs_rc_codegen(val);
+        let slow_block = self.builder.create_block();
+        let merge_block = self.builder.create_block();
+        self.builder
+            .ins()
+            .brif(needs_rc, slow_block, &[], merge_block, &[]);
+        self.builder.switch_to_block(slow_block);
+        self.builder.seal_block(slow_block);
         let clonev = self
             .module
             .declare_func_in_func(self.runtime_funcs.clonev, self.builder.func);
-        let call = self.builder.ins().call(clonev, &[val]);
-        self.builder.inst_results(call)[0]
+        // cloning only bumps the refcount, the word itself is unchanged, so the
+        // call result is ignored and `val` is returned on both paths
+        self.builder.ins().call(clonev, &[val]);
+        self.builder.ins().jump(merge_block, &[]);
+        self.builder.switch_to_block(merge_block);
+        self.builder.seal_block(merge_block);
+        val
     }
 
     fn take_args(
