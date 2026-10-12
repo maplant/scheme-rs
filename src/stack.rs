@@ -10,7 +10,6 @@ use crate::{
 };
 use std::{
     cell::UnsafeCell,
-    mem::ManuallyDrop,
     ptr::NonNull,
     sync::atomic::{AtomicUsize, Ordering},
 };
@@ -19,7 +18,7 @@ const BLOCK_SIZE: usize = 2048;
 
 /// 16 Kb block of memory.
 struct StackBlock {
-    slots: NonNull<[UnsafeCell<Value>; BLOCK_SIZE]>,
+    slots: [UnsafeCell<Value>; BLOCK_SIZE],
     sealed: AtomicUsize,
 }
 
@@ -28,19 +27,14 @@ unsafe impl Sync for StackBlock {}
 
 impl StackBlock {
     fn new() -> Gc<Self> {
-        let slots = unsafe { Box::into_non_null(Box::new_zeroed().assume_init()) };
-        Gc::new(Self {
-            slots,
-            sealed: AtomicUsize::new(0),
-        })
+        unsafe { Gc::new_zeroed() }
     }
 }
 
 unsafe impl Trace for StackBlock {
     unsafe fn visit_children(&self, visitor: &mut dyn FnMut(crate::gc::OpaqueGcPtr)) {
         let sealed = self.sealed.load(Ordering::Acquire);
-        let slots = unsafe { self.slots.as_ref() };
-        for slot in slots.iter().take(sealed) {
+        for slot in self.slots.iter().take(sealed) {
             unsafe {
                 (*slot.get()).visit_children(visitor);
             }
@@ -49,16 +43,10 @@ unsafe impl Trace for StackBlock {
 
     unsafe fn finalize(&mut self) {
         let sealed = self.sealed.load(Ordering::Acquire);
-        let slots = unsafe { self.slots.as_mut() };
-        for slot in &mut slots[..sealed] {
+        for slot in &mut self.slots[..sealed] {
             unsafe {
                 slot.get_mut().finalize();
             }
-        }
-        unsafe {
-            let _ = Box::from_raw(
-                self.slots.as_ptr() as *mut ManuallyDrop<[UnsafeCell<Value>; BLOCK_SIZE]>
-            );
         }
     }
 }
@@ -165,7 +153,7 @@ impl StackRecord {
         let block = StackBlock::new();
         Self {
             next,
-            segment: NonNull::new(block.slots.as_ptr() as *mut Value).unwrap(),
+            segment: NonNull::from_ref(&block.slots).cast(),
             len: 0,
             cap: BLOCK_SIZE,
             block,
