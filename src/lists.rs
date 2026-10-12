@@ -430,32 +430,50 @@ pub fn list_to_string(List { items, .. }: List) -> Result<WideString, Exception>
     Ok(WideString::mutable(chars))
 }
 
-pub(crate) fn append_list(list: &Value, tail: Value) -> Value {
-    match &*list.unpacked_ref() {
-        UnpackedValue::Pair(pair) => {
-            let (car, cdr) = pair.clone().into();
-            Value::from(Pair::mutable(car, append_list(&cdr, tail)))
-        }
-        UnpackedValue::Null => tail,
-        _ => Value::from(Pair::mutable(list.clone(), tail)),
+pub(crate) fn append_list(list: &Value, tail: Value) -> Result<Value, Exception> {
+    if list.is_null() {
+        return Ok(tail);
     }
+
+    let Some(first) = list.cast::<Pair>() else {
+        return Err(Exception::error("append: argument must be a proper list"));
+    };
+
+    let head = Pair::mutable(first.car(), Value::null());
+    let mut last = head.clone();
+    let mut cursor = first.cdr();
+
+    while let Some(pair) = cursor.cast::<Pair>() {
+        let new = Pair::mutable(pair.car(), Value::null());
+        last.set_cdr(Value::from(new.clone()))?;
+        last = new;
+        cursor = pair.cdr();
+    }
+
+    if !cursor.is_null() {
+        return Err(Exception::error("append: argument must be a proper list"));
+    }
+
+    last.set_cdr(tail)?;
+
+    Ok(Value::from(head))
 }
 
 #[bridge(name = "append", lib = "(rnrs base builtins (6))")]
 pub fn append(#[rest_args] lists: Value) -> Result<Value, Exception> {
-    fn append_lists(lists: &Value) -> Value {
+    fn append_lists(lists: &Value) -> Result<Value, Exception> {
         let Some(pair) = lists.cast::<Pair>() else {
-            return Value::null();
+            return Ok(Value::null());
         };
         let cdr = pair.cdr();
         if cdr.is_null() {
-            pair.car()
+            Ok(pair.car())
         } else {
-            append_list(&pair.car(), append_lists(&cdr))
+            append_list(&pair.car(), append_lists(&cdr)?)
         }
     }
 
-    Ok(append_lists(&lists))
+    append_lists(&lists)
 }
 
 fn split_heads(inputs: &Value) -> Result<Option<(Value, Value)>, Exception> {

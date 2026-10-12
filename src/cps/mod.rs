@@ -147,7 +147,7 @@ impl PrimOp {
             Self::Cdr => PrimOpInfo::new(1, false, true, true),
             Self::Cons => PrimOpInfo::new(2, false, false, true),
             Self::List => PrimOpInfo::new(0, true, false, true),
-            Self::Append => PrimOpInfo::new(0, true, false, true),
+            Self::Append => PrimOpInfo::new(0, true, true, true),
             Self::IsNull => PrimOpInfo::new(1, false, false, false),
             Self::IsPair => PrimOpInfo::new(1, false, false, false),
             Self::Add => PrimOpInfo::new(0, true, true, true),

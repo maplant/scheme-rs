@@ -687,21 +687,27 @@ unsafe extern "C" fn cons(car: *const (), cdr: *const ()) -> *const () {
 
 /// Return the arguments appended together as a list.
 #[runtime_fn]
-unsafe extern "C" fn append(vals: *const *const (), num_vals: u32) -> *const () {
-    unsafe fn append_raw(vals: *const *const (), num_vals: u32) -> Value {
+unsafe extern "C" fn append(vals: *const *const (), num_vals: u32, error: *mut Value) -> *const () {
+    unsafe fn append_raw(vals: *const *const (), num_vals: u32) -> Result<Value, Exception> {
         unsafe {
             if num_vals == 0 {
-                return Value::null();
+                return Ok(Value::null());
             }
             let first = ManuallyDrop::new(Value::from_raw(vals.read()));
             if num_vals == 1 {
-                return (*first).clone();
+                return Ok((*first).clone());
             }
-            crate::lists::append_list(&first, append_raw(vals.add(1), num_vals - 1))
+            crate::lists::append_list(&first, append_raw(vals.add(1), num_vals - 1)?)
         }
     }
 
-    unsafe { Value::into_raw(append_raw(vals, num_vals)) }
+    match unsafe { append_raw(vals, num_vals) } {
+        Ok(lst) => Value::into_raw(lst),
+        Err(e) => unsafe {
+            error.write(e.into());
+            Value::into_raw(Value::undefined())
+        },
+    }
 }
 
 /// Return the proper list of the arguments
