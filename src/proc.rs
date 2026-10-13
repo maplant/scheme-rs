@@ -101,7 +101,7 @@ use std::{
     ops::DerefMut,
     ptr::NonNull,
     sync::{
-        Arc,
+        Arc, LazyLock,
         atomic::{AtomicUsize, Ordering},
     },
 };
@@ -1224,6 +1224,17 @@ impl<'a> ContBarrier<'a> {
     }
 
     pub fn current_input_port(&self) -> Port {
+        static STDIN: LazyLock<Port> = LazyLock::new(|| {
+            Port::new(
+                "<stdin>",
+                #[cfg(not(feature = "async"))]
+                std::io::stdin(),
+                #[cfg(feature = "tokio")]
+                tokio::io::stdin(),
+                BufferMode::Line,
+                Some(Transcoder::native()),
+            )
+        });
         self.state
             .dyn_stack
             .iter()
@@ -1232,20 +1243,23 @@ impl<'a> ContBarrier<'a> {
                 DynStackElem::CurrentInputPort(port) => Some(port.clone()),
                 _ => None,
             })
-            .unwrap_or_else(|| {
-                Port::new(
-                    "<stdin>",
-                    #[cfg(not(feature = "async"))]
-                    std::io::stdin(),
-                    #[cfg(feature = "tokio")]
-                    tokio::io::stdin(),
-                    BufferMode::Line,
-                    Some(Transcoder::native()),
-                )
-            })
+            .unwrap_or_else(|| STDIN.clone())
     }
 
     pub fn current_output_port(&self) -> Port {
+        static STDOUT: LazyLock<Port> = LazyLock::new(|| {
+            Port::new(
+                "<stdout>",
+                #[cfg(not(feature = "async"))]
+                std::io::stdout(),
+                #[cfg(feature = "tokio")]
+                tokio::io::stdout(),
+                // TODO: Probably should change this to line, but that
+                // doesn't play nicely with rustyline
+                BufferMode::None,
+                Some(Transcoder::native()),
+            )
+        });
         self.state
             .dyn_stack
             .iter()
@@ -1254,19 +1268,7 @@ impl<'a> ContBarrier<'a> {
                 DynStackElem::CurrentOutputPort(port) => Some(port.clone()),
                 _ => None,
             })
-            .unwrap_or_else(|| {
-                Port::new(
-                    "<stdout>",
-                    #[cfg(not(feature = "async"))]
-                    std::io::stdout(),
-                    #[cfg(feature = "tokio")]
-                    tokio::io::stdout(),
-                    // TODO: Probably should change this to line, but that
-                    // doesn't play nicely with rustyline
-                    BufferMode::None,
-                    Some(Transcoder::native()),
-                )
-            })
+            .unwrap_or_else(|| STDOUT.clone())
     }
 
     pub(crate) fn push_dyn_stack(&mut self, elem: DynStackElem) {
