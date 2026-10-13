@@ -561,7 +561,8 @@ impl EolStyle {
             Self::Ls if !ls_needle.is_empty() => {
                 memmem::find(bytes, ls_needle).map(|i| i + ls_needle.len())
             }
-            Self::None | Self::Ls => None,
+            Self::None => memchr(b'\n', bytes).map(|i| i + 1),
+            Self::Ls => None,
         }
     }
 }
@@ -1430,12 +1431,16 @@ impl BinaryPortData {
                     }
                 }
                 (BufferMode::Line, Some(transcoder)) => {
+                    let start = self.bytes_read;
                     loop {
                         let count = self.input_buffer.len() - self.bytes_read;
                         let read =
                             maybe_await!((read)(port, &self.input_buffer, self.bytes_read, count))?;
                         if read == 0 {
-                            return Ok(None);
+                            if start == self.bytes_read {
+                                return Ok(None);
+                            }
+                            break;
                         }
                         // Attempt to find the line ending:
                         if transcoder
@@ -4619,7 +4624,15 @@ pub fn delete_file(filename: Value) -> Result<(), Exception> {
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "async"))]
 mod test {
+    use scheme_rs::ports::BufferMode;
+    use scheme_rs::ports::Cursor;
+    use scheme_rs::ports::Port;
+    use scheme_rs::ports::Span;
+    use scheme_rs::ports::Transcoder;
+    use scheme_rs::value::Value;
+
     #[test]
     fn test_buffer_boundary_eof() {
         use scheme_rs::syntax::Syntax;
@@ -4635,5 +4648,38 @@ mod test {
 
         // U+2500 occupies bytes 8190..8193: straddles the 8192 boundary.
         assert!(Syntax::from_str(&input(8190), Some("fail.scm")).is_ok())
+    }
+
+    fn line_native_port(str: &str) -> Port {
+        Port::new(
+            "test",
+            Cursor::new(str.as_bytes().to_vec()),
+            BufferMode::Line,
+            Some(Transcoder::native()),
+        )
+    }
+
+    fn read(port: &Port) -> Vec<String> {
+        let mut out = Vec::new();
+        while let Some((syntax, _)) = port.get_sexpr(Span::default()).unwrap() {
+            out.push(Value::datum_from_syntax(&syntax).to_string());
+        }
+        out
+    }
+
+    #[test]
+    fn line_mode_leading_comment() {
+        // Taken from one of the R7RS benches
+        assert_eq!(read(&line_native_port("; c\n42\n")), ["42"]);
+    }
+
+    #[test]
+    fn line_mode_no_trailing_newline() {
+        assert_eq!(read(&line_native_port("42")), ["42"]);
+    }
+
+    #[test]
+    fn line_mode_several_lines() {
+        assert_eq!(read(&line_native_port("1\n; c\n2 3\n")), ["1", "2", "3"]);
     }
 }
