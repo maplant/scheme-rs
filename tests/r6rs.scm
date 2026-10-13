@@ -117,6 +117,13 @@
 (assert-equal? (append (list 1 2 3) (list 4 5 6)) (list 1 2 3 4 5 6))
 (assert-equal? (apply append '()) '())
 
+; very big list doesn't blow out the stack
+(let ((big (let lp ((i 0) (acc '()))
+             (if (= i 1000000) acc (lp (+ i 1) (cons i acc))))))
+  (assert-equal? (length (append big '(x))) 1000001))
+
+(assert-equal? (guard (e ((assertion-violation? e) 'error)) (append '(1 . 2) '(3))) 'error)
+
 ;; 11.2.2. Syntax definitions
 
 (assert-equal? (let ()

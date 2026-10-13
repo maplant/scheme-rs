@@ -1256,7 +1256,7 @@ fn chain_constructors(
     let curr_rtd: Arc<RecordTypeDescriptor> = rtds[0].clone().try_into()?;
     let rtds_remain = !remaining_rtds.is_empty();
     let num_args = curr_rtd.fields.len();
-    let collected = append_list(&collected, args);
+    let collected = append_list(&collected, args)?;
     let next_proc = Procedure::new(
         vec![
             if rtds_remain {
