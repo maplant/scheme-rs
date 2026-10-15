@@ -16,7 +16,7 @@ use crate::{
     },
     env::{Environment, Global, TopLevelEnvironment},
     exceptions::{Exception, SourceCache, raise},
-    gc::{Gc, GcInner, Trace, init_gc},
+    gc::{Gc, Trace, init_gc},
     hashtables::EqualHashSet,
     lists::Pair,
     num,
@@ -806,9 +806,9 @@ unsafe extern "C" fn make_user(
 unsafe extern "C" fn patch_env_slot(proc: *const (), slot_idx: u32, value: *const ()) {
     unsafe {
         let proc_gc = ManuallyDrop::new(Gc::from_raw(
-            proc.map_addr(|raw| raw & !TAG) as *mut GcInner<ProcedureInner>
+            proc.map_addr(|raw| raw & !TAG) as *mut ProcedureInner
         ));
-        (*Gc::as_ptr(&proc_gc)).data_mut().env[slot_idx as usize] = Value::from_raw_inc_rc(value);
+        (&mut *Gc::as_ptr(&proc_gc)).env[slot_idx as usize] = Value::from_raw_inc_rc(value);
     }
 }
 
@@ -817,7 +817,7 @@ unsafe extern "C" fn patch_env_slot(proc: *const (), slot_idx: u32, value: *cons
 unsafe extern "C" fn unroot_proc(proc: *const ()) {
     unsafe {
         let proc_gc = ManuallyDrop::new(Gc::from_raw(
-            proc.map_addr(|raw| raw & !TAG) as *mut GcInner<ProcedureInner>
+            proc.map_addr(|raw| raw & !TAG) as *mut ProcedureInner
         ));
         Gc::unroot(&proc_gc);
     }

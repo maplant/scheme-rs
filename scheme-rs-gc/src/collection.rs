@@ -3,21 +3,26 @@
 //! V.T. Rajan.
 
 use std::{
-    alloc::{Layout, dealloc},
+    alloc::Layout,
     any::TypeId,
-    cell::UnsafeCell,
+    cell::{Cell, UnsafeCell},
     fmt::{self, Debug, Formatter},
     mem::take,
+    panic::{AssertUnwindSafe, catch_unwind},
+    process::abort,
     ptr::{NonNull, null_mut},
-    sync::{
-        OnceLock,
-        atomic::{AtomicUsize, Ordering},
-    },
+    sync::atomic::{AtomicUsize, Ordering},
     thread::{JoinHandle, spawn},
 };
 
 use parking_lot::{Condvar, Mutex};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+
+use crate::{
+    Reclaimer,
+    global::{HeaderModel, alloc, heap},
+    region::MAX_ALIGN,
+};
 
 #[derive(Debug)]
 #[repr(C, align(8))]
@@ -38,8 +43,11 @@ pub struct GcHeader {
     prev: *mut GcHeader,
 }
 
+pub const HEADER_SIZE: usize = size_of::<GcHeader>();
+const _: () = assert!(size_of::<GcHeader>().is_multiple_of(MAX_ALIGN));
+
 impl GcHeader {
-    pub fn new(layout: Layout) -> Self {
+    pub(crate) fn new(layout: Layout) -> Self {
         Self {
             shared_rc: AtomicUsize::new(1),
             epoch_rc: 1,
@@ -51,9 +59,8 @@ impl GcHeader {
         }
     }
 
-    #[inline]
-    pub fn shared_rc(&self) -> &AtomicUsize {
-        &self.shared_rc
+    pub(crate) fn layout(&self) -> Layout {
+        self.layout
     }
 
     fn get_color(&self) -> Color {
@@ -92,7 +99,7 @@ impl GcHeader {
 #[derive(Debug)]
 pub struct VTable {
     /// Type-erased visitor function
-    pub visit_children: unsafe fn(this: *const (), visitor: &mut dyn FnMut(HeapObject<()>)),
+    pub visit_children: unsafe fn(this: *const (), visitor: &mut dyn FnMut(HeapObject)),
     /// Type-erased finalizer function
     pub finalize: unsafe fn(this: *mut ()),
 }
@@ -134,32 +141,56 @@ impl From<u8> for Color {
 }
 
 #[derive(Copy, Clone, Hash, PartialEq, Eq)]
-pub struct HeapObject<T> {
+pub struct HeapObject {
     /// Object header
     header: NonNull<UnsafeCell<GcHeader>>,
-    /// Allocated data
-    data: NonNull<UnsafeCell<T>>,
 }
 
-impl Debug for OpaqueGcPtr {
+impl Debug for HeapObject {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{:p}", self.header.as_ptr())
     }
 }
 
-#[doc(hidden)]
-pub type OpaqueGcPtr = HeapObject<()>;
+impl HeapObject {
+    unsafe fn alloc_uninit<T: Sized>() -> NonNull<T> {
+        unsafe { Self::alloc_layout(Layout::new::<T>()).cast::<T>() }
+    }
 
-impl HeapObject<()> {
+    pub fn alloc<T: Sized>(data: T) -> NonNull<T> {
+        let data_ptr = unsafe { Self::alloc_uninit::<T>() };
+        unsafe {
+            data_ptr.write(data);
+        }
+        data_ptr
+    }
+
     /// # Safety
     ///
-    /// `header` and `data` belong to one object whose header was made by
-    /// `GcHeader::new`.
-    pub unsafe fn new(
-        header: NonNull<UnsafeCell<GcHeader>>,
-        data: NonNull<UnsafeCell<()>>,
-    ) -> Self {
-        Self { header, data }
+    /// The memory returned is uninitialized.
+    pub unsafe fn alloc_layout(data_layout: Layout) -> NonNull<u8> {
+        assert!(data_layout.align() <= MAX_ALIGN);
+
+        let (unpadded_layout, _) = Layout::new::<GcHeader>().extend(data_layout).unwrap();
+        let padded_layout = unpadded_layout.pad_to_align();
+        let header_ptr = alloc(padded_layout).cast::<GcHeader>();
+
+        unsafe {
+            header_ptr.write(GcHeader::new(padded_layout));
+            header_ptr.byte_add(HEADER_SIZE).cast()
+        }
+    }
+
+    /// # Safety
+    ///
+    /// The return value is valid only if all zeros
+    /// is a valid bit pattern for T, otherwise it is invalid to deref.
+    pub unsafe fn alloc_zeroed<T: Sized>() -> NonNull<T> {
+        let data_ptr = unsafe { Self::alloc_uninit::<T>() };
+        unsafe {
+            data_ptr.write_bytes(0, 1);
+        }
+        data_ptr
     }
 
     /// # Safety
@@ -169,22 +200,20 @@ impl HeapObject<()> {
         unsafe { &(*self.header.as_ref().get()).shared_rc }
     }
 
-    unsafe fn from_ptr(ptr: *mut GcHeader) -> Option<Self> {
-        if ptr.is_null() {
-            return None;
+    unsafe fn from_header(header: *mut GcHeader) -> Option<Self> {
+        NonNull::new(header).map(|h| Self { header: h.cast() })
+    }
+
+    /// # Safety
+    ///
+    /// data was returned by one of HeapObjects alloc functions,
+    /// and the object is live.
+    pub unsafe fn from_data<T: ?Sized>(data: NonNull<T>) -> Self {
+        let header: NonNull<GcHeader> = unsafe { data.byte_sub(HEADER_SIZE) }.cast::<GcHeader>();
+
+        Self {
+            header: header.cast::<UnsafeCell<GcHeader>>(),
         }
-
-        let header = NonNull::new(ptr as *mut UnsafeCell<GcHeader>).unwrap();
-
-        let (_, header_offset) = Layout::new::<GcHeader>()
-            .extend(unsafe { (*header.as_ref().get()).layout })
-            .unwrap();
-
-        let data = unsafe { (ptr as *mut ()).byte_add(header_offset) };
-        Some(Self {
-            header,
-            data: NonNull::new(data as *mut UnsafeCell<()>).unwrap(),
-        })
     }
 
     unsafe fn as_ptr(&self) -> *mut GcHeader {
@@ -247,7 +276,7 @@ impl HeapObject<()> {
 
     unsafe fn visit_children(
         &self,
-    ) -> unsafe fn(this: *const (), visitor: &mut dyn FnMut(OpaqueGcPtr)) {
+    ) -> unsafe fn(this: *const (), visitor: &mut dyn FnMut(HeapObject)) {
         unsafe { (*self.header.as_ref().get()).vtable.visit_children }
     }
 
@@ -255,66 +284,65 @@ impl HeapObject<()> {
         unsafe { (*self.header.as_ref().get()).vtable.finalize }
     }
 
-    unsafe fn layout(&self) -> Layout {
-        unsafe { (*self.header.as_ref().get()).layout }
-    }
-
     /// # Safety
     ///
     /// The object is live.
     pub unsafe fn data(&self) -> *const () {
-        self.data.as_ptr() as *const UnsafeCell<()> as *const ()
+        unsafe { self.header.as_ptr().byte_add(HEADER_SIZE) }.cast()
     }
 
     /// # Safety
     ///
     /// The object is live.
     pub unsafe fn data_mut(&self) -> *mut () {
-        self.data.as_ptr() as *mut ()
+        unsafe { self.header.as_ptr().byte_add(HEADER_SIZE) }.cast()
     }
 
-    unsafe fn next(&self) -> *mut GcHeader {
-        unsafe { (*self.header.as_ref().get()).get_next() }
+    unsafe fn next(&self) -> Option<HeapObject> {
+        unsafe { HeapObject::from_header((*self.header.as_ref().get()).get_next()) }
     }
 
-    unsafe fn set_next(&self, next: *mut GcHeader) {
-        unsafe {
-            (*self.header.as_ref().get()).set_next(next);
-        }
+    unsafe fn set_next(&self, next: Option<HeapObject>) {
+        let ptr = unsafe {
+            match next {
+                Some(obj) => obj.as_ptr(),
+                None => null_mut(),
+            }
+        };
+        unsafe { (*self.header.as_ref().get()).set_next(ptr) } // keeps the color bits
     }
 
-    unsafe fn prev(&self) -> *mut GcHeader {
-        unsafe { (*self.header.as_ref().get()).get_prev() }
+    unsafe fn prev(&self) -> Option<HeapObject> {
+        unsafe { HeapObject::from_header((*self.header.as_ref().get()).get_prev()) }
     }
 
-    unsafe fn set_prev(&self, prev: *mut GcHeader) {
-        unsafe {
-            (*self.header.as_ref().get()).set_prev(prev);
-        }
+    unsafe fn set_prev(&self, prev: Option<HeapObject>) {
+        let ptr = unsafe {
+            match prev {
+                Some(obj) => obj.as_ptr(),
+                None => null_mut(),
+            }
+        };
+        unsafe { (*self.header.as_ref().get()).set_prev(ptr) };
     }
 }
 
-unsafe impl Send for HeapObject<()> {}
-unsafe impl Sync for HeapObject<()> {}
+unsafe impl Send for HeapObject {}
+unsafe impl Sync for HeapObject {}
 
 /// Links a new object into the heap list.
 ///
 /// # Safety
 ///
-/// `header` starts an allocation made by `std::alloc` with exactly `layout`,
-/// holds a live `GcHeader` not yet linked, and is followed by the object's
-/// data, which stays valid until the collector frees it. The collector may
-/// visit and free the object from its own thread. `vtable` builds the vtable
-/// for `type_id`; the first one registered for a `type_id` is used for every
-/// later object of it.
+/// `obj` is allocated by the allocator in this crate.
+/// It contains a GcHeader not yet linked, and is followed by the
+/// object's data, which stays valid until the collector frees it. The
+/// collector may visit and free the object from its own thread. `obj.header.vtable`
+/// builds the vtable for `type_id`; the first one registered for a `type_id`
+/// is used for every later object of it.
 #[inline]
-pub unsafe fn unroot(
-    header: NonNull<GcHeader>,
-    type_id: TypeId,
-    vtable: fn() -> VTable,
-    layout: Layout,
-) {
-    let new_gc_ptr = header.as_ptr();
+pub unsafe fn unroot(obj: HeapObject, type_id: TypeId, vtable: fn() -> VTable) {
+    let header = unsafe { obj.as_ptr() };
 
     let mut heap = HEAP.lock();
 
@@ -327,19 +355,17 @@ pub unsafe fn unroot(
             // unsafe, but this plays nicely with the rust typesystem
             .or_insert_with(|| Box::leak(Box::new(vtable())));
 
-        (*new_gc_ptr).vtable = vtable;
-        (*new_gc_ptr).layout = layout;
+        (*header).vtable = vtable;
 
-        if heap.head.is_null() {
-            heap.tail = new_gc_ptr;
-        } else {
-            (*heap.head).set_prev(new_gc_ptr);
+        match heap.head {
+            None => heap.tail = Some(obj),
+            Some(h) => h.set_prev(Some(obj)),
         }
 
-        (*new_gc_ptr).set_next(heap.head);
+        obj.set_next(heap.head);
     }
 
-    heap.head = new_gc_ptr;
+    heap.head = Some(obj);
     heap.new_allocs += 1;
 
     if heap.should_collect() {
@@ -348,22 +374,24 @@ pub unsafe fn unroot(
 }
 
 struct Heap {
-    head: *mut GcHeader,
-    tail: *mut GcHeader,
+    head: Option<HeapObject>,
+    tail: Option<HeapObject>,
     new_allocs: usize,
     epoch: usize,
     force_collection: bool,
+    shutdown: bool,
     vtables: Option<HashMap<TypeId, &'static VTable>>,
 }
 
 impl Heap {
     const fn new() -> Self {
         Self {
-            head: null_mut(),
-            tail: null_mut(),
+            head: None,
+            tail: None,
             new_allocs: 0,
             epoch: 0,
             force_collection: false,
+            shutdown: false,
             vtables: None,
         }
     }
@@ -373,7 +401,7 @@ impl Heap {
     }
 
     fn should_not_collect(&mut self) -> bool {
-        self.new_allocs < MIN_ALLOCS_TO_COLLECT && !self.force_collection
+        self.new_allocs < MIN_ALLOCS_TO_COLLECT && !self.force_collection && !self.shutdown
     }
 }
 
@@ -383,7 +411,7 @@ unsafe impl Sync for Heap {}
 static HEAP: Mutex<Heap> = Mutex::new(Heap::new());
 static COLLECTION_START_SIGNAL: Condvar = Condvar::new();
 static COLLECTION_DONE_SIGNAL: Condvar = Condvar::new();
-static COLLECTOR_TASK: OnceLock<JoinHandle<()>> = OnceLock::new();
+static COLLECTOR_TASK: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
 const MIN_ALLOCS_TO_COLLECT: usize = 10_000;
 
 /// Initializes the garbage collector thread. Calling this function is typically
@@ -392,7 +420,22 @@ const MIN_ALLOCS_TO_COLLECT: usize = 10_000;
 /// Calling this function multiple times does nothing, there is only one
 /// collector thread allowed at a time.
 pub fn init_gc() {
-    let _ = COLLECTOR_TASK.get_or_init(|| Collector::new().run());
+    COLLECTOR_TASK.lock().get_or_insert_with(run);
+}
+
+/// Stops the collector thread and waits for it to exit. Only for tests:
+/// Miri requires every thread to be joined before `main` returns. Objects
+/// still alive are not collected again until `init_gc` starts a new
+/// collector.
+#[doc(hidden)]
+pub fn shutdown_gc() {
+    let Some(task) = COLLECTOR_TASK.lock().take() else {
+        return;
+    };
+    HEAP.lock().shutdown = true;
+    COLLECTION_START_SIGNAL.notify_one();
+    task.join().unwrap();
+    HEAP.lock().shutdown = false;
 }
 
 /// Force a garbage collection pause.
@@ -404,46 +447,65 @@ pub fn collect_garbage() {
     COLLECTION_DONE_SIGNAL.wait_while(&mut heap, |heap| heap.epoch < target_epoch);
 }
 
-#[derive(Debug)]
-pub struct Collector {
-    roots: HashSet<OpaqueGcPtr>,
-    cycles: Vec<Vec<OpaqueGcPtr>>,
-    freed_objs: HashSet<OpaqueGcPtr>,
-    head: *mut GcHeader,
-    tail: *mut GcHeader,
-    next: *mut GcHeader,
+struct CycleCollector {
+    reclaimer: Reclaimer<'static, HeaderModel>,
+    roots: HashSet<HeapObject>,
+    cycles: Vec<Vec<HeapObject>>,
+    freed_objs: HashSet<HeapObject>,
+    head: Option<HeapObject>,
+    tail: Option<HeapObject>,
+    next: Option<HeapObject>,
     /// Empty between drives; kept allocated to avoid a Vec per cascade.
     release_stack: Vec<DropAction>,
 }
 
-#[derive(Debug)]
-enum DropAction {
-    Decrement(OpaqueGcPtr),
-    Release(OpaqueGcPtr),
-    Free(OpaqueGcPtr),
+thread_local! {
+    static ON_COLLECTOR_THREAD: Cell<bool> = const { Cell::new(false) };
 }
 
-unsafe impl Send for Collector {}
+pub(crate) fn on_collector_thread() -> bool {
+    ON_COLLECTOR_THREAD.get()
+}
 
-impl Collector {
+pub(crate) fn collector_running() -> bool {
+    COLLECTOR_TASK.lock().is_some()
+}
+
+fn run() -> JoinHandle<()> {
+    spawn(|| {
+        ON_COLLECTOR_THREAD.set(true);
+        let mut collector = CycleCollector::new();
+        if catch_unwind(AssertUnwindSafe(|| {
+            while !HEAP.lock().shutdown {
+                collector.epoch();
+            }
+        }))
+        .is_err()
+        {
+            abort();
+        }
+    })
+}
+
+#[derive(Debug)]
+enum DropAction {
+    Decrement(HeapObject),
+    Release(HeapObject),
+    Free(HeapObject),
+}
+
+impl CycleCollector {
     fn new() -> Self {
         Self {
+            reclaimer: heap().reclaimer(),
             roots: HashSet::default(),
             cycles: Vec::new(),
             freed_objs: HashSet::default(),
-            head: null_mut(),
-            tail: null_mut(),
-            next: null_mut(),
+            head: None,
+            tail: None,
+            next: None,
             release_stack: Vec::new(),
         }
-    }
-
-    fn run(mut self) -> JoinHandle<()> {
-        spawn(move || {
-            loop {
-                self.epoch();
-            }
-        })
     }
 
     fn await_epoch(&mut self) {
@@ -464,7 +526,7 @@ impl Collector {
 
         // Collect obvious garbage; i.e. heap objects that have a ref count of zero,
         // and potential candidates for cycles.
-        while let Some(curr_heap_object) = unsafe { OpaqueGcPtr::from_ptr(self.next) } {
+        while let Some(curr_heap_object) = self.next {
             unsafe {
                 curr_heap_object.set_buffered(false);
 
@@ -518,17 +580,20 @@ impl Collector {
         // a fresh parking in a later epoch.
         self.freed_objs.clear();
 
+        self.reclaimer.sweep();
+
         let mut heap = HEAP.lock();
-        if !self.head.is_null() {
-            unsafe {
-                if heap.head.is_null() {
+        if let Some(tail) = self.tail {
+            match heap.head {
+                None => {
                     heap.head = self.head;
                     heap.tail = self.tail;
-                } else {
-                    (*self.tail).set_next(heap.head);
-                    (*heap.head).set_prev(self.tail);
-                    heap.head = self.head;
                 }
+                Some(head) => unsafe {
+                    tail.set_next(Some(head));
+                    head.set_prev(Some(tail));
+                    heap.head = self.head;
+                },
             }
         }
 
@@ -536,11 +601,11 @@ impl Collector {
         COLLECTION_DONE_SIGNAL.notify_all();
     }
 
-    unsafe fn decrement(&mut self, s: OpaqueGcPtr) {
+    unsafe fn decrement(&mut self, s: HeapObject) {
         unsafe { self.maybe_release(DropAction::Decrement(s)) }
     }
 
-    unsafe fn release(&mut self, s: OpaqueGcPtr) {
+    unsafe fn release(&mut self, s: HeapObject) {
         unsafe { self.maybe_release(DropAction::Release(s)) }
     }
 
@@ -566,7 +631,7 @@ impl Collector {
 
     /// `Free` goes below the children so a node finalizes only after its
     /// subtree.
-    unsafe fn drop_children(&mut self, s: OpaqueGcPtr) {
+    unsafe fn drop_children(&mut self, s: HeapObject) {
         unsafe {
             self.release_stack.push(DropAction::Free(s));
             let stack = &mut self.release_stack;
@@ -655,7 +720,7 @@ impl Collector {
         }
     }
 
-    unsafe fn free_cycle(&mut self, c: &[OpaqueGcPtr]) {
+    unsafe fn free_cycle(&mut self, c: &[HeapObject]) {
         unsafe {
             for n in c {
                 n.set_color(Color::Red);
@@ -669,7 +734,7 @@ impl Collector {
         }
     }
 
-    unsafe fn refurbish(&mut self, c: &[OpaqueGcPtr]) {
+    unsafe fn refurbish(&mut self, c: &[HeapObject]) {
         unsafe {
             for (i, n) in c.iter().enumerate() {
                 match (i, n.color()) {
@@ -683,7 +748,7 @@ impl Collector {
         }
     }
 
-    unsafe fn cyclic_decrement(&mut self, m: OpaqueGcPtr) {
+    unsafe fn cyclic_decrement(&mut self, m: HeapObject) {
         unsafe {
             if m.color() != Color::Red {
                 if m.color() == Color::Orange {
@@ -696,7 +761,7 @@ impl Collector {
         }
     }
 
-    unsafe fn free(&mut self, s: OpaqueGcPtr) {
+    unsafe fn free(&mut self, s: HeapObject) {
         unsafe {
             // Safety: No need to acquire a permit, s is guaranteed to be
             // garbage.
@@ -706,23 +771,23 @@ impl Collector {
             let prev = s.prev();
             let next = s.next();
 
-            if self.head == s.as_ptr() {
+            if self.head == Some(s) {
                 self.head = next;
             }
 
-            if self.tail == s.as_ptr() {
+            if self.tail == Some(s) {
                 self.tail = prev;
             }
 
-            if self.next == s.as_ptr() {
+            if self.next == Some(s) {
                 self.next = next;
             }
 
-            if let Some(prev) = OpaqueGcPtr::from_ptr(prev) {
+            if let Some(prev) = prev {
                 prev.set_next(next);
             }
 
-            if let Some(next) = OpaqueGcPtr::from_ptr(next) {
+            if let Some(next) = next {
                 next.set_prev(prev);
             }
 
@@ -736,19 +801,18 @@ impl Collector {
             // Finalize the object:
             (s.finalize())(s.data_mut());
 
-            // Deallocate the object:
-            dealloc(s.header.as_ptr() as *mut u8, s.layout());
+            self.reclaimer.free(s.header.cast());
         }
     }
 }
 
-unsafe fn for_each_child(s: OpaqueGcPtr, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
+unsafe fn for_each_child(s: HeapObject, visitor: &mut dyn FnMut(HeapObject)) {
     unsafe {
         (s.visit_children())(s.data(), visitor);
     }
 }
 
-unsafe fn scan_black(s: HeapObject<()>) {
+unsafe fn scan_black(s: HeapObject) {
     unsafe {
         let mut stack = vec![s];
         while let Some(s) = stack.pop() {
@@ -760,7 +824,7 @@ unsafe fn scan_black(s: HeapObject<()>) {
     }
 }
 
-unsafe fn scan(s: OpaqueGcPtr) {
+unsafe fn scan(s: HeapObject) {
     unsafe {
         let mut stack = vec![s];
         while let Some(s) = stack.pop() {
@@ -777,11 +841,11 @@ unsafe fn scan(s: OpaqueGcPtr) {
 }
 
 enum MarkGrayPhase {
-    MarkGray(OpaqueGcPtr),
-    SetCrc(OpaqueGcPtr),
+    MarkGray(HeapObject),
+    SetCrc(HeapObject),
 }
 
-unsafe fn mark_gray(s: OpaqueGcPtr) {
+unsafe fn mark_gray(s: HeapObject) {
     unsafe {
         let mut stack = Vec::new();
         if s.color() != Color::Gray {
@@ -810,7 +874,7 @@ unsafe fn mark_gray(s: OpaqueGcPtr) {
     }
 }
 
-unsafe fn collect_white(s: OpaqueGcPtr, current_cycle: &mut Vec<OpaqueGcPtr>) {
+unsafe fn collect_white(s: HeapObject, current_cycle: &mut Vec<HeapObject>) {
     unsafe {
         let mut stack = vec![s];
         while let Some(s) = stack.pop() {
@@ -823,7 +887,7 @@ unsafe fn collect_white(s: OpaqueGcPtr, current_cycle: &mut Vec<OpaqueGcPtr>) {
     }
 }
 
-unsafe fn sigma_test(c: &[OpaqueGcPtr]) -> bool {
+unsafe fn sigma_test(c: &[HeapObject]) -> bool {
     unsafe {
         let mut sum = 0;
         for n in c {
@@ -833,7 +897,7 @@ unsafe fn sigma_test(c: &[OpaqueGcPtr]) -> bool {
     }
 }
 
-unsafe fn delta_test(c: &[OpaqueGcPtr]) -> bool {
+unsafe fn delta_test(c: &[HeapObject]) -> bool {
     unsafe {
         for n in c {
             if n.color() != Color::Orange {
