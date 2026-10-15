@@ -9,7 +9,9 @@ use std::{
 };
 
 use crate::{
-    collection::{collector_running, on_collector_thread},GcHeader, Heap, Mutator, ObjectModel, collect_garbage};
+    Heap, Mutator, ObjectModel, collect_garbage,
+    collection::{GcHeader, collector_running, on_collector_thread},
+};
 
 const DEFAULT_HEAP_SIZE: usize = 512 * 1024 * 1024;
 
@@ -78,7 +80,8 @@ fn try_alloc(layout: Layout) -> Option<NonNull<u8>> {
 /// # Panics
 ///
 /// On the collector thread: finalizers must not allocate.
-pub fn alloc(layout: Layout) -> NonNull<u8> {
+/// On exiting threads: Drop and thread-local allocators must not allocate via `alloc`
+pub(crate) fn alloc(layout: Layout) -> NonNull<u8> {
     assert!(!on_collector_thread(), "Gc allocated during finalization");
     if let Some(obj) = try_alloc(layout) {
         return obj;

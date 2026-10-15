@@ -762,7 +762,7 @@ fn derive_trace_struct(
         _ => {
             return Ok(quote! {
                 unsafe impl ::scheme_rs::gc::Trace for #name {
-                    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(::scheme_rs::gc::OpaqueGcPtr)) {}
+                    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(::scheme_rs::gc::HeapObject)) {}
 
                     unsafe fn finalize(&mut self) {
                         unsafe {
@@ -844,7 +844,7 @@ fn derive_trace_struct(
         unsafe impl<#params> ::scheme_rs::gc::Trace for #name <#unbound_params>
         #where_clause
         {
-            unsafe fn visit_children(&self, visitor: &mut dyn FnMut(::scheme_rs::gc::OpaqueGcPtr)) {
+            unsafe fn visit_children(&self, visitor: &mut dyn FnMut(::scheme_rs::gc::HeapObject)) {
                 #(
                     #field_visits
                 )*
@@ -993,7 +993,7 @@ fn derive_trace_enum(
         unsafe impl<#params> ::scheme_rs::gc::Trace for #name <#unbound_params>
         #where_clause
         {
-            unsafe fn visit_children(&self, visitor: &mut dyn FnMut(::scheme_rs::gc::OpaqueGcPtr)) {
+            unsafe fn visit_children(&self, visitor: &mut dyn FnMut(::scheme_rs::gc::HeapObject)) {
                 match self {
                     #( #visit_match_clauses, )*
                     _ => (),

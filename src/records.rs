@@ -216,21 +216,19 @@ use std::{
     collections::HashMap,
     fmt,
     hash::{Hash, Hasher},
-    marker::PhantomData,
     mem::align_of,
     ops::Deref,
-    ptr::{self, NonNull},
+    ptr::NonNull,
     slice,
     sync::{Arc, LazyLock, Mutex},
 };
 
 use by_address::ByAddress;
 use indexmap::{IndexMap, IndexSet};
-use scheme_rs_gc::alloc;
 
 use crate::{
     exceptions::Exception,
-    gc::{Gc, GcInner, OpaqueGcPtr, Trace},
+    gc::{Gc, HeapObject, Trace, unroot},
     lists::{append_list, iter_list, split_list},
     proc::{Application, Args, ContBarrier, FuncPtr, Procedure},
     registry::bridge,
@@ -374,38 +372,30 @@ impl Record {
 
     /// Embed a rust value into a record.
     pub fn embed<E: Embeddable>(e: E) -> Self {
-        let (layout, embed_offset) = Layout::from_size_align(
-            RecordInner::fields_offset(),
-            align_of::<GcInner<RecordInner>>(),
-        )
-        .unwrap()
-        .extend(Layout::new::<E>())
-        .unwrap();
+        let (layout, embed_offset) =
+            Layout::from_size_align(RecordInner::fields_offset(), align_of::<RecordInner>())
+                .unwrap()
+                .extend(Layout::new::<E>())
+                .unwrap();
         let layout = layout.pad_to_align();
 
         let ptr = unsafe {
-            let record = alloc(layout).as_ptr() as *mut GcInner<RecordInner>;
-            ptr::write(
-                record,
-                GcInner::new(RecordInner {
-                    rtd: E::rtd(),
-                    fields: [],
-                }),
-            );
-            ptr::write(record.byte_add(embed_offset) as *mut E, e);
+            let record = HeapObject::alloc_layout(layout).cast::<RecordInner>();
+            record.write(RecordInner {
+                rtd: E::rtd(),
+                fields: [],
+            });
+            record.byte_add(embed_offset).cast::<E>().write(e);
             record
         };
 
-        let inner = Gc {
-            ptr: NonNull::new(ptr).unwrap(),
-            marker: PhantomData,
-        };
+        let gc = Gc { ptr };
 
         unsafe {
-            crate::gc::unroot(&inner, layout);
+            unroot(&gc);
         }
 
-        Self(inner)
+        Self(gc)
     }
 
     pub fn cast<E: Embeddable>(&self) -> Option<Embedded<E>> {
@@ -615,7 +605,7 @@ impl RecordInner {
     }
 
     pub(crate) const fn fields_offset() -> usize {
-        GcInner::<RecordInner>::data_offset() + std::mem::offset_of!(RecordInner, fields)
+        std::mem::offset_of!(RecordInner, fields)
     }
 
     pub(crate) fn fields_ptr(&self) -> *const Value {
@@ -653,7 +643,7 @@ impl RecordInner {
 }
 
 unsafe impl Trace for RecordInner {
-    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(crate::gc::OpaqueGcPtr)) {
+    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(HeapObject)) {
         let num_fields = self.num_unembedded_fields();
         let fields_ptr = self.fields_ptr();
         for i in 0..num_fields {
@@ -793,7 +783,7 @@ pub struct EmbeddableVTable {
     layout: Layout,
     pub embedded_fields: usize,
     #[trace(skip)]
-    pub visit_children: unsafe fn(*const (), &mut dyn FnMut(OpaqueGcPtr)),
+    pub visit_children: unsafe fn(*const (), &mut dyn FnMut(HeapObject)),
     #[trace(skip)]
     pub finalize: unsafe fn(*mut ()),
     #[trace(skip)]
@@ -1301,11 +1291,8 @@ fn constructor(
             (None, fields)
         };
 
-    let prefix = Layout::from_size_align(
-        RecordInner::fields_offset(),
-        align_of::<GcInner<RecordInner>>(),
-    )
-    .unwrap();
+    let prefix =
+        Layout::from_size_align(RecordInner::fields_offset(), align_of::<RecordInner>()).unwrap();
     let (layout, fields_offset) = prefix
         .extend(Layout::array::<Value>(fields.len()).unwrap())
         .unwrap();
@@ -1321,16 +1308,14 @@ fn constructor(
     let layout = layout.pad_to_align();
 
     let record = unsafe {
-        let record = alloc(layout).as_ptr() as *mut GcInner<RecordInner>;
-        ptr::write(
-            record,
-            GcInner::new(RecordInner {
-                rtd: rtd.clone(),
-                fields: [],
-            }),
-        );
+        let record = HeapObject::alloc_layout(layout).cast::<RecordInner>();
 
-        let fields_ptr = record.byte_add(fields_offset) as *mut Value;
+        record.write(RecordInner {
+            rtd: rtd.clone(),
+            fields: [],
+        });
+
+        let fields_ptr = record.byte_add(fields_offset).cast::<Value>().as_ptr();
 
         let field_mutability = rtd
             .inherits
@@ -1350,17 +1335,14 @@ fn constructor(
         }
 
         if let Some((embedded_offset, writer)) = embedded_offset_and_writer {
-            (writer)(record.byte_add(embedded_offset) as *mut ());
+            (writer)(record.byte_add(embedded_offset).cast().as_ptr());
         }
 
-        let inner = Gc {
-            ptr: NonNull::new(record).unwrap(),
-            marker: PhantomData,
-        };
+        let gc = Gc { ptr: record };
 
-        crate::gc::unroot(&inner, layout);
+        unroot(&gc);
 
-        Record(inner)
+        Record(gc)
     };
 
     Ok(barrier.call_cont(Args::pack([Value::from(record)])))

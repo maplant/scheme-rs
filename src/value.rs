@@ -88,7 +88,7 @@ use parking_lot::RwLock;
 
 use crate::{
     exceptions::Exception,
-    gc::{Gc, GcInner, Trace},
+    gc::{Gc, HeapObject, Trace},
     lists::{self, Pair, PairInner},
     num::{ComplexNumber, Number, NumberInner, NumberRepr, SimpleNumber},
     proc::{ContBarrier, Procedure, ProcedureInner, ReturnAddress},
@@ -169,12 +169,10 @@ impl Value {
         unsafe {
             match tag {
                 Tag::Number => Arc::increment_strong_count(untagged as *const NumberInner),
-                Tag::Procedure => {
-                    Gc::increment_reference_count(untagged as *mut GcInner<ProcedureInner>)
-                }
+                Tag::Procedure => Gc::increment_reference_count(untagged as *mut ProcedureInner),
                 Tag::Record => {
                     if !untagged.is_null() {
-                        Gc::increment_reference_count(untagged as *mut GcInner<RecordInner>)
+                        Gc::increment_reference_count(untagged as *mut RecordInner)
                     }
                 }
                 Tag::RecordTypeDescriptor => {
@@ -182,11 +180,11 @@ impl Value {
                 }
                 Tag::Pair => {
                     if !untagged.is_null() {
-                        Gc::increment_reference_count(untagged as *mut GcInner<PairInner>)
+                        Gc::increment_reference_count(untagged as *mut PairInner)
                     }
                 }
                 Tag::Cell => {
-                    Gc::increment_reference_count(untagged as *mut GcInner<Value>);
+                    Gc::increment_reference_count(untagged as *mut Value);
                 }
                 Tag::ReturnAddress | Tag::FixNum | Tag::SmallValue => (),
             }
@@ -275,8 +273,7 @@ impl Value {
             && let untagged = self.0.map_addr(|raw| raw & !TAG)
             && !untagged.is_null()
         {
-            let rec =
-                ManuallyDrop::new(unsafe { Gc::from_raw(untagged as *mut GcInner<RecordInner>) });
+            let rec = ManuallyDrop::new(unsafe { Gc::from_raw(untagged as *mut RecordInner) });
             // TODO: Optimize by checking that both types aren't sealed before
             // checking the inherits list.
             rec.rtd().is_subtype_of(&T::rtd())
@@ -322,12 +319,12 @@ impl Value {
                 UnpackedValue::Number(Number(NumberRepr::Heap(number)))
             }
             Tag::Procedure => {
-                let clos = unsafe { Gc::from_raw(untagged as *mut GcInner<ProcedureInner>) };
+                let clos = unsafe { Gc::from_raw(untagged as *mut ProcedureInner) };
                 UnpackedValue::Procedure(Procedure(clos))
             }
             Tag::Record if untagged.is_null() => UnpackedValue::Undefined,
             Tag::Record => {
-                let rec = unsafe { Gc::from_raw(untagged as *mut GcInner<RecordInner>) };
+                let rec = unsafe { Gc::from_raw(untagged as *mut RecordInner) };
                 UnpackedValue::Record(Record(rec))
             }
             Tag::RecordTypeDescriptor => {
@@ -336,11 +333,11 @@ impl Value {
             }
             Tag::Pair if untagged.is_null() => UnpackedValue::Null,
             Tag::Pair => {
-                let pair = unsafe { Gc::from_raw(untagged as *mut GcInner<PairInner>) };
+                let pair = unsafe { Gc::from_raw(untagged as *mut PairInner) };
                 UnpackedValue::Pair(Pair(pair))
             }
             Tag::Cell => {
-                let cell = unsafe { Gc::from_raw(untagged as *mut GcInner<RwLock<Value>>) };
+                let cell = unsafe { Gc::from_raw(untagged as *mut RwLock<Value>) };
                 UnpackedValue::Cell(Cell(cell))
             }
             Tag::FixNum => UnpackedValue::Number(Number(NumberRepr::Fixed(raw as i64 >> 1))),
@@ -375,7 +372,7 @@ impl Value {
             return None;
         }
         Some(ManuallyDrop::new(unsafe {
-            Gc::from_raw(untagged as *mut GcInner<PairInner>)
+            Gc::from_raw(untagged as *mut PairInner)
         }))
     }
 
@@ -549,10 +546,10 @@ impl Drop for Value {
         unsafe {
             match tag {
                 Tag::Number => drop(Arc::from_raw(untagged as *const NumberInner)),
-                Tag::Procedure => drop(Gc::from_raw(untagged as *mut GcInner<ProcedureInner>)),
+                Tag::Procedure => drop(Gc::from_raw(untagged as *mut ProcedureInner)),
                 Tag::Record => {
                     if !untagged.is_null() {
-                        drop(Gc::from_raw(untagged as *mut GcInner<RecordInner>));
+                        drop(Gc::from_raw(untagged as *mut RecordInner));
                     }
                 }
                 Tag::RecordTypeDescriptor => {
@@ -560,10 +557,10 @@ impl Drop for Value {
                 }
                 Tag::Pair => {
                     if !untagged.is_null() {
-                        drop(Gc::from_raw(untagged as *mut GcInner<PairInner>));
+                        drop(Gc::from_raw(untagged as *mut PairInner));
                     }
                 }
-                Tag::Cell => drop(Gc::from_raw(untagged as *mut GcInner<RwLock<Value>>)),
+                Tag::Cell => drop(Gc::from_raw(untagged as *mut RwLock<Value>)),
                 Tag::ReturnAddress | Tag::FixNum | Tag::SmallValue => (),
             }
         }
@@ -618,7 +615,7 @@ impl fmt::Debug for Value {
 }
 
 unsafe impl Trace for Value {
-    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(crate::gc::OpaqueGcPtr)) {
+    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(HeapObject)) {
         unsafe {
             self.unpacked_ref().visit_children(visitor);
         }

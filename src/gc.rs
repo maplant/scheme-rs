@@ -12,24 +12,21 @@
 //! providing all of the semantics Scheme expects and also plays nicely as a
 //! Rust type (no need to root/unroot).
 
-pub use scheme_rs_gc::{HeapAlreadyCreated, OpaqueGcPtr, init_gc, set_heap_size};
+pub use scheme_rs_gc::{HeapAlreadyCreated, HeapObject, init_gc, set_heap_size};
 pub use scheme_rs_macros::Trace;
 
 use std::{
-    alloc::Layout,
     any::{Any, TypeId},
-    cell::UnsafeCell,
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     hash::Hash,
-    marker::PhantomData,
     mem::ManuallyDrop,
     ops::Deref,
     path::PathBuf,
-    ptr::{NonNull, addr_of_mut, drop_in_place},
+    ptr::{NonNull, drop_in_place},
     sync::atomic::Ordering,
 };
 
-use scheme_rs_gc::{GcHeader, VTable, alloc, collect_garbage as collect_garbage_sync};
+use scheme_rs_gc::{HEADER_SIZE, VTable, collect_garbage as collect_garbage_sync};
 use scheme_rs_macros::{maybe_async, maybe_await};
 #[cfg(feature = "tokio")]
 use tokio::task::spawn_blocking;
@@ -40,8 +37,7 @@ use crate::{Either, registry::bridge};
 /// implements the [`Trace`] trait to properly track references.
 #[repr(transparent)]
 pub struct Gc<T: ?Sized> {
-    pub(crate) ptr: NonNull<GcInner<T>>,
-    pub(crate) marker: PhantomData<GcInner<T>>,
+    pub(crate) ptr: NonNull<T>,
 }
 
 #[allow(private_bounds)]
@@ -50,7 +46,7 @@ impl<T: Send + GcOrTrace + 'static> Gc<T> {
     pub fn new(data: T) -> Gc<T> {
         let new_gc = Self::rooted(data);
         unsafe {
-            unroot(&new_gc, Layout::new::<GcInner<T>>());
+            unroot(&new_gc);
         }
         new_gc
     }
@@ -58,17 +54,8 @@ impl<T: Send + GcOrTrace + 'static> Gc<T> {
     /// Allocate a new object and do not track it. The object will only become
     /// tracked when it is called with `unroot`.
     pub(crate) fn rooted(data: T) -> Gc<T> {
-        let layout = Layout::new::<GcInner<T>>();
-        let ptr = alloc(layout).cast::<GcInner<T>>();
-        unsafe {
-            ptr.write(GcInner {
-                header: UnsafeCell::new(GcHeader::new(layout)),
-                data: UnsafeCell::new(data),
-            })
-        };
-        Self {
-            ptr,
-            marker: PhantomData,
+        Gc {
+            ptr: HeapObject::alloc(data),
         }
     }
 
@@ -78,20 +65,11 @@ impl<T: Send + GcOrTrace + 'static> Gc<T> {
     ///
     /// `T` must be valid with a zeroed bit pattern
     pub(crate) unsafe fn new_zeroed() -> Gc<T> {
-        let layout = Layout::new::<GcInner<T>>();
-        let ptr = alloc(layout).cast::<GcInner<T>>();
-        unsafe {
-            ptr.write_bytes(0, 1);
-            addr_of_mut!((*ptr.as_ptr()).header).write(UnsafeCell::new(GcHeader::new(layout)));
-        }
-        let new_gc = Self {
-            ptr,
-            marker: PhantomData,
+        let gc = Gc {
+            ptr: unsafe { HeapObject::alloc_zeroed() },
         };
-        unsafe {
-            unroot(&new_gc, layout);
-        }
-        new_gc
+        unsafe { unroot(&gc) };
+        gc
     }
 }
 
@@ -101,11 +79,8 @@ impl<T: GcOrTrace + Send + Sync + 'static> Gc<T> {
     /// since [`CoerceUnsized`](std::ops::CoerceUnsized) is unstable.
     pub fn into_any(this: Self) -> Gc<dyn Any + Send + Sync> {
         let this = ManuallyDrop::new(this);
-        let any: NonNull<GcInner<dyn Any + Send + Sync>> = this.ptr;
-        Gc {
-            ptr: any,
-            marker: PhantomData,
-        }
+        let any: NonNull<dyn Any + Send + Sync> = this.ptr;
+        Gc { ptr: any }
     }
 }
 
@@ -118,9 +93,7 @@ impl<T: GcOrTrace> Gc<T> {
     /// Calling this function more than once on a rooted Gc object or at all on
     /// an unrooted Gc object is undefined behavior.
     pub(crate) unsafe fn unroot(this: &Self) {
-        unsafe {
-            unroot(this, Layout::new::<GcInner<T>>());
-        }
+        unsafe { unroot(this) };
     }
 }
 
@@ -130,15 +103,8 @@ impl<T: ?Sized> Gc<T> {
     /// This function is not safe and basically useless for anything outside of
     /// the Trace proc macro's generated code.
     #[doc(hidden)]
-    pub unsafe fn as_opaque(&self) -> OpaqueGcPtr {
-        unsafe {
-            OpaqueGcPtr::new(
-                NonNull::from_ref(&self.ptr.as_ref().header),
-                NonNull::new_unchecked(
-                    (*self.ptr.as_ptr()).data.get() as *mut () as *mut UnsafeCell<()>
-                ),
-            )
-        }
+    pub unsafe fn as_opaque(&self) -> HeapObject {
+        unsafe { HeapObject::from_data(self.ptr) }
     }
 
     /// Determine if two Gc types share the same pointer (i.e. are equivalent).
@@ -146,44 +112,25 @@ impl<T: ?Sized> Gc<T> {
         std::ptr::addr_eq(lhs.ptr.as_ptr(), rhs.ptr.as_ptr())
     }
 
-    pub(crate) fn as_ptr(this: &Self) -> *mut GcInner<T> {
+    pub(crate) fn as_ptr(this: &Self) -> *mut T {
         this.ptr.as_ptr()
     }
 
-    pub(crate) fn into_raw(gc: Self) -> *mut GcInner<T> {
+    pub(crate) fn into_raw(gc: Self) -> *mut T {
         ManuallyDrop::new(gc).ptr.as_ptr()
     }
 
-    #[cfg(debug_assertions)]
-    pub(crate) unsafe fn increment_reference_count(ptr: *mut GcInner<T>) {
-        let ptr = NonNull::new(ptr).unwrap();
-        inc_rc(ptr);
-    }
-
-    #[cfg(not(debug_assertions))]
-    pub(crate) unsafe fn increment_reference_count(ptr: *mut GcInner<T>) {
+    /// Safety: ptr is allocated by alloc and is directly preceded by a GcHeader
+    pub(crate) unsafe fn increment_reference_count(ptr: *mut T) {
+        debug_assert!(!ptr.is_null());
         let ptr = unsafe { NonNull::new_unchecked(ptr) };
         inc_rc(ptr);
     }
 
-    /// Create a new Gc from the raw pointer. Does not increment the reference
-    /// count.
-    #[cfg(debug_assertions)]
-    pub(crate) unsafe fn from_raw(ptr: *mut GcInner<T>) -> Self {
-        let ptr = NonNull::new(ptr).unwrap();
-        Self {
-            ptr,
-            marker: PhantomData,
-        }
-    }
-
-    #[cfg(not(debug_assertions))]
-    pub(crate) unsafe fn from_raw(ptr: *mut GcInner<T>) -> Self {
+    pub(crate) unsafe fn from_raw(ptr: *mut T) -> Self {
+        debug_assert!(!ptr.is_null());
         let ptr = unsafe { NonNull::new_unchecked(ptr) };
-        Self {
-            ptr,
-            marker: PhantomData,
-        }
+        Self { ptr }
     }
 }
 
@@ -193,12 +140,8 @@ impl Gc<dyn Any + Send + Sync> {
     pub fn downcast<T: Any + Send + Sync>(self) -> Result<Gc<T>, Self> {
         if self.as_ref().is::<T>() {
             let this = ManuallyDrop::new(self);
-            let ptr = this.ptr.as_ptr() as *mut GcInner<T>;
-            let ptr = unsafe { NonNull::new_unchecked(ptr) };
-            Ok(Gc {
-                ptr,
-                marker: PhantomData,
-            })
+            let ptr = this.ptr.cast::<T>();
+            Ok(Gc { ptr })
         } else {
             Err(self)
         }
@@ -209,7 +152,7 @@ impl<T: ?Sized> Deref for Gc<T> {
     type Target = T;
 
     fn deref(&self) -> &T {
-        unsafe { &*self.ptr.as_ref().data.get() }
+        unsafe { self.ptr.as_ref() }
     }
 }
 
@@ -253,10 +196,7 @@ where
 impl<T: ?Sized> Clone for Gc<T> {
     fn clone(&self) -> Gc<T> {
         inc_rc(self.ptr);
-        Self {
-            ptr: self.ptr,
-            marker: PhantomData,
-        }
+        Self { ptr: self.ptr }
     }
 }
 
@@ -284,34 +224,34 @@ unsafe impl<T: ?Sized + Send> Send for Gc<T> {}
 unsafe impl<T: ?Sized + Sync> Sync for Gc<T> {}
 
 unsafe impl<T> arc_swap::RefCnt for Gc<T> {
-    type Base = GcInner<T>;
+    type Base = T;
 
-    fn into_ptr(me: Self) -> *mut GcInner<T> {
+    fn into_ptr(me: Self) -> *mut T {
         Gc::into_raw(me)
     }
 
-    fn as_ptr(me: &Self) -> *mut GcInner<T> {
+    fn as_ptr(me: &Self) -> *mut T {
         Gc::as_ptr(me)
     }
 
     unsafe fn from_ptr(ptr: *const Self::Base) -> Self {
-        unsafe { Gc::from_raw(ptr as *mut GcInner<T>) }
+        unsafe { Gc::from_raw(ptr as *mut T) }
     }
 }
 
-fn inc_rc<T: ?Sized>(ptr: NonNull<GcInner<T>>) {
+fn inc_rc<T: ?Sized>(ptr: NonNull<T>) {
     unsafe {
-        (*ptr.as_ref().header.get())
-            .shared_rc()
+        HeapObject::from_data(ptr)
+            .rc()
             .fetch_add(1, Ordering::Relaxed);
     }
 }
 
-fn dec_rc<T: ?Sized>(ptr: NonNull<GcInner<T>>) {
+fn dec_rc<T: ?Sized>(ptr: NonNull<T>) {
     unsafe {
-        (*ptr.as_ref().header.get())
-            .shared_rc()
-            .fetch_sub(1, Ordering::Release);
+        HeapObject::from_data(ptr)
+            .rc()
+            .fetch_sub(1, Ordering::Relaxed);
     }
 }
 
@@ -327,38 +267,15 @@ fn vtable<T: GcOrTrace>() -> VTable {
 }
 
 #[allow(private_bounds)]
-pub(crate) unsafe fn unroot<T: GcOrTrace>(gc: &Gc<T>, layout: Layout) {
-    unsafe { scheme_rs_gc::unroot(gc.ptr.cast(), TypeId::of::<T>(), vtable::<T>, layout) }
-}
-
-#[repr(C)]
-#[doc(hidden)]
-pub struct GcInner<T: ?Sized> {
-    header: UnsafeCell<GcHeader>,
-    data: UnsafeCell<T>,
-}
-
-impl<T: Trace> GcInner<T> {
-    pub(crate) fn new(data: T) -> Self {
-        Self {
-            header: UnsafeCell::new(GcHeader::new(Layout::new::<GcInner<T>>())),
-            data: UnsafeCell::new(data),
-        }
-    }
-
-    pub(crate) fn data_mut(&mut self) -> &mut T {
-        self.data.get_mut()
+pub(crate) unsafe fn unroot<T: GcOrTrace>(gc: &Gc<T>) {
+    unsafe {
+        scheme_rs_gc::unroot(
+            HeapObject::from_data(gc.ptr),
+            TypeId::of::<T>(),
+            vtable::<T>,
+        )
     }
 }
-
-impl<T> GcInner<T> {
-    pub(crate) const fn data_offset() -> usize {
-        std::mem::offset_of!(Self, data)
-    }
-}
-
-unsafe impl<T: ?Sized + Send> Send for GcInner<T> {}
-unsafe impl<T: ?Sized + Sync> Sync for GcInner<T> {}
 
 /// A type that can be traced for garbage collection. Types that implement this
 /// trait can be converted into a [`Gc`] for automatic garbage collection.
@@ -374,7 +291,7 @@ pub unsafe trait Trace: 'static {
     /// function **ANYWHERE ELSE** is a **RACE CONDITION**!
     ///
     /// **DO NOT CALL THIS FUNCTION!!**
-    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr));
+    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(HeapObject));
 
     /// # Safety
     ///
@@ -389,7 +306,7 @@ macro_rules! impl_empty_trace {
     ( $( $x:ty ),* ) => {
         $(
             unsafe impl Trace for $x {
-                unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(OpaqueGcPtr)) {}
+                unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(HeapObject)) {}
 
                 unsafe fn finalize(&mut self) {
                     unsafe {
@@ -435,7 +352,7 @@ where
     A: ?Sized + 'static,
     B: ?Sized + 'static,
 {
-    unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(OpaqueGcPtr)) {}
+    unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(HeapObject)) {}
 
     unsafe fn finalize(&mut self) {
         unsafe {
@@ -448,13 +365,13 @@ where
 ///
 /// This function is _not_ safe to implement!
 unsafe trait GcOrTrace: 'static {
-    unsafe fn visit_or_recurse(&self, visitor: &mut dyn FnMut(OpaqueGcPtr));
+    unsafe fn visit_or_recurse(&self, visitor: &mut dyn FnMut(HeapObject));
 
     unsafe fn finalize_or_skip(&mut self);
 }
 
 unsafe impl<T: ?Sized + 'static> GcOrTrace for Gc<T> {
-    unsafe fn visit_or_recurse(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
+    unsafe fn visit_or_recurse(&self, visitor: &mut dyn FnMut(HeapObject)) {
         unsafe { visitor(self.as_opaque()) }
     }
 
@@ -462,7 +379,7 @@ unsafe impl<T: ?Sized + 'static> GcOrTrace for Gc<T> {
 }
 
 unsafe impl<T: Trace + ?Sized> GcOrTrace for T {
-    unsafe fn visit_or_recurse(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
+    unsafe fn visit_or_recurse(&self, visitor: &mut dyn FnMut(HeapObject)) {
         unsafe {
             self.visit_children(visitor);
         }
@@ -480,7 +397,7 @@ where
     A: GcOrTrace,
     B: GcOrTrace,
 {
-    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
+    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(HeapObject)) {
         unsafe {
             self.0.visit_or_recurse(visitor);
             self.1.visit_or_recurse(visitor);
@@ -501,7 +418,7 @@ where
     B: GcOrTrace,
     C: GcOrTrace,
 {
-    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
+    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(HeapObject)) {
         unsafe {
             self.0.visit_or_recurse(visitor);
             self.1.visit_or_recurse(visitor);
@@ -522,7 +439,7 @@ unsafe impl<T, const N: usize> Trace for [T; N]
 where
     T: GcOrTrace,
 {
-    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
+    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(HeapObject)) {
         unsafe {
             for item in self {
                 item.visit_or_recurse(visitor);
@@ -543,7 +460,7 @@ unsafe impl<T> Trace for Vec<T>
 where
     T: GcOrTrace,
 {
-    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
+    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(HeapObject)) {
         unsafe {
             for child in self {
                 child.visit_or_recurse(visitor);
@@ -565,7 +482,7 @@ where
     K: GcOrTrace,
     S: Default + 'static,
 {
-    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
+    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(HeapObject)) {
         unsafe {
             for k in self {
                 k.visit_or_recurse(visitor);
@@ -588,7 +505,7 @@ where
     V: GcOrTrace,
     S: Default + 'static,
 {
-    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
+    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(HeapObject)) {
         unsafe {
             for (k, v) in self {
                 k.visit_or_recurse(visitor);
@@ -613,7 +530,7 @@ unsafe impl<K> Trace for hashbrown::HashTable<K>
 where
     K: GcOrTrace,
 {
-    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
+    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(HeapObject)) {
         unsafe {
             for k in self {
                 k.visit_or_recurse(visitor);
@@ -635,7 +552,7 @@ unsafe impl<K> Trace for indexmap::IndexSet<K>
 where
     K: GcOrTrace,
 {
-    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
+    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(HeapObject)) {
         unsafe {
             for k in self {
                 k.visit_or_recurse(visitor);
@@ -657,7 +574,7 @@ where
     K: GcOrTrace,
     V: GcOrTrace,
 {
-    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
+    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(HeapObject)) {
         unsafe {
             for (k, v) in self {
                 k.visit_or_recurse(visitor);
@@ -682,7 +599,7 @@ unsafe impl<K> Trace for BTreeSet<K>
 where
     K: GcOrTrace,
 {
-    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
+    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(HeapObject)) {
         unsafe {
             for k in self {
                 k.visit_or_recurse(visitor);
@@ -704,7 +621,7 @@ where
     K: GcOrTrace,
     V: GcOrTrace,
 {
-    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
+    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(HeapObject)) {
         unsafe {
             for (k, v) in self {
                 k.visit_or_recurse(visitor);
@@ -729,7 +646,7 @@ unsafe impl<T> Trace for Option<T>
 where
     T: GcOrTrace,
 {
-    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
+    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(HeapObject)) {
         unsafe {
             if let Some(inner) = self {
                 inner.visit_or_recurse(visitor);
@@ -751,7 +668,7 @@ where
     V: GcOrTrace,
     E: GcOrTrace,
 {
-    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
+    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(HeapObject)) {
         unsafe {
             match self {
                 Ok(inner) => inner.visit_or_recurse(visitor),
@@ -775,7 +692,7 @@ where
     L: GcOrTrace,
     R: GcOrTrace,
 {
-    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
+    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(HeapObject)) {
         unsafe {
             match self {
                 Either::Left(inner) => inner.visit_or_recurse(visitor),
@@ -798,7 +715,7 @@ unsafe impl<T> Trace for Box<T>
 where
     T: GcOrTrace,
 {
-    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
+    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(HeapObject)) {
         unsafe {
             self.as_ref().visit_or_recurse(visitor);
         }
@@ -818,7 +735,7 @@ unsafe impl<T> Trace for Box<[T]>
 where
     T: GcOrTrace,
 {
-    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
+    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(HeapObject)) {
         unsafe {
             for child in self.as_ref() {
                 child.visit_or_recurse(visitor);
@@ -842,7 +759,7 @@ unsafe impl<T> Trace for by_address::ByAddress<T>
 where
     T: ?Sized + GcOrTrace + Deref,
 {
-    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
+    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(HeapObject)) {
         unsafe { self.0.visit_or_recurse(visitor) }
     }
 
@@ -855,7 +772,7 @@ unsafe impl<T> Trace for std::sync::Arc<T>
 where
     T: ?Sized + 'static,
 {
-    unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(OpaqueGcPtr)) {
+    unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(HeapObject)) {
         // We cannot visit the children for an Arc, as it may lead to situations
         // were we incorrectly decrement a child twice.
         // An Arc wrapping a Gc effectively creates an additional ref count for
@@ -871,7 +788,7 @@ unsafe impl<T> Trace for std::sync::Weak<T>
 where
     T: ?Sized + 'static,
 {
-    unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(OpaqueGcPtr)) {
+    unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(HeapObject)) {
         // Same reasoning as Arc. If we're not visiting Arcs, we shouldn't visit Weak.
         // Let it handle its own ref count.
     }
@@ -886,7 +803,7 @@ unsafe impl<T> Trace for futures::future::Shared<T>
 where
     T: std::future::Future + 'static,
 {
-    unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(OpaqueGcPtr)) {}
+    unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(HeapObject)) {}
 
     unsafe fn finalize(&mut self) {
         unsafe { drop_in_place(self as *mut Self) }
@@ -897,7 +814,7 @@ unsafe impl<T> Trace for std::sync::mpsc::Sender<T>
 where
     T: 'static,
 {
-    unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(OpaqueGcPtr)) {}
+    unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(HeapObject)) {}
 
     unsafe fn finalize(&mut self) {
         unsafe { drop_in_place(self as *mut Self) }
@@ -908,7 +825,7 @@ unsafe impl<T> Trace for std::sync::mpsc::SyncSender<T>
 where
     T: 'static,
 {
-    unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(OpaqueGcPtr)) {}
+    unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(HeapObject)) {}
 
     unsafe fn finalize(&mut self) {
         unsafe { drop_in_place(self as *mut Self) }
@@ -923,7 +840,7 @@ unsafe impl<T> Trace for tokio::sync::Mutex<T>
 where
     T: GcOrTrace,
 {
-    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
+    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(HeapObject)) {
         unsafe {
             if let Ok(lock) = self.try_lock() {
                 lock.visit_or_recurse(visitor);
@@ -942,7 +859,7 @@ unsafe impl<T> Trace for parking_lot::RwLock<T>
 where
     T: GcOrTrace,
 {
-    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
+    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(HeapObject)) {
         unsafe {
             if let Some(read_lock) = self.try_read() {
                 read_lock.visit_or_recurse(visitor);
@@ -962,7 +879,7 @@ unsafe impl<T> Trace for async_lock::RwLock<T>
 where
     T: GcOrTrace,
 {
-    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
+    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(HeapObject)) {
         unsafe {
             if let Some(read_lock) = async_lock::RwLock::try_read(self) {
                 read_lock.visit_or_recurse(visitor);
@@ -982,7 +899,7 @@ unsafe impl<T> Trace for tokio::sync::RwLock<T>
 where
     T: GcOrTrace,
 {
-    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
+    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(HeapObject)) {
         unsafe {
             if let Ok(read_lock) = tokio::sync::RwLock::try_read(self) {
                 read_lock.visit_or_recurse(visitor);
@@ -1002,7 +919,7 @@ unsafe impl<T> Trace for tokio::sync::mpsc::Sender<T>
 where
     T: 'static,
 {
-    unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(OpaqueGcPtr)) {}
+    unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(HeapObject)) {}
 
     unsafe fn finalize(&mut self) {
         unsafe {
@@ -1015,7 +932,7 @@ unsafe impl<T> Trace for std::sync::Mutex<T>
 where
     T: GcOrTrace,
 {
-    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
+    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(HeapObject)) {
         unsafe {
             if let Ok(lock) = self.try_lock() {
                 lock.visit_or_recurse(visitor);
@@ -1034,7 +951,7 @@ unsafe impl<T> Trace for parking_lot::Mutex<T>
 where
     T: GcOrTrace,
 {
-    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(OpaqueGcPtr)) {
+    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(HeapObject)) {
         unsafe {
             if let Some(lock) = self.try_lock() {
                 lock.visit_or_recurse(visitor);
@@ -1051,7 +968,7 @@ where
 
 #[bridge(name = "gc-header-size", lib = "(runtime (1))")]
 pub fn gc_header_size() -> usize {
-    size_of::<GcHeader>()
+    HEADER_SIZE
 }
 
 /// Force a garbage collection pause.
@@ -1119,7 +1036,7 @@ mod test {
     struct Tag(usize);
 
     unsafe impl Trace for Tag {
-        unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(OpaqueGcPtr)) {}
+        unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(HeapObject)) {}
 
         unsafe fn finalize(&mut self) {
             FINALIZE_ORDER.lock().push(self.0);
