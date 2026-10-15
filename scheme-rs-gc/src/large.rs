@@ -163,7 +163,6 @@ mod tests {
     use std::alloc::Layout;
     use std::alloc::{alloc, dealloc};
 
-    /// A large space over its own allocation, freed on drop.
     struct TestSpace {
         space: LargeSpace,
         addr: NonNull<u8>,
