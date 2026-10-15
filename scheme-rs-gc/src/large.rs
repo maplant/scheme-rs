@@ -18,7 +18,7 @@ pub(crate) struct LargeSpace {
     bitmap: NonNull<AtomicU64>,
     first_page: NonNull<u8>,
     n_pages: usize,
-    // A map of free consecutive pages, K being starts and V being ends. Starts with one: (0, N)
+    // A map of free consecutive pages, K being starts and V being lengths. Starts with one: (0, N)
     runs: Mutex<BTreeMap<usize, usize>>,
 }
 
