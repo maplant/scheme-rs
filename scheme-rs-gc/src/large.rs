@@ -158,15 +158,42 @@ mod tests {
     use crate::large::LargeSpace;
     use crate::large::PAGE;
     use crate::large::Run;
+    use core::ops::Deref;
     use core::ptr::NonNull;
     use std::alloc::Layout;
-    use std::alloc::alloc;
+    use std::alloc::{alloc, dealloc};
 
-    fn test_space(pages: usize) -> LargeSpace {
+    /// A large space over its own allocation, freed on drop.
+    struct TestSpace {
+        space: LargeSpace,
+        addr: NonNull<u8>,
+        layout: Layout,
+    }
+
+    impl Deref for TestSpace {
+        type Target = LargeSpace;
+
+        fn deref(&self) -> &LargeSpace {
+            &self.space
+        }
+    }
+
+    impl Drop for TestSpace {
+        fn drop(&mut self) {
+            unsafe { dealloc(self.addr.as_ptr(), self.layout) };
+        }
+    }
+
+    fn test_space(pages: usize) -> TestSpace {
         let layout = Layout::from_size_align(LargeSpace::bytes_needed_for(pages), BLOCK_SIZE)
             .expect("Failed to align to page");
         let addr = NonNull::new(unsafe { alloc(layout) }).expect("Test allocation failed");
-        unsafe { LargeSpace::init(addr, pages) }
+        let space = unsafe { LargeSpace::init(addr, pages) };
+        TestSpace {
+            space,
+            addr,
+            layout,
+        }
     }
 
     #[test]
