@@ -1,5 +1,7 @@
 //! Immix line/block heap: the first step toward an LXR collector for scheme-rs.
 
+#[cfg(not(loom))]
+mod collection;
 mod heap;
 mod mutator;
 mod reclaimer;
@@ -12,6 +14,8 @@ mod loom_tests;
 use core::alloc::Layout;
 
 pub use allocator_api2::alloc::{AllocError, Allocator, Global};
+#[cfg(not(loom))]
+pub use collection::{GcHeader, OpaqueGcPtr, VTable, collect_garbage, init_gc, unroot};
 pub use heap::{Heap, HeapStats};
 pub use mutator::Mutator;
 pub use reclaimer::Reclaimer;

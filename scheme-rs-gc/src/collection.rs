@@ -3,25 +3,27 @@
 //! V.T. Rajan.
 
 use std::{
-    alloc::Layout,
+    alloc::{Layout, dealloc},
     any::TypeId,
     cell::UnsafeCell,
+    fmt::{self, Debug, Formatter},
+    mem::take,
     ptr::{NonNull, null_mut},
-    sync::{OnceLock, atomic::AtomicUsize},
-    thread::JoinHandle,
+    sync::{
+        OnceLock,
+        atomic::{AtomicUsize, Ordering},
+    },
+    thread::{JoinHandle, spawn},
 };
 
 use parking_lot::{Condvar, Mutex};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
-use scheme_rs_macros::{maybe_async, maybe_await};
-
-use crate::registry::bridge;
 
 #[derive(Debug)]
 #[repr(C, align(8))]
-pub(crate) struct GcHeader {
+pub struct GcHeader {
     /// Reference count shared with the Gc types
-    pub(crate) shared_rc: AtomicUsize,
+    shared_rc: AtomicUsize,
     /// Reference count as of the current epoch
     epoch_rc: usize,
     /// Circular reference count
@@ -36,22 +38,22 @@ pub(crate) struct GcHeader {
     prev: *mut GcHeader,
 }
 
-#[bridge(name = "gc-header-size", lib = "(runtime (1))")]
-pub fn gc_header_size() -> usize {
-    std::mem::size_of::<GcHeader>()
-}
-
 impl GcHeader {
-    pub(crate) fn new<T: super::GcOrTrace>() -> Self {
+    pub fn new(layout: Layout) -> Self {
         Self {
             shared_rc: AtomicUsize::new(1),
             epoch_rc: 1,
             crc: 1,
             vtable: &INVALID_VTABLE,
-            layout: Layout::new::<super::GcInner<T>>(),
+            layout,
             next: null_mut(),
             prev: null_mut::<GcHeader>().map_addr(|addr| addr | 1),
         }
+    }
+
+    #[inline]
+    pub fn shared_rc(&self) -> &AtomicUsize {
+        &self.shared_rc
     }
 
     fn get_color(&self) -> Color {
@@ -87,27 +89,12 @@ impl GcHeader {
     }
 }
 
-#[derive(Debug, Clone)]
-struct VTable {
+#[derive(Debug)]
+pub struct VTable {
     /// Type-erased visitor function
-    visit_children: unsafe fn(this: *const (), visitor: &mut dyn FnMut(HeapObject<()>)),
+    pub visit_children: unsafe fn(this: *const (), visitor: &mut dyn FnMut(HeapObject<()>)),
     /// Type-erased finalizer function
-    finalize: unsafe fn(this: *mut ()),
-}
-
-impl VTable {
-    const fn new<T: super::GcOrTrace>() -> Self {
-        Self {
-            visit_children: |this, visitor| unsafe {
-                let this = this as *const UnsafeCell<T> as *const T;
-                T::visit_or_recurse(this.as_ref().unwrap(), visitor);
-            },
-            finalize: |this| unsafe {
-                let this = this as *mut T;
-                T::finalize_or_skip(this.as_mut().unwrap());
-            },
-        }
-    }
+    pub finalize: unsafe fn(this: *mut ()),
 }
 
 static INVALID_VTABLE: VTable = VTable {
@@ -149,13 +136,13 @@ impl From<u8> for Color {
 #[derive(Copy, Clone, Hash, PartialEq, Eq)]
 pub struct HeapObject<T> {
     /// Object header
-    pub(super) header: NonNull<UnsafeCell<GcHeader>>,
+    header: NonNull<UnsafeCell<GcHeader>>,
     /// Allocated data
-    pub(super) data: NonNull<UnsafeCell<T>>,
+    data: NonNull<UnsafeCell<T>>,
 }
 
-impl std::fmt::Debug for OpaqueGcPtr {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Debug for OpaqueGcPtr {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{:p}", self.header.as_ptr())
     }
 }
@@ -164,6 +151,24 @@ impl std::fmt::Debug for OpaqueGcPtr {
 pub type OpaqueGcPtr = HeapObject<()>;
 
 impl HeapObject<()> {
+    /// # Safety
+    ///
+    /// `header` and `data` belong to one object whose header was made by
+    /// `GcHeader::new`.
+    pub unsafe fn new(
+        header: NonNull<UnsafeCell<GcHeader>>,
+        data: NonNull<UnsafeCell<()>>,
+    ) -> Self {
+        Self { header, data }
+    }
+
+    /// # Safety
+    ///
+    /// The object is live.
+    pub unsafe fn rc(&self) -> &AtomicUsize {
+        unsafe { &(*self.header.as_ref().get()).shared_rc }
+    }
+
     unsafe fn from_ptr(ptr: *mut GcHeader) -> Option<Self> {
         if ptr.is_null() {
             return None;
@@ -190,7 +195,7 @@ impl HeapObject<()> {
         unsafe {
             (*self.header.as_ref().get())
                 .shared_rc
-                .load(std::sync::atomic::Ordering::Acquire)
+                .load(Ordering::Acquire)
         }
     }
 
@@ -198,7 +203,7 @@ impl HeapObject<()> {
         unsafe {
             (*self.header.as_ref().get())
                 .shared_rc
-                .fetch_sub(1, std::sync::atomic::Ordering::Release)
+                .fetch_sub(1, Ordering::Release)
         }
     }
 
@@ -254,11 +259,17 @@ impl HeapObject<()> {
         unsafe { (*self.header.as_ref().get()).layout }
     }
 
-    unsafe fn data(&self) -> *const () {
+    /// # Safety
+    ///
+    /// The object is live.
+    pub unsafe fn data(&self) -> *const () {
         self.data.as_ptr() as *const UnsafeCell<()> as *const ()
     }
 
-    unsafe fn data_mut(&self) -> *mut () {
+    /// # Safety
+    ///
+    /// The object is live.
+    pub unsafe fn data_mut(&self) -> *mut () {
         self.data.as_ptr() as *mut ()
     }
 
@@ -286,9 +297,24 @@ impl HeapObject<()> {
 unsafe impl Send for HeapObject<()> {}
 unsafe impl Sync for HeapObject<()> {}
 
-#[allow(private_bounds)]
-pub(crate) unsafe fn unroot<T: super::GcOrTrace>(gc: &super::Gc<T>, layout: Layout) {
-    let new_gc_ptr = gc.ptr.as_ptr() as *mut GcHeader;
+/// Links a new object into the heap list.
+///
+/// # Safety
+///
+/// `header` starts an allocation made by `std::alloc` with exactly `layout`,
+/// holds a live `GcHeader` not yet linked, and is followed by the object's
+/// data, which stays valid until the collector frees it. The collector may
+/// visit and free the object from its own thread. `vtable` builds the vtable
+/// for `type_id`; the first one registered for a `type_id` is used for every
+/// later object of it.
+#[inline]
+pub unsafe fn unroot(
+    header: NonNull<GcHeader>,
+    type_id: TypeId,
+    vtable: fn() -> VTable,
+    layout: Layout,
+) {
+    let new_gc_ptr = header.as_ptr();
 
     let mut heap = HEAP.lock();
 
@@ -296,10 +322,10 @@ pub(crate) unsafe fn unroot<T: super::GcOrTrace>(gc: &super::Gc<T>, layout: Layo
         let vtable = heap
             .vtables
             .get_or_insert_with(HashMap::default)
-            .entry(TypeId::of::<T>())
+            .entry(type_id)
             // This technically doesn't have to be a leak, we could just use
             // unsafe, but this plays nicely with the rust typesystem
-            .or_insert_with(|| Box::leak(Box::new(VTable::new::<T>())));
+            .or_insert_with(|| Box::leak(Box::new(vtable())));
 
         (*new_gc_ptr).vtable = vtable;
         (*new_gc_ptr).layout = layout;
@@ -333,8 +359,8 @@ struct Heap {
 impl Heap {
     const fn new() -> Self {
         Self {
-            head: std::ptr::null_mut(),
-            tail: std::ptr::null_mut(),
+            head: null_mut(),
+            tail: null_mut(),
             new_allocs: 0,
             epoch: 0,
             force_collection: false,
@@ -361,8 +387,7 @@ static COLLECTOR_TASK: OnceLock<JoinHandle<()>> = OnceLock::new();
 const MIN_ALLOCS_TO_COLLECT: usize = 10_000;
 
 /// Initializes the garbage collector thread. Calling this function is typically
-/// not required as creating a [`Runtime`](crate::runtime::Runtime)
-/// automatically calls it.
+/// not required as creating a scheme-rs `Runtime` automatically calls it.
 ///
 /// Calling this function multiple times does nothing, there is only one
 /// collector thread allowed at a time.
@@ -370,33 +395,13 @@ pub fn init_gc() {
     let _ = COLLECTOR_TASK.get_or_init(|| Collector::new().run());
 }
 
-fn collect_garbage_sync() {
+/// Force a garbage collection pause.
+pub fn collect_garbage() {
     let mut heap = HEAP.lock();
     let target_epoch = heap.epoch + 1;
     heap.force_collection = true;
     COLLECTION_START_SIGNAL.notify_one();
     COLLECTION_DONE_SIGNAL.wait_while(&mut heap, |heap| heap.epoch < target_epoch);
-}
-
-/// Force a garbage collection pause.
-#[cfg(not(feature = "async"))]
-pub fn collect_garbage() {
-    collect_garbage_sync();
-}
-
-#[cfg(feature = "tokio")]
-pub async fn collect_garbage() {
-    tokio::task::spawn_blocking(|| {
-        collect_garbage_sync();
-    })
-    .await
-    .unwrap();
-}
-
-#[maybe_async]
-#[bridge(name = "collect-garbage", lib = "(runtime (1))")]
-pub fn collect_garbage_bridge() {
-    maybe_await!(collect_garbage());
 }
 
 #[derive(Debug)]
@@ -434,7 +439,7 @@ impl Collector {
     }
 
     fn run(mut self) -> JoinHandle<()> {
-        std::thread::spawn(move || {
+        spawn(move || {
             loop {
                 self.epoch();
             }
@@ -446,8 +451,8 @@ impl Collector {
 
         COLLECTION_START_SIGNAL.wait_while(&mut heap, Heap::should_not_collect);
 
-        self.head = std::mem::take(&mut heap.head);
-        self.tail = std::mem::take(&mut heap.tail);
+        self.head = take(&mut heap.head);
+        self.tail = take(&mut heap.tail);
         heap.new_allocs = 0;
         heap.force_collection = false;
     }
@@ -640,7 +645,7 @@ impl Collector {
 
     unsafe fn free_cycles(&mut self) {
         unsafe {
-            for c in std::mem::take(&mut self.cycles).into_iter().rev() {
+            for c in take(&mut self.cycles).into_iter().rev() {
                 if delta_test(&c) && sigma_test(&c) {
                     self.free_cycle(&c);
                 } else {
@@ -732,7 +737,7 @@ impl Collector {
             (s.finalize())(s.data_mut());
 
             // Deallocate the object:
-            std::alloc::dealloc(s.header.as_ptr() as *mut u8, s.layout());
+            dealloc(s.header.as_ptr() as *mut u8, s.layout());
         }
     }
 }
@@ -836,182 +841,5 @@ unsafe fn delta_test(c: &[OpaqueGcPtr]) -> bool {
             }
         }
         true
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-    use crate::gc::*;
-    use parking_lot::RwLock;
-    use std::sync::Arc;
-
-    #[test]
-    fn cycles() {
-        init_gc();
-
-        #[derive(Default, Trace)]
-        struct Cyclic {
-            next: Option<Gc<RwLock<Cyclic>>>,
-            out: Option<Arc<()>>,
-        }
-
-        let out_ptr = Arc::new(());
-
-        let a = Gc::new(RwLock::new(Cyclic::default()));
-        let b = Gc::new(RwLock::new(Cyclic::default()));
-        let c = Gc::new(RwLock::new(Cyclic::default()));
-
-        // a -> b -> c -
-        // ^----------/
-        a.write().next = Some(b.clone());
-        b.write().next = Some(c.clone());
-        b.write().out = Some(out_ptr.clone());
-        c.write().next = Some(a.clone());
-
-        assert_eq!(Arc::strong_count(&out_ptr), 2);
-
-        drop(a);
-        drop(b);
-        drop(c);
-
-        collect_garbage_sync();
-        collect_garbage_sync();
-        collect_garbage_sync();
-
-        assert_eq!(Arc::strong_count(&out_ptr), 1);
-    }
-
-    static FINALIZE_ORDER: Mutex<Vec<usize>> = Mutex::new(Vec::new());
-
-    struct Tag(usize);
-
-    unsafe impl Trace for Tag {
-        unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(OpaqueGcPtr)) {}
-
-        unsafe fn finalize(&mut self) {
-            FINALIZE_ORDER.lock().push(self.0);
-        }
-    }
-
-    #[derive(Trace)]
-    struct TreeNode {
-        tag: Tag,
-        kids: Vec<Gc<RwLock<TreeNode>>>,
-    }
-
-    fn tree_node(tag: usize, kids: Vec<Gc<RwLock<TreeNode>>>) -> Gc<RwLock<TreeNode>> {
-        Gc::new(RwLock::new(TreeNode {
-            tag: Tag(tag),
-            kids,
-        }))
-    }
-
-    #[test]
-    fn release_cascade_finalizes_children_before_parents() {
-        init_gc();
-
-        // 0 -> (1 -> (3, 4), 2 -> 5)
-        let root = tree_node(
-            0,
-            vec![
-                tree_node(1, vec![tree_node(3, Vec::new()), tree_node(4, Vec::new())]),
-                tree_node(2, vec![tree_node(5, Vec::new())]),
-            ],
-        );
-
-        collect_garbage_sync();
-        collect_garbage_sync();
-        FINALIZE_ORDER.lock().clear();
-
-        drop(root);
-        collect_garbage_sync();
-        collect_garbage_sync();
-
-        let order = FINALIZE_ORDER.lock().clone();
-        assert_eq!(order.len(), 6, "not every node finalized: {order:?}");
-        let at = |tag| order.iter().position(|&t| t == tag).unwrap();
-        for (child, parent) in [(3, 1), (4, 1), (5, 2), (1, 0), (2, 0)] {
-            assert!(at(child) < at(parent), "{child} finalized after {parent}");
-        }
-    }
-
-    /// Deep enough to exhaust the collector's 2 MiB stack in any build profile.
-    const DEEP: usize = 200_000;
-
-    #[derive(Default, Trace)]
-    struct DeepNode {
-        next: Option<Gc<RwLock<DeepNode>>>,
-        chain: Option<Gc<RwLock<DeepNode>>>,
-        out: Option<Arc<()>>,
-    }
-
-    fn deep_chain(len: usize, out: &Arc<()>) -> Gc<RwLock<DeepNode>> {
-        let mut head = Gc::new(RwLock::new(DeepNode {
-            out: Some(out.clone()),
-            ..Default::default()
-        }));
-        for _ in 1..len {
-            head = Gc::new(RwLock::new(DeepNode {
-                next: Some(head),
-                ..Default::default()
-            }));
-        }
-        head
-    }
-
-    #[test]
-    fn deep_chain_drop_releases_fully() {
-        init_gc();
-
-        let out = Arc::new(());
-        let head = deep_chain(DEEP, &out);
-        assert_eq!(Arc::strong_count(&out), 2);
-
-        // Do not remove these. Until every node has been through an epoch its
-        // buffered flag stops the cascade after a single node, so without them
-        // the drop below never recurses deeply and this test passes even
-        // against the unfixed recursive cascade.
-        collect_garbage_sync();
-        collect_garbage_sync();
-
-        drop(head);
-        collect_garbage_sync();
-        collect_garbage_sync();
-        assert_eq!(Arc::strong_count(&out), 1, "deep chain not fully released");
-    }
-
-    /// Covers the other entry point: `free_cycle` reaching the cascade through
-    /// `cyclic_decrement`, rather than the rc-zero sweep.
-    #[test]
-    fn deep_chain_behind_freed_cycle_releases_fully() {
-        init_gc();
-
-        let out = Arc::new(());
-        let chain = deep_chain(DEEP, &out);
-        // Do not remove these; same reason as the previous test.
-        collect_garbage_sync();
-        collect_garbage_sync();
-
-        let a = Gc::new(RwLock::new(DeepNode::default()));
-        let b = Gc::new(RwLock::new(DeepNode::default()));
-        a.write().next = Some(b.clone());
-        b.write().next = Some(a.clone());
-        b.write().chain = Some(chain.clone());
-
-        drop(a);
-        drop(b);
-        // Trial-deletes the a/b cycle.
-        collect_garbage_sync();
-
-        // Frees a/b, whose chain edge then decrements the head to zero.
-        drop(chain);
-        collect_garbage_sync();
-        collect_garbage_sync();
-        assert_eq!(
-            Arc::strong_count(&out),
-            1,
-            "chain behind freed cycle not released"
-        );
     }
 }
