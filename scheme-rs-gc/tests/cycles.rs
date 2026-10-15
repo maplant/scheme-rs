@@ -3,7 +3,7 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 use std::any::TypeId;
 
-use scheme_rs_gc::{HeapObject, VTable, collect_garbage, init_gc, unroot};
+use scheme_rs_gc::{HeapObject, VTable, collect_garbage, init_gc, shutdown_gc, unroot};
 
 struct Node {
     next: Option<HeapObject>,
@@ -54,4 +54,5 @@ fn an_unreachable_cycle_is_finalized() {
         collect_garbage();
     }
     assert_eq!(FINALIZED.load(Ordering::Relaxed), 2);
+    shutdown_gc();
 }

@@ -3,7 +3,9 @@
 use core::sync::atomic::Ordering;
 use std::any::TypeId;
 
-use scheme_rs_gc::{BLOCK_SIZE, HeapObject, VTable, heap_capacity, init_gc, set_heap_size, unroot};
+use scheme_rs_gc::{
+    BLOCK_SIZE, HeapObject, VTable, heap_capacity, init_gc, set_heap_size, shutdown_gc, unroot,
+};
 
 struct Obj(#[allow(dead_code)] [u8; 1024]);
 
@@ -26,4 +28,5 @@ fn a_full_heap_collects_and_retries() {
             obj.rc().fetch_sub(1, Ordering::Release);
         }
     }
+    shutdown_gc();
 }

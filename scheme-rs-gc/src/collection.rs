@@ -11,10 +11,7 @@ use std::{
     panic::{AssertUnwindSafe, catch_unwind},
     process::abort,
     ptr::{NonNull, null_mut},
-    sync::{
-        OnceLock,
-        atomic::{AtomicUsize, Ordering},
-    },
+    sync::atomic::{AtomicUsize, Ordering},
     thread::{JoinHandle, spawn},
 };
 
@@ -382,6 +379,7 @@ struct Heap {
     new_allocs: usize,
     epoch: usize,
     force_collection: bool,
+    shutdown: bool,
     vtables: Option<HashMap<TypeId, &'static VTable>>,
 }
 
@@ -393,6 +391,7 @@ impl Heap {
             new_allocs: 0,
             epoch: 0,
             force_collection: false,
+            shutdown: false,
             vtables: None,
         }
     }
@@ -402,7 +401,7 @@ impl Heap {
     }
 
     fn should_not_collect(&mut self) -> bool {
-        self.new_allocs < MIN_ALLOCS_TO_COLLECT && !self.force_collection
+        self.new_allocs < MIN_ALLOCS_TO_COLLECT && !self.force_collection && !self.shutdown
     }
 }
 
@@ -412,7 +411,7 @@ unsafe impl Sync for Heap {}
 static HEAP: Mutex<Heap> = Mutex::new(Heap::new());
 static COLLECTION_START_SIGNAL: Condvar = Condvar::new();
 static COLLECTION_DONE_SIGNAL: Condvar = Condvar::new();
-static COLLECTOR_TASK: OnceLock<JoinHandle<()>> = OnceLock::new();
+static COLLECTOR_TASK: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
 const MIN_ALLOCS_TO_COLLECT: usize = 10_000;
 
 /// Initializes the garbage collector thread. Calling this function is typically
@@ -421,7 +420,22 @@ const MIN_ALLOCS_TO_COLLECT: usize = 10_000;
 /// Calling this function multiple times does nothing, there is only one
 /// collector thread allowed at a time.
 pub fn init_gc() {
-    let _ = COLLECTOR_TASK.get_or_init(run);
+    COLLECTOR_TASK.lock().get_or_insert_with(run);
+}
+
+/// Stops the collector thread and waits for it to exit. Only for tests:
+/// Miri requires every thread to be joined before `main` returns. Objects
+/// still alive are not collected again until `init_gc` starts a new
+/// collector.
+#[doc(hidden)]
+pub fn shutdown_gc() {
+    let Some(task) = COLLECTOR_TASK.lock().take() else {
+        return;
+    };
+    HEAP.lock().shutdown = true;
+    COLLECTION_START_SIGNAL.notify_one();
+    task.join().unwrap();
+    HEAP.lock().shutdown = false;
 }
 
 /// Force a garbage collection pause.
@@ -454,7 +468,7 @@ pub(crate) fn on_collector_thread() -> bool {
 }
 
 pub(crate) fn collector_running() -> bool {
-    COLLECTOR_TASK.get().is_some()
+    COLLECTOR_TASK.lock().is_some()
 }
 
 fn run() -> JoinHandle<()> {
@@ -462,7 +476,7 @@ fn run() -> JoinHandle<()> {
         ON_COLLECTOR_THREAD.set(true);
         let mut collector = CycleCollector::new();
         if catch_unwind(AssertUnwindSafe(|| {
-            loop {
+            while !HEAP.lock().shutdown {
                 collector.epoch();
             }
         }))
