@@ -5,6 +5,7 @@ mod collection;
 #[cfg(not(loom))]
 mod global;
 mod heap;
+mod large;
 mod mutator;
 mod reclaimer;
 mod region;
@@ -21,7 +22,7 @@ pub use collection::{
     HEADER_SIZE, HeapObject, VTable, collect_garbage, init_gc, shutdown_gc, unroot,
 };
 #[cfg(not(loom))]
-pub use global::{HeapAlreadyCreated, heap_capacity, set_heap_size};
+pub use global::{HeapAlreadyCreated, budget, set_heap_size};
 pub use heap::{Heap, HeapStats};
 pub use mutator::Mutator;
 pub use reclaimer::Reclaimer;

@@ -4,7 +4,7 @@ use core::sync::atomic::Ordering;
 use std::any::TypeId;
 
 use scheme_rs_gc::{
-    BLOCK_SIZE, HeapObject, VTable, heap_capacity, init_gc, set_heap_size, shutdown_gc, unroot,
+    BLOCK_SIZE, HeapObject, VTable, budget, init_gc, set_heap_size, shutdown_gc, unroot,
 };
 
 struct Obj(#[allow(dead_code)] [u8; 1024]);
@@ -20,7 +20,7 @@ fn vtable() -> VTable {
 fn a_full_heap_collects_and_retries() {
     set_heap_size(2 * BLOCK_SIZE).unwrap();
     init_gc();
-    assert_eq!(heap_capacity(), 2 * BLOCK_SIZE);
+    assert_eq!(budget(), 2 * BLOCK_SIZE);
     for _ in 0..(16 * 2 * BLOCK_SIZE / size_of::<Obj>()) {
         unsafe {
             let obj = HeapObject::from_data(HeapObject::alloc(Obj([0; 1024])));
