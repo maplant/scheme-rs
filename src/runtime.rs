@@ -30,7 +30,7 @@ use crate::{
     syntax::{Span, Syntax},
     value::{Cell, TAG, UnpackedValue, Value},
 };
-use cranelift_jit::JITModule;
+use cranelift_jit::{ArenaMemoryProvider, JITModule};
 use parking_lot::{Mutex, MutexGuard, RwLock};
 use scheme_rs_macros::{maybe_async, maybe_await, runtime_fn};
 use std::{
@@ -363,6 +363,14 @@ fn make_jit_module() -> JITModule {
         .unwrap();
 
     let mut jit_builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+
+    // Without giving the JIT a dedicated memory pool, the scheme-rs-gc can
+    // interrupt the contiguity of the JIT's memory, which can lead to a panic
+    // if two functions are more than 2GB apart.
+    const JIT_RESERVED_MEMORY: usize = 512 * 1024 * 1024;
+    jit_builder.memory_provider(Box::new(
+        ArenaMemoryProvider::new_with_size(JIT_RESERVED_MEMORY).unwrap(),
+    ));
 
     for runtime_fn in inventory::iter::<RuntimeFn> {
         (runtime_fn.install_symbol)(&mut jit_builder);
