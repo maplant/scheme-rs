@@ -944,14 +944,17 @@ where
     type Error = Exception;
 
     fn try_from(value: &Value) -> Result<Self, Self::Error> {
-        let type_name = T::rtd().name.to_str();
         let UnpackedValue::Record(record) = value.clone().unpack() else {
+            let type_name = T::rtd().name.to_str();
             return Err(Exception::type_error(&type_name, &value.type_name()));
         };
-        let record_name = record.rtd().name.to_str();
         record
             .cast::<T>()
-            .ok_or_else(|| Exception::type_error(&type_name, &record_name))
+            .ok_or_else(|| {
+                let type_name = T::rtd().name.to_str();
+                let record_name = record.rtd().name.to_str();
+                Exception::type_error(&type_name, &record_name)
+            })
     }
 }
 
