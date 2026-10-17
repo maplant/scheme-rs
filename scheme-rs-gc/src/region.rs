@@ -416,6 +416,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(loom))]
     fn starts_are_found_from_interior_offsets() {
         use allocator_api2::alloc::Global;
         let (region, mut blocks) = Region::new_in(Global, BLOCK_SIZE).unwrap();
