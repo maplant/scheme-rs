@@ -2,6 +2,7 @@ use core::{
     alloc::Layout,
     ops::RangeInclusive,
     ptr::{NonNull, slice_from_raw_parts_mut},
+    slice,
 };
 
 use allocator_api2::alloc::{AllocError, Allocator};
@@ -10,9 +11,9 @@ use allocator_api2::alloc::{AllocError, Allocator};
 #[cfg(debug_assertions)]
 use std::sync::atomic::AtomicU32;
 
-use crate::large::LargeSpace;
 use crate::large::PAGE;
-use crate::sync::{AtomicU64, AtomicU8, Ordering};
+use crate::sync::{AtomicU8, AtomicU64, Ordering};
+use crate::{bitmap::last_set_at_or_before, large::LargeSpace};
 
 pub const BLOCK_SIZE: usize = 32 * 1024;
 pub const LINE_SIZE: usize = 256;
@@ -22,7 +23,7 @@ pub const MAX_ALIGN: usize = 64;
 /// Allocations are rounded up to this, which bounds a line's live count
 /// at 17 and matches LXR's RC granule.
 pub const GRANULE: usize = 16;
-pub const BITMAP_WORDS_PER_BLOCK: usize = BLOCK_SIZE / GRANULE / 64;
+pub(crate) const BITMAP_WORDS_PER_BLOCK: usize = BLOCK_SIZE / GRANULE / 64;
 
 pub(crate) const LINES_PER_BLOCK: usize = BLOCK_SIZE / LINE_SIZE;
 /// Every line of a block is a bump line.
@@ -45,7 +46,7 @@ pub(crate) fn lines(offset: usize, size: usize) -> RangeInclusive<usize> {
 /// `(start, end)` with `end` exclusive.
 pub(crate) fn take_hole(holes: &mut u128) -> Option<(usize, usize)> {
     if *holes == 0 {
-        return None
+        return None;
     }
     let start = holes.trailing_zeros() as usize;
     let end = start + (!(*holes >> start)).trailing_zeros() as usize;
@@ -105,8 +106,6 @@ pub(crate) struct ReclaimerToken {
 #[cfg(debug_assertions)]
 static NEXT_HEAP: AtomicU32 = AtomicU32::new(0);
 
-
-
 /// The heap's memory, allocated once: the line-count table first, then the
 /// blocks.
 ///
@@ -151,17 +150,19 @@ impl<A: Allocator> Region<A> {
         let line_table =
             Layout::array::<AtomicU8>(capacity_blocks * LINES_PER_BLOCK).map_err(|_| AllocError)?;
         let bitmap_at = line_table.size().next_multiple_of(align_of::<AtomicU64>());
-        let bitmap_layout = Layout::array::<AtomicU64>(capacity_blocks * BITMAP_WORDS_PER_BLOCK).map_err(|_| AllocError)?;
+        let bitmap_layout = Layout::array::<AtomicU64>(capacity_blocks * BITMAP_WORDS_PER_BLOCK)
+            .map_err(|_| AllocError)?;
         let blocks_at = (bitmap_at + bitmap_layout.size()).next_multiple_of(BLOCK_SIZE);
 
         // Large space gets the same address space as the heap, so that you can fill the entire heap with large objects if you want to.
         let blocks_bytes = capacity_blocks.checked_mul(BLOCK_SIZE).ok_or(AllocError)?;
         let n_pages = blocks_bytes / PAGE;
         let large_space_at = blocks_at.checked_add(blocks_bytes).ok_or(AllocError)?;
-        let size = large_space_at.checked_add(LargeSpace::bytes_needed_for(n_pages)).ok_or(AllocError)?;
+        let size = large_space_at
+            .checked_add(LargeSpace::bytes_needed_for(n_pages))
+            .ok_or(AllocError)?;
 
-        let layout = Layout::from_size_align(size, BLOCK_SIZE)
-            .map_err(|_| AllocError)?;
+        let layout = Layout::from_size_align(size, BLOCK_SIZE).map_err(|_| AllocError)?;
         let base = alloc.allocate(layout)?.cast::<u8>();
 
         let large = unsafe { LargeSpace::init(base.byte_add(large_space_at).cast(), n_pages) };
@@ -199,37 +200,43 @@ impl<A: Allocator> Region<A> {
 
     #[inline]
     fn bitmap_word(&self, id: BlockId, granule: usize) -> &AtomicU64 {
-        unsafe { self.bitmap.add(id.index() * BITMAP_WORDS_PER_BLOCK + granule / 64).as_ref() }
+        unsafe {
+            self.bitmap
+                .add(id.index() * BITMAP_WORDS_PER_BLOCK + granule / 64)
+                .as_ref()
+        }
     }
 
     #[inline]
     fn mark_object_start(&self, id: BlockId, granule: usize) {
-        self.bitmap_word(id, granule).fetch_or(1 << (granule % 64), Ordering::Relaxed);
+        self.bitmap_word(id, granule)
+            .fetch_or(1 << (granule % 64), Ordering::Relaxed);
     }
 
     #[inline]
     fn clear_object_start(&self, id: BlockId, granule: usize) {
-        self.bitmap_word(id, granule).fetch_and(!(1 << (granule % 64)), Ordering::Relaxed);
+        self.bitmap_word(id, granule)
+            .fetch_and(!(1 << (granule % 64)), Ordering::Relaxed);
     }
 
-    pub(crate) fn object_started_at_or_before(&self, addr: usize) -> Option<(BlockId, usize)> {
-        let offset = addr.wrapping_sub(self.blocks.addr().get());
-        if offset >= self.capacity * BLOCK_SIZE {
-            return None;
+    fn block_bitmap(&self, id: BlockId) -> &[AtomicU64] {
+        unsafe {
+            slice::from_raw_parts(
+                self.bitmap
+                    .add(id.index() * BITMAP_WORDS_PER_BLOCK)
+                    .as_ptr(),
+                BITMAP_WORDS_PER_BLOCK,
+            )
         }
-        let id = BlockId((offset / BLOCK_SIZE) as u32);
-        let granule = offset % BLOCK_SIZE / GRANULE;
-        let mut mask = u64::MAX >> (63 - granule % 64);
-        for word in (0..=granule / 64).rev() {
-            let bits = self.bitmap_word(id, word * 64).load(Ordering::Relaxed) & mask;
-            if bits != 0 {
-                let start = word * 64 + 63 - bits.leading_zeros() as usize;
-                return Some((id, start * GRANULE));
-            }
-            mask = u64::MAX;
-        }
-        None
     }
+
+    pub(crate) fn object_at_or_before(&self, addr: usize) -> Option<NonNull<u8>> {
+        let id = self.try_block_of(addr)?;
+        let granule = (addr - self.block_start(id).addr().get()) / GRANULE;
+        let start = last_set_at_or_before(self.block_bitmap(id), granule)?;
+        Some(self.object_at(id, start * GRANULE))
+    }
+
     /// # Safety
     ///
     /// At most one per region, held by the heap's reclaimer mutex.
@@ -251,12 +258,13 @@ impl<A: Allocator> Region<A> {
     ///
     /// If `obj` is not in this heap's blocks.
     pub(crate) fn block_of(&self, obj: NonNull<u8>) -> BlockId {
-        let offset = obj.addr().get().wrapping_sub(self.blocks.addr().get());
-        assert!(
-            offset < self.capacity * BLOCK_SIZE,
-            "pointer is not in this heap"
-        );
-        BlockId((offset / BLOCK_SIZE) as u32)
+        self.try_block_of(obj.addr().get())
+            .expect("Pointer is not in this heap")
+    }
+
+    pub(crate) fn try_block_of(&self, obj: usize) -> Option<BlockId> {
+        let offset = obj.wrapping_sub(self.blocks.addr().get());
+        (offset < self.capacity * BLOCK_SIZE).then_some(BlockId((offset / BLOCK_SIZE) as u32))
     }
 
     pub(crate) fn object_at(&self, id: BlockId, offset: usize) -> NonNull<u8> {
@@ -412,14 +420,15 @@ mod tests {
         use allocator_api2::alloc::Global;
         let (region, mut blocks) = Region::new_in(Global, BLOCK_SIZE).unwrap();
         let block = blocks.pop().unwrap();
-        let base = region.base(&block).addr().get();
+        let ptr = region.base(&block);
+        let ptr2 = unsafe { region.base(&block).byte_add(32) };
+        let base = ptr.addr().get();
         region.on_alloc(&block, 0, 32);
         region.on_alloc(&block, 32, 1000);
-        assert_eq!(region.object_started_at_or_before(base), Some((block.id(), 0)));
-        assert_eq!(region.object_started_at_or_before(base + 31), Some((block.id(), 0)));
-        assert_eq!(region.object_started_at_or_before(base + 32), Some((block.id(), 32)));
-        assert_eq!(region.object_started_at_or_before(base + 1031), Some((block.id(), 32)));
-        assert_eq!(region.object_started_at_or_before(base - 1), None);
-        assert_eq!(region.object_started_at_or_before(base + BLOCK_SIZE), None);
+        assert_eq!(region.object_at_or_before(base), Some(ptr.cast::<u8>()));
+        assert_eq!(region.object_at_or_before(base + 31), Some(ptr));
+        assert_eq!(region.object_at_or_before(base + 1031), Some(ptr2));
+        assert_eq!(region.object_at_or_before(base - 1), None);
+        assert_eq!(region.object_at_or_before(base + BLOCK_SIZE), None);
     }
 }
