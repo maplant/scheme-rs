@@ -2,15 +2,13 @@ use core::{alloc::Layout, cell::RefCell, ptr::NonNull};
 use std::{
     alloc::handle_alloc_error,
     env,
-    sync::{
-        OnceLock,
-        atomic::{AtomicUsize, Ordering},
-    },
+    sync::{OnceLock, atomic::AtomicUsize},
 };
 
 use crate::{
     Heap, Mutator, ObjectModel, collect_garbage,
     collection::{GcHeader, collector_running, on_collector_thread},
+    sync::Ordering,
 };
 
 const DEFAULT_HEAP_SIZE: usize = 512 * 1024 * 1024;
