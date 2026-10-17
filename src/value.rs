@@ -163,6 +163,7 @@ impl Value {
     /// # Safety
     /// Calling this function is undefined behavior if the raw u64 was not obtained
     /// via [into_raw](Value::into_raw)
+    #[inline(always)]
     pub unsafe fn from_raw_inc_rc(raw: *const ()) -> Self {
         let tag = Tag::from(raw as usize & TAG);
         let untagged = raw.map_addr(|raw| raw & !TAG);
@@ -291,6 +292,7 @@ impl Value {
     }
 
     /// Unpack the value into an enum representation.
+    #[inline(always)]
     pub fn unpack(self) -> UnpackedValue {
         let raw = ManuallyDrop::new(self).0;
 
@@ -538,6 +540,7 @@ impl Clone for Value {
 }
 
 impl Drop for Value {
+    #[inline]
     fn drop(&mut self) {
         // TODO: Add decrement function to Gc and use that instead
         let raw = self.0;
@@ -710,6 +713,7 @@ pub(crate) enum Tag {
 
 // TODO: Make TryFrom with error
 impl From<usize> for Tag {
+    #[inline(always)]
     fn from(tag: usize) -> Self {
         if tag & 1 == 1 {
             Self::FixNum

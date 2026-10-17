@@ -219,6 +219,7 @@ impl StackRecord {
         self.next = new_stack.0.next.clone();
     }
 
+    #[inline]
     pub fn pop(&mut self) -> Value {
         // Check for underflow
         if self.len == 0 {
@@ -232,6 +233,7 @@ impl StackRecord {
         unsafe { self.segment.add(self.len).replace(Value::undefined()) }
     }
 
+    #[inline]
     pub fn push(&mut self, value: Value) {
         unsafe {
             self.segment.add(self.len).write(value);
@@ -248,6 +250,7 @@ impl StackRecord {
     }
 
     /// Returns the value on the top of the stack, panicking if none exists
+    #[inline]
     pub fn top(&self) -> &Value {
         if self.len == 0 {
             let next_record = self.next.as_ref().unwrap();
