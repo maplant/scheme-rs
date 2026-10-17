@@ -11,7 +11,7 @@ use std::{
     panic::{AssertUnwindSafe, catch_unwind},
     process::abort,
     ptr::{NonNull, null_mut},
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::AtomicUsize,
     thread::{JoinHandle, spawn},
 };
 
@@ -22,6 +22,7 @@ use crate::{
     Reclaimer,
     global::{HeaderModel, alloc, heap},
     region::MAX_ALIGN,
+    sync::Ordering,
 };
 
 #[derive(Debug)]
@@ -170,6 +171,8 @@ impl HeapObject {
     /// The memory returned is uninitialized.
     pub unsafe fn alloc_layout(data_layout: Layout) -> NonNull<u8> {
         assert!(data_layout.align() <= MAX_ALIGN);
+        let data_layout = Layout::from_size_align(data_layout.size().max(1), data_layout.align())
+            .expect("Layout creation failed in alloc_layout");
 
         let (unpadded_layout, _) = Layout::new::<GcHeader>().extend(data_layout).unwrap();
         let padded_layout = unpadded_layout.pad_to_align();

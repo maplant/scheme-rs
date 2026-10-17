@@ -96,7 +96,7 @@ impl<'h, M: ObjectModel, A: Allocator> Reclaimer<'h, M, A> {
             .heap
             .region
             .large
-            .page_of(obj)
+            .page_of(obj.addr().get())
             .expect("Large pointer not in this heap");
         debug_assert!(
             self.heap.region.large.is_occupied(page),
