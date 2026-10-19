@@ -143,7 +143,6 @@ fn compile_let(
         let k1 = Local::gensym();
         let k2 = Local::gensym();
         let k3 = Local::gensym();
-        // let raw_val = Local::gensym();
         Cps::new(Inst::Fix(
             vec![LambdaBinding {
                 args: LambdaArgs::new(vec![k2], false, None),
@@ -153,17 +152,6 @@ fn compile_let(
                         body: Box::new(compile_let(ctxt, tail, body, &mut move |result| {
                             Cps::new(Inst::App(result, vec![Value::from(k2)]))
                         })),
-
-                        /*
-                        body: Box::new(Cps::new(Inst::PrimOp(
-                            PrimOp::Read,
-                            vec![Value::from(raw_val)],
-                            *curr_bind,
-                            Box::new(compile_let(ctxt, tail, body, &mut move |result| {
-                                Cps::new(Inst::App(result, vec![Value::from(k2)]))
-                            })),
-                        ))),
-                        */
                         val: k3,
                         span: None,
                     }],
