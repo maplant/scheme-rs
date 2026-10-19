@@ -397,7 +397,7 @@ impl CompilationUnit<'_, '_> {
                 );
             }
             Inst::App(operator, args) => self.app_codegen(&operator, &args),
-            Inst::PrimOp(PrimOp::Set, args, _, cexpr) => {
+            Inst::PrimOp(PrimOp::SetCell, args, _, cexpr) => {
                 self.store_codegen(
                     &args[1],
                     &args[0],
@@ -409,7 +409,7 @@ impl CompilationUnit<'_, '_> {
             Inst::PrimOp(PrimOp::AllocCell, _, into, cexpr) => {
                 self.alloc_cell_codegen(into, *cexpr, deferred_procs, deferred_local_conts);
             }
-            Inst::PrimOp(PrimOp::Read, args, result, cexpr) => {
+            Inst::PrimOp(PrimOp::ReadCell, args, result, cexpr) => {
                 self.read_codegen(
                     &args[0],
                     result,
@@ -506,83 +506,30 @@ impl CompilationUnit<'_, '_> {
     }
 
     fn value_codegen(&mut self, value: &CpsValue) -> Value {
-        let (cell, symbol) = match value {
-            CpsValue::Var(Var::Local(var)) => {
-                let cell = match *self.live.fetch(var) {
-                    IrValue::Cell(cell) => cell,
-                    IrValue::Ref(val) | IrValue::Owned(val) => return val,
-                    IrValue::Dead => unreachable!("{var:?} is dead"),
-                };
-                let symbol = if let Some(sym) = var.name {
-                    sym.0
-                } else {
-                    Symbol::intern(&format!("{}:{cell}", self.builder.func.name,)).0
-                };
-                (cell, symbol)
+        match value {
+            CpsValue::Var(Var::Local(var))
+                if let IrValue::Ref(val) | IrValue::Owned(val) = *self.live.fetch(var) =>
+            {
+                val
             }
-            CpsValue::Var(Var::Global(global)) => {
-                let mut globals_pool = Runtime::handle().0.globals_pool.lock();
-                globals_pool.insert(global.clone());
-                let cell = self.builder.ins().iconst(
-                    types::I64,
-                    SchemeValue::as_raw(&SchemeValue::from(global.val.clone())) as i64,
-                );
-                (cell, global.name.0)
-            }
+
             CpsValue::Const(val)
                 if let Some(proc) = val.cast::<Procedure>()
                     && let Some(known) = proc.to_known() =>
             {
                 // Known functions get converted to i64 constants
-                return self
-                    .builder
+                self.builder
                     .ins()
-                    .iconst(types::I64, known.cast_to_usize() as i64);
+                    .iconst(types::I64, known.cast_to_usize() as i64)
             }
             CpsValue::Const(val) => {
                 let mut constants_pool = Runtime::handle().0.constants_pool.lock();
                 constants_pool.insert(val.clone());
                 let raw = SchemeValue::as_raw(constants_pool.get(val));
-                return self.builder.ins().iconst(types::I64, raw as i64);
+                self.builder.ins().iconst(types::I64, raw as i64)
             }
-        };
-
-        let read_cell = self
-            .module
-            .declare_func_in_func(self.runtime_funcs.read_cell, self.builder.func);
-        let call = self.builder.ins().call(read_cell, &[cell]);
-        let cell_value = self.builder.inst_results(call)[0];
-
-        // Check if the cell is undefined:
-        let cond = self
-            .builder
-            .ins()
-            .icmp_imm_s(IntCC::Equal, cell_value, UNDEFINED_VALUE as i64);
-
-        let undefined_block = self.builder.create_block();
-        let defined_block = self.builder.create_block();
-
-        self.builder
-            .ins()
-            .brif(cond, undefined_block, &[], defined_block, &[]);
-
-        // Throw undefined variable error:
-        self.builder.switch_to_block(undefined_block);
-        self.builder.seal_block(undefined_block);
-
-        self.drop_all_codegen();
-        let symbol = self.builder.ins().iconst(types::I32, symbol as i64);
-        let error_unbound_variable = self
-            .module
-            .declare_func_in_func(self.runtime_funcs.error_unbound_variable, self.builder.func);
-        let call = self.builder.ins().call(error_unbound_variable, &[symbol]);
-        let unbound_variable_error = self.builder.inst_results(call)[0];
-        self.raise_codegen(unbound_variable_error);
-
-        self.builder.switch_to_block(defined_block);
-        self.builder.seal_block(defined_block);
-
-        cell_value
+            _ => panic!("cell must be explicitly read"),
+        }
     }
 
     /// branch on whether the value is on the heap before calling the runtime, bceause immediates
@@ -1166,9 +1113,63 @@ impl CompilationUnit<'_, '_> {
         deferred_procs: &mut Vec<ProcedureBundle>,
         deferred_local_conts: &mut Vec<ProcedureBundle>,
     ) {
-        let value = self.value_codegen(from);
-        let value = self.clone_value_codegen(value);
-        self.live.bind(result, IrValue::Owned(value));
+        let (cell, symbol) = match from {
+            CpsValue::Var(Var::Local(var)) if let IrValue::Cell(cell) = *self.live.fetch(var) => {
+                let symbol = if let Some(sym) = var.name {
+                    sym.0
+                } else {
+                    Symbol::intern(&format!("{}:{cell}", self.builder.func.name,)).0
+                };
+                (cell, symbol)
+            }
+            CpsValue::Var(Var::Global(global)) => {
+                let mut globals_pool = Runtime::handle().0.globals_pool.lock();
+                globals_pool.insert(global.clone());
+                let cell = self.builder.ins().iconst(
+                    types::I64,
+                    SchemeValue::as_raw(&SchemeValue::from(global.val.clone())) as i64,
+                );
+                (cell, global.name.0)
+            }
+            _ => unreachable!(),
+        };
+
+        let read_cell = self
+            .module
+            .declare_func_in_func(self.runtime_funcs.read_cell, self.builder.func);
+        let call = self.builder.ins().call(read_cell, &[cell]);
+        let cell_value = self.builder.inst_results(call)[0];
+
+        // Check if the cell is undefined:
+        let cond = self
+            .builder
+            .ins()
+            .icmp_imm_s(IntCC::Equal, cell_value, UNDEFINED_VALUE as i64);
+
+        let undefined_block = self.builder.create_block();
+        let defined_block = self.builder.create_block();
+
+        self.builder
+            .ins()
+            .brif(cond, undefined_block, &[], defined_block, &[]);
+
+        // Throw undefined variable error:
+        self.builder.switch_to_block(undefined_block);
+        self.builder.seal_block(undefined_block);
+
+        self.drop_all_codegen();
+        let symbol = self.builder.ins().iconst(types::I32, symbol as i64);
+        let error_unbound_variable = self
+            .module
+            .declare_func_in_func(self.runtime_funcs.error_unbound_variable, self.builder.func);
+        let call = self.builder.ins().call(error_unbound_variable, &[symbol]);
+        let unbound_variable_error = self.builder.inst_results(call)[0];
+        self.raise_codegen(unbound_variable_error);
+
+        self.builder.switch_to_block(defined_block);
+        self.builder.seal_block(defined_block);
+
+        self.live.bind(result, IrValue::Owned(cell_value));
         self.cps_codegen(cexpr, deferred_procs, deferred_local_conts);
     }
 

@@ -449,19 +449,12 @@ unsafe extern "C" fn alloc_cell() -> *const () {
     Value::into_raw(Value::from(Cell(Gc::new(RwLock::new(Value::undefined())))))
 }
 
-/// Read the value of a Cell. The returned pointer is borrowed from the cell and
-/// is not counted: callers that keep it alive past the next store to that cell
-/// have to clone it first.
+/// Read the value of a Cell. 
 #[runtime_fn]
 unsafe extern "C" fn read_cell(cell: *const ()) -> *const () {
     unsafe {
-        let cell = Value::from_raw(cell);
-        let cell: Cell = cell.try_into().unwrap();
-        // We do not need to increment the reference count of the cell, it is going to
-        // be decremented at the end of this function.
-        let cell = ManuallyDrop::new(cell);
-        let cell_read = cell.0.read();
-        Value::as_raw(&cell_read)
+        let lock = &*((cell as usize & !TAG) as *const RwLock<Value>);
+        Value::into_raw(lock.read().clone())
     }
 }
 

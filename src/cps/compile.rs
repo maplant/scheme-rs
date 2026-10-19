@@ -20,12 +20,12 @@ use indexmap::IndexSet;
 use scheme_rs_macros::{maybe_async, maybe_await};
 
 pub(crate) struct Compiler {
-    mutable_vars: HashSet<Local>,
+    needs_cell: HashSet<Local>,
 }
 
 impl Compiler {
-    pub fn new(mutable_vars: HashSet<Local>) -> Self {
-        Self { mutable_vars }
+    pub fn new(needs_cell: HashSet<Local>) -> Self {
+        Self { needs_cell }
     }
 
     #[maybe_async]
@@ -49,7 +49,7 @@ impl Compiler {
         ));
 
         // Perform beta and eta reduction on the CPS:
-        let reduced = cps.vals_to_cells(&self.mutable_vars).reduce();
+        let reduced = cps.vals_to_cells(&self.needs_cell).reduce();
 
         // Check if there are any remaining free variables, signaling a phase
         // error. Also needed for our escape analysis.
@@ -143,13 +143,18 @@ fn compile_let(
         let k1 = Local::gensym();
         let k2 = Local::gensym();
         let k3 = Local::gensym();
-        let raw_val = Local::gensym();
+        // let raw_val = Local::gensym();
         Cps::new(Inst::Fix(
             vec![LambdaBinding {
                 args: LambdaArgs::new(vec![k2], false, None),
                 body: Box::new(Cps::new(Inst::Fix(
                     vec![LambdaBinding {
-                        args: LambdaArgs::new(vec![raw_val], false, None),
+                        args: LambdaArgs::new(vec![*curr_bind], false, None),
+                        body: Box::new(compile_let(ctxt, tail, body, &mut move |result| {
+                            Cps::new(Inst::App(result, vec![Value::from(k2)]))
+                        })),
+
+                        /*
                         body: Box::new(Cps::new(Inst::PrimOp(
                             PrimOp::Read,
                             vec![Value::from(raw_val)],
@@ -158,6 +163,7 @@ fn compile_let(
                                 Cps::new(Inst::App(result, vec![Value::from(k2)]))
                             })),
                         ))),
+                        */
                         val: k3,
                         span: None,
                     }],
@@ -200,7 +206,7 @@ impl Compile for LetRec {
 
         for (local, expr) in &self.bindings {
             if let Expression::Lambda(l) = expr
-                && !ctxt.mutable_vars.contains(local)
+                && !ctxt.needs_cell.contains(local)
             {
                 lambda.push((local, l));
             } else {
@@ -267,7 +273,7 @@ fn compile_letrec_complex_bindings(
                     vec![LambdaBinding {
                         args: LambdaArgs::new(vec![expr_result], false, None),
                         body: Box::new(Cps::new(Inst::PrimOp(
-                            PrimOp::Set,
+                            PrimOp::SetCell,
                             vec![Value::from(*curr_bind), Value::Var(Var::Local(expr_result))],
                             Local::gensym(),
                             Box::new(compile_letrec_complex_bindings(
@@ -320,16 +326,32 @@ impl Compile for Expression {
 }
 
 impl Compile for Var {
-    fn compile(&self, _ctxt: &Compiler, meta_cont: &mut dyn FnMut(Value) -> Cps) -> Cps {
+    fn compile(&self, ctxt: &Compiler, meta_cont: &mut dyn FnMut(Value) -> Cps) -> Cps {
         let k1 = Local::gensym();
         let k2 = Local::gensym();
+        let read_var = || {
+            let read_value = Local::gensym();
+            Box::new(Cps::new(Inst::PrimOp(
+                PrimOp::ReadCell,
+                vec![Value::from(self.clone())],
+                read_value,
+                Box::new(Cps::new(Inst::App(
+                    Value::from(k2),
+                    vec![Value::from(read_value)],
+                ))),
+            )))
+        };
         Cps::new(Inst::Fix(
             vec![LambdaBinding {
                 args: LambdaArgs::new(vec![k2], false, None),
-                body: Box::new(Cps::new(Inst::App(
-                    Value::from(k2),
-                    vec![Value::from(self.clone())],
-                ))),
+                body: match self {
+                    Var::Global(_) => read_var(),
+                    Var::Local(local) if ctxt.needs_cell.contains(local) => read_var(),
+                    Var::Local(_) => Box::new(Cps::new(Inst::App(
+                        Value::from(k2),
+                        vec![Value::from(self.clone())],
+                    ))),
+                },
                 val: k1,
                 span: None,
             }],
@@ -822,7 +844,7 @@ impl Compile for Set {
                     vec![LambdaBinding {
                         args: LambdaArgs::new(vec![expr_result], false, None),
                         body: Box::new(Cps::new(Inst::PrimOp(
-                            PrimOp::Set,
+                            PrimOp::SetCell,
                             vec![
                                 Value::from(self.var.clone()),
                                 Value::Var(Var::Local(expr_result)),
@@ -1076,9 +1098,11 @@ impl Cps {
                 ),
                 id,
             ),
-            Inst::PrimOp(PrimOp::Read, vals, mut local, cexpr) if mutable_vars.contains(&local) => {
+            Inst::PrimOp(PrimOp::ReadCell, vals, mut local, cexpr)
+                if mutable_vars.contains(&local) =>
+            {
                 let body = val_to_cell(&mut local, Box::new(cexpr.vals_to_cells(mutable_vars)));
-                Cps::with_local(Inst::PrimOp(PrimOp::Read, vals, local, body), id)
+                Cps::with_local(Inst::PrimOp(PrimOp::ReadCell, vals, local, body), id)
             }
             Inst::PrimOp(op, vals, local, cexpr) => {
                 let cexpr = Box::new(cexpr.vals_to_cells(mutable_vars));
@@ -1131,7 +1155,7 @@ fn val_to_cell(arg: &mut Local, body: Box<Cps>) -> Box<Cps> {
         Vec::new(),
         cell_arg,
         Box::new(Cps::new(Inst::PrimOp(
-            PrimOp::Set,
+            PrimOp::SetCell,
             vec![Value::from(cell_arg), Value::from(val_arg)],
             Local::gensym(),
             body,
