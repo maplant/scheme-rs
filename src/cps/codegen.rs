@@ -30,6 +30,7 @@ use super::*;
 #[derive(Copy, Clone, Debug)]
 enum IrValue {
     Cell(Value),
+    CellRef(Value),
     Ref(Value),
     Owned(Value),
     Dead,
@@ -79,7 +80,7 @@ impl LiveValues {
             .into_iter()
             .filter_map(|(var, value)| match value {
                 IrValue::Owned(val) | IrValue::Cell(val) => Some((var, val)),
-                IrValue::Ref(_) | IrValue::Dead => None,
+                IrValue::CellRef(_) | IrValue::Ref(_) | IrValue::Dead => None,
             })
     }
 }
@@ -1114,7 +1115,9 @@ impl CompilationUnit<'_, '_> {
         deferred_local_conts: &mut Vec<ProcedureBundle>,
     ) {
         let (cell, symbol) = match from {
-            CpsValue::Var(Var::Local(var)) if let IrValue::Cell(cell) = *self.live.fetch(var) => {
+            CpsValue::Var(Var::Local(var))
+                if let IrValue::Cell(cell) | IrValue::CellRef(cell) = *self.live.fetch(var) =>
+            {
                 let symbol = if let Some(sym) = var.name {
                     sym.0
                 } else {
@@ -1500,7 +1503,7 @@ impl CompilationUnit<'_, '_> {
                 )
             }
             CpsValue::Var(Var::Local(local)) => match self.live.fetch(local) {
-                IrValue::Cell(to) => *to,
+                IrValue::Cell(to) | IrValue::CellRef(to) => *to,
                 _ => panic!("{to:?} is not a pointer"),
             },
             _ => panic!("{to:?} is not a pointer"),
@@ -1651,8 +1654,10 @@ impl CompilationUnit<'_, '_> {
                 self.builder.ins().iconst(types::I64, Tag::Record as i64)
             } else {
                 match *self.live.fetch(env_var) {
-                    IrValue::Cell(ptr) => ptr,
-                    IrValue::Ref(val) | IrValue::Owned(val) => val,
+                    IrValue::Cell(val)
+                    | IrValue::CellRef(val)
+                    | IrValue::Ref(val)
+                    | IrValue::Owned(val) => val,
                     IrValue::Dead => unreachable!("{env_var:?} is dead"),
                 }
             };
@@ -1896,7 +1901,8 @@ impl ProcedureBundle {
                         (i * 8) as i32,
                     );
                     let var = if cells.contains(env_var) {
-                        IrValue::Cell(var)
+                        // We cannot kill the cell
+                        IrValue::CellRef(var)
                     } else {
                         IrValue::Ref(var)
                     };
