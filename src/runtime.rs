@@ -30,7 +30,7 @@ use crate::{
     syntax::{Span, Syntax},
     value::{Cell, TAG, UnpackedValue, Value},
 };
-use cranelift_jit::JITModule;
+use cranelift_jit::{ArenaMemoryProvider, JITModule};
 use parking_lot::{Mutex, MutexGuard, RwLock};
 use scheme_rs_macros::{maybe_async, maybe_await, runtime_fn};
 use std::{
@@ -364,6 +364,14 @@ fn make_jit_module() -> JITModule {
 
     let mut jit_builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
 
+    // Without giving the JIT a dedicated memory pool, the scheme-rs-gc can
+    // interrupt the contiguity of the JIT's memory, which can lead to a panic
+    // if two functions are more than 2GB apart.
+    const JIT_RESERVED_MEMORY: usize = 512 * 1024 * 1024;
+    jit_builder.memory_provider(Box::new(
+        ArenaMemoryProvider::new_with_size(JIT_RESERVED_MEMORY).unwrap(),
+    ));
+
     for runtime_fn in inventory::iter::<RuntimeFn> {
         (runtime_fn.install_symbol)(&mut jit_builder);
     }
@@ -441,19 +449,12 @@ unsafe extern "C" fn alloc_cell() -> *const () {
     Value::into_raw(Value::from(Cell(Gc::new(RwLock::new(Value::undefined())))))
 }
 
-/// Read the value of a Cell. The returned pointer is borrowed from the cell and
-/// is not counted: callers that keep it alive past the next store to that cell
-/// have to clone it first.
+/// Read the value of a Cell.
 #[runtime_fn]
 unsafe extern "C" fn read_cell(cell: *const ()) -> *const () {
     unsafe {
-        let cell = Value::from_raw(cell);
-        let cell: Cell = cell.try_into().unwrap();
-        // We do not need to increment the reference count of the cell, it is going to
-        // be decremented at the end of this function.
-        let cell = ManuallyDrop::new(cell);
-        let cell_read = cell.0.read();
-        Value::as_raw(&cell_read)
+        let lock = &*((cell as usize & !TAG) as *const RwLock<Value>);
+        Value::into_raw(lock.read().clone())
     }
 }
 
