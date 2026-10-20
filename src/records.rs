@@ -948,13 +948,11 @@ where
             let type_name = T::rtd().name.to_str();
             return Err(Exception::type_error(&type_name, &value.type_name()));
         };
-        record
-            .cast::<T>()
-            .ok_or_else(|| {
-                let type_name = T::rtd().name.to_str();
-                let record_name = record.rtd().name.to_str();
-                Exception::type_error(&type_name, &record_name)
-            })
+        record.cast::<T>().ok_or_else(|| {
+            let type_name = T::rtd().name.to_str();
+            let record_name = record.rtd().name.to_str();
+            Exception::type_error(&type_name, &record_name)
+        })
     }
 }
 

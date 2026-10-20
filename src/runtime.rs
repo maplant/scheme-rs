@@ -449,7 +449,7 @@ unsafe extern "C" fn alloc_cell() -> *const () {
     Value::into_raw(Value::from(Cell(Gc::new(RwLock::new(Value::undefined())))))
 }
 
-/// Read the value of a Cell. 
+/// Read the value of a Cell.
 #[runtime_fn]
 unsafe extern "C" fn read_cell(cell: *const ()) -> *const () {
     unsafe {

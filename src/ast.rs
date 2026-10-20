@@ -1097,11 +1097,7 @@ impl Definition {
                         let mut body = body.to_vec();
                         body.iter_mut().for_each(|s| s.add_scope(func_scope));
                         let body = maybe_await!(Definitions::parse(
-                            ctxt,
-                            &body,
-                            &new_env,
-                            form,
-                            needs_cell
+                            ctxt, &body, &new_env, form, needs_cell
                         ))?;
 
                         Ok(Definition {
@@ -1256,23 +1252,17 @@ impl Expression {
                                 maybe_await!(If::parse(ctxt, tail, env, &form, needs_cell))
                                     .map(Expression::If)
                             }
-                            Primitive::And => {
-                                maybe_await!(And::parse(ctxt, tail, env, needs_cell))
-                                    .map(Expression::And)
-                            }
+                            Primitive::And => maybe_await!(And::parse(ctxt, tail, env, needs_cell))
+                                .map(Expression::And),
                             Primitive::Or => maybe_await!(Or::parse(ctxt, tail, env, needs_cell))
                                 .map(Expression::Or),
                             Primitive::Quote => Quote::parse(tail, &form).map(Expression::Quote),
                             Primitive::Syntax => SyntaxQuote::parse(ctxt, tail, env, &form)
                                 .map(Expression::SyntaxQuote),
-                            Primitive::SyntaxCase => maybe_await!(SyntaxCase::parse(
-                                ctxt,
-                                tail,
-                                env,
-                                &form,
-                                needs_cell
-                            ))
-                            .map(Expression::SyntaxCase),
+                            Primitive::SyntaxCase => {
+                                maybe_await!(SyntaxCase::parse(ctxt, tail, env, &form, needs_cell))
+                                    .map(Expression::SyntaxCase)
+                            }
                             Primitive::Set => {
                                 maybe_await!(Set::parse(ctxt, tail, env, &form, needs_cell))
                                     .map(Expression::Set)
@@ -1570,13 +1560,7 @@ impl Let {
                 Syntax::List { list: bindings, .. },
                 body @ ..,
             ] => maybe_await!(parse_named_let(
-                ctxt,
-                ident,
-                bindings,
-                body,
-                env,
-                form,
-                needs_cell
+                ctxt, ident, bindings, body, env, form, needs_cell
             )),
             [Syntax::Identifier { ident, .. }, empty, body @ ..] if empty.is_null() => {
                 maybe_await!(parse_named_let(
@@ -1930,14 +1914,7 @@ impl Definitions {
         // No explanation needed
         match form.as_list() {
             Some([list @ .., end]) if end.is_null() => {
-                maybe_await!(Self::parse_helper(
-                    &ctxt,
-                    list,
-                    true,
-                    env,
-                    form,
-                    needs_cell
-                ))
+                maybe_await!(Self::parse_helper(&ctxt, list, true, env, form, needs_cell))
             }
             _ => Err(error::bad_form(form, None)),
         }
@@ -1951,14 +1928,7 @@ impl Definitions {
         form: &Syntax,
         needs_cell: &mut HashSet<Local>,
     ) -> Result<Self, Exception> {
-        maybe_await!(Self::parse_helper(
-            ctxt,
-            body,
-            false,
-            env,
-            form,
-            needs_cell
-        ))
+        maybe_await!(Self::parse_helper(ctxt, body, false, env, form, needs_cell))
     }
 
     /// Parse the body. body is expected to be a list of valid syntax objects, and should not include
@@ -1987,12 +1957,7 @@ impl Definitions {
         needs_cell: &'a mut HashSet<Local>,
     ) -> BoxFuture<'a, Result<Self, Exception>> {
         Box::pin(Self::parse_helper_inner(
-            ctxt,
-            body,
-            permissive,
-            env,
-            form,
-            needs_cell,
+            ctxt, body, permissive, env, form, needs_cell,
         ))
     }
 
@@ -2070,10 +2035,7 @@ impl Definitions {
 
         for (expr, env) in exprs.into_iter() {
             exprs_parsed.push(maybe_await!(Expression::parse_expanded(
-                ctxt,
-                expr,
-                &env,
-                needs_cell,
+                ctxt, expr, &env, needs_cell,
             ))?);
         }
 
