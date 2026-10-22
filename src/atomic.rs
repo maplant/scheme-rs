@@ -2,7 +2,7 @@ use arc_swap::ArcSwapAny;
 use scheme_rs_macros::bridge;
 
 use crate::{
-    gc::{Gc, OpaqueGcPtr, Trace},
+    gc::{Gc, HeapObject, Trace},
     records::{Embeddable, Embedded},
     value::Value,
 };
@@ -14,7 +14,7 @@ pub struct AtomicBox {
 }
 
 unsafe impl Trace for AtomicBox {
-    unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(OpaqueGcPtr)) {
+    unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(HeapObject)) {
         // Same reasoning as Arc (gc/mod.rs:722): we cannot visit children
         // for a Gc managed by ArcSwap, as it may lead to situations where
         // we incorrectly decrement a child twice.

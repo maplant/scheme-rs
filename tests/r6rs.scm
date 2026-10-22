@@ -629,3 +629,15 @@
 ;; (lang pipeline) re-export
 (import (lang pipeline))
 (assert-equal? (chain 1 (+ _ 2) (* _ 3)) 9)
+
+;; Bug where cells were double-decremented:
+
+(let ()
+  (define cell-owner
+    (let ((cell 1))
+      (lambda ()
+        (set! cell (+ cell 1))
+        cell)))
+
+  (cell-owner)
+  (assert-equal? (cell-owner) 3))

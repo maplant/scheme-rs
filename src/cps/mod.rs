@@ -83,9 +83,9 @@ impl fmt::Debug for Value {
 pub enum PrimOp {
     // Cell operations:
     /// Set cell value:
-    Set,
+    SetCell,
     /// Read a cell value (or return the value):
-    Read,
+    ReadCell,
     /// Allocate a cell:
     AllocCell,
 
@@ -138,8 +138,8 @@ pub enum PrimOp {
 impl PrimOp {
     pub(crate) fn info(&self) -> PrimOpInfo {
         match self {
-            Self::Set => PrimOpInfo::new(2, false, false, false),
-            Self::Read => PrimOpInfo::new(1, false, false, true),
+            Self::SetCell => PrimOpInfo::new(2, false, false, false),
+            Self::ReadCell => PrimOpInfo::new(1, false, false, true),
             Self::AllocCell => PrimOpInfo::new(0, false, false, true),
             Self::CallKnown0 => PrimOpInfo::new(1, false, true, false),
             Self::CallKnown1 => PrimOpInfo::new(0, false, true, true),
@@ -342,7 +342,7 @@ impl Cps {
 
     pub(crate) fn pretty_print(&self, indent: usize) {
         match &self.inst {
-            Inst::PrimOp(PrimOp::Set, vals, _, cexp) => {
+            Inst::PrimOp(PrimOp::SetCell, vals, _, cexp) => {
                 eprintln!("{:>indent$}(set! {:?} {:?})", "", vals[0], vals[1]);
                 cexp.pretty_print(indent);
             }

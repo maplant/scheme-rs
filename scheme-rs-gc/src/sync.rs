@@ -1,13 +1,13 @@
 #[cfg(not(loom))]
 pub(crate) use std::sync::{
     Mutex, MutexGuard,
-    atomic::{AtomicU8, AtomicUsize, Ordering},
+    atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering},
 };
 
 #[cfg(loom)]
 pub(crate) use loom::sync::{
     Mutex, MutexGuard,
-    atomic::{AtomicU8, AtomicUsize, Ordering},
+    atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering},
 };
 
 pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {

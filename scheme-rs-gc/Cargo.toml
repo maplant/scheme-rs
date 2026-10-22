@@ -12,9 +12,18 @@ repository = "https://github.com/maplant/scheme-rs"
 
 [dependencies]
 allocator-api2 = "0.4"
+parking_lot = "0.12.5"
+rustc-hash = "2.1"
 
 [target.'cfg(loom)'.dependencies]
 loom = "0.7"
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "alloc"
+harness = false
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
