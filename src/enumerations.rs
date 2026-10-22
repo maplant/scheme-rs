@@ -1,6 +1,6 @@
 //! Scheme enumerations and enumeration sets.
 
-use std::{fmt, sync::Arc};
+use std::fmt;
 
 use indexmap::IndexSet;
 use scheme_rs_macros::bridge;
@@ -10,12 +10,13 @@ use crate::{
     gc::Trace,
     lists::List,
     proc::{Application, Args, ContBarrier, FuncPtr, Procedure},
-    records::{Embeddable, Embedded, RecordTypeDescriptor, rtd},
+    records::{Embeddable, Embedded},
     symbols::Symbol,
     value::Value,
 };
 
-#[derive(Trace, Debug)]
+#[derive(Trace, Debug, Embeddable)]
+#[scheme(name = "enum-universe", sealed = true, opaque = true)]
 pub struct EnumerationType {
     symbols: IndexSet<Symbol>,
 }
@@ -28,20 +29,15 @@ impl EnumerationType {
     }
 }
 
-unsafe impl Embeddable for EnumerationType {
-    fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(ty: EnumerationType, name: "enum-universe", sealed: true, opaque: true)
-    }
-}
-
-#[derive(Trace)]
+#[derive(Trace, Embeddable)]
+#[scheme(name = "enum-set", sealed = true, opaque = true, debug = Self::debug_fmt)]
 pub struct EnumerationSet {
     enum_type: Embedded<EnumerationType>,
     set: IndexSet<Symbol>,
 }
 
-impl fmt::Debug for EnumerationSet {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl EnumerationSet {
+    fn debug_fmt<T>(&self, _: &mut T, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for sym in &self.set {
             write!(f, " {sym}")?;
         }
@@ -71,12 +67,6 @@ impl EnumerationSet {
     /// Checks for membership in the set
     pub fn contains(&self, sym: &str) -> bool {
         self.set.contains(&Symbol::intern(sym))
-    }
-}
-
-unsafe impl Embeddable for EnumerationSet {
-    fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(ty: EnumerationSet, name: "enum-set", sealed: true, opaque: true)
     }
 }
 

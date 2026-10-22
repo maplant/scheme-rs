@@ -238,7 +238,7 @@ use crate::{
     vectors::Vector,
 };
 
-pub use scheme_rs_macros::rtd;
+pub use scheme_rs_macros::{Embeddable, rtd};
 
 /// Type declaration for a record.
 #[derive(Trace, Clone)]
@@ -1099,28 +1099,12 @@ pub fn record_type_descriptor_pred(obj: Value) -> bool {
 }
 
 /// A description of a record's constructor.
-#[derive(Trace, Clone)]
+#[derive(Trace, Clone, Embeddable)]
+#[scheme(name = "record-constructor-descriptor", sealed = true, opaque = true)]
 pub struct RecordConstructorDescriptor {
     parent: Option<Embedded<RecordConstructorDescriptor>>,
     rtd: Arc<RecordTypeDescriptor>,
     protocol: Procedure,
-}
-
-unsafe impl Embeddable for RecordConstructorDescriptor {
-    fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(
-            ty: RecordConstructorDescriptor,
-            name: "record-constructor-descriptor",
-            sealed: true,
-            opaque: true
-        )
-    }
-}
-
-impl fmt::Debug for RecordConstructorDescriptor {
-    fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        Ok(())
-    }
 }
 
 fn make_default_record_constructor_descriptor(

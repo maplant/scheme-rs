@@ -1,15 +1,14 @@
-use std::sync::Arc;
-
 use arc_swap::ArcSwapAny;
 use scheme_rs_macros::bridge;
 
 use crate::{
     gc::{Gc, OpaqueGcPtr, Trace},
-    records::{Embeddable, Embedded, RecordTypeDescriptor, rtd},
+    records::{Embeddable, Embedded},
     value::Value,
 };
 
-#[derive(Debug)]
+#[derive(Debug, Embeddable)]
+#[scheme(name = "%atomic-box", opaque = true, sealed = true)]
 pub struct AtomicBox {
     inner: ArcSwapAny<Gc<Value>>,
 }
@@ -25,17 +24,6 @@ unsafe impl Trace for AtomicBox {
         unsafe {
             std::ptr::drop_in_place(self as *mut Self);
         }
-    }
-}
-
-unsafe impl Embeddable for AtomicBox {
-    fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(
-            ty: AtomicBox,
-            name: "atomic-box",
-            opaque: true,
-            sealed: true,
-        )
     }
 }
 

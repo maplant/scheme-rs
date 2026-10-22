@@ -70,3 +70,6 @@ compile_error!("async features requires the tokio feature to be enabled");
 
 #[cfg(target_pointer_width = "32")]
 compile_error!("32 bit architectures are currently not supported");
+
+// Re-exports for macros:
+pub use indexmap;

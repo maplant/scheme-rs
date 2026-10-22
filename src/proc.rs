@@ -84,7 +84,7 @@ use crate::{
     gc::{Gc, Trace},
     lists::{Pair, list_len, list_to_vec},
     ports::{BufferMode, Port, Transcoder},
-    records::{Embeddable, Embedded, RecordTypeDescriptor, rtd},
+    records::{Embeddable, Embedded},
     registry::BridgeFnDebugInfo,
     runtime::Runtime,
     stack::{SealedStackRecord, StackRecord},
@@ -770,22 +770,9 @@ where
 }
 
 /// A continuation derived from a Rust function
-#[derive(Copy, Clone, Trace)]
+#[derive(Copy, Clone, Trace, Embeddable)]
+#[scheme(name = "%rust-continuation", sealed = true, opaque = true)]
 pub(crate) struct RustContinuation(#[trace(skip)] fn(Args, &mut ContBarrier<'_>) -> Application);
-
-unsafe impl Embeddable for RustContinuation {
-    fn rtd() -> Arc<RecordTypeDescriptor>
-    where
-        Self: Sized,
-    {
-        rtd! {
-            name: "%rust-continuation",
-            ty: RustContinuation,
-            sealed: true,
-            opaque: true,
-        }
-    }
-}
 
 pub(crate) trait IntoRustContinuation<A, const N: usize> {
     fn into_rust_cont(self) -> RustContinuation;
@@ -1358,7 +1345,8 @@ where
 }
 
 /// A copy of [`ContBarrier`] without mutable parameters
-#[derive(Clone, Trace)]
+#[derive(Clone, Trace, Embeddable)]
+#[scheme(name = "%captured-continuation", sealed = true, opaque = true)]
 pub struct CapturedContinuation {
     id: usize,
     state: DynState,
@@ -1403,12 +1391,6 @@ impl DynState {
                 .cloned()
                 .collect(),
         }
-    }
-}
-
-unsafe impl Embeddable for CapturedContinuation {
-    fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(ty: CapturedContinuation, name: "%dynamic-state", sealed: true, opaque: true)
     }
 }
 
@@ -1580,16 +1562,11 @@ pub fn call_with_values(
 // Dynamic wind
 //
 
-#[derive(Clone, Debug, Trace, PartialEq)]
+#[derive(Clone, Debug, Trace, PartialEq, Embeddable)]
+#[scheme(name = "%winder", sealed = true, opaque = true)]
 pub(crate) struct Winder {
     pub(crate) in_thunk: Procedure,
     pub(crate) out_thunk: Procedure,
-}
-
-unsafe impl Embeddable for Winder {
-    fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(ty: Winder, name: "%winder", sealed: true, opaque: true)
-    }
 }
 
 #[bridge(name = "dynamic-wind", lib = "(rnrs base builtins (6))")]
@@ -1648,25 +1625,12 @@ pub(crate) struct Prompt {
     k: SealedStackRecord,
 }
 
-#[derive(Trace)]
+#[derive(Trace, Embeddable)]
+#[scheme(name = "%delimited-continuation", sealed = true, opaque = true)]
 struct DelimitedContinuation {
     id: usize,
     state: DynState,
     delim_call_stack: Option<SealedStackRecord>,
-}
-
-unsafe impl Embeddable for DelimitedContinuation {
-    fn rtd() -> Arc<RecordTypeDescriptor>
-    where
-        Self: Sized,
-    {
-        rtd! {
-            ty: DelimitedContinuation,
-            name: "%delimited-continuation",
-            sealed: true,
-            opaque: true,
-        }
-    }
 }
 
 impl DelimitedContinuation {

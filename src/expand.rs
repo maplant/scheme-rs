@@ -5,13 +5,12 @@ use crate::{
     exceptions::Exception,
     gc::{Gc, Trace},
     proc::Procedure,
-    records::{Embeddable, Embedded, RecordTypeDescriptor, rtd},
+    records::{Embeddable, Embedded},
     symbols::Symbol,
     syntax::{Identifier, Span, Syntax},
     value::Value,
 };
 use scheme_rs_macros::{bridge, maybe_async, maybe_await, runtime_fn};
-use std::sync::Arc;
 
 mod error {
     use crate::exceptions::{Message, SyntaxViolation};
@@ -113,7 +112,8 @@ impl SyntaxRule {
     }
 }
 
-#[derive(Clone, Debug, Trace)]
+#[derive(Clone, Debug, Trace, Embeddable)]
+#[scheme(name = "%pattern", sealed = true, opaque = true)]
 pub enum Pattern {
     Underscore,
     Ellipsis(Box<Pattern>),
@@ -364,38 +364,22 @@ fn match_vec(patterns: &[Pattern], expr: &Syntax, env: &mut MatchEnv) -> bool {
     }
 }
 
-unsafe impl Embeddable for Pattern {
-    fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(ty: Pattern, name: "pattern", sealed: true, opaque: true)
-    }
-}
-
 #[derive(Clone, Debug, Trace)]
 enum Match {
     Leaf(Syntax),
     Seq(Vec<Match>),
 }
 
-#[derive(Clone, Debug, Default, Trace)]
+#[derive(Clone, Debug, Default, Trace, Embeddable)]
+#[scheme(name = "%match-env", sealed = true, opaque = true)]
 pub struct MatchEnv {
     binds: HashMap<Binding, Match>,
 }
 
-unsafe impl Embeddable for MatchEnv {
-    fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(ty: MatchEnv, name: "match-env", sealed: true, opaque: true)
-    }
-}
-
-#[derive(Trace, Debug)]
+#[derive(Debug, Trace, Embeddable)]
+#[scheme(name = "%expansion-combiner", sealed = true, opaque = true)]
 pub struct ExpansionCombiner {
     pub(crate) uses: HashMap<Binding, usize>,
-}
-
-unsafe impl Embeddable for ExpansionCombiner {
-    fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(ty: ExpansionCombiner, name: "expansion-combiner", sealed: true, opaque: true)
-    }
 }
 
 #[runtime_fn]
@@ -430,7 +414,8 @@ impl ExpansionCombiner {
     }
 }
 
-#[derive(Clone, Debug, Trace)]
+#[derive(Clone, Debug, Trace, Embeddable)]
+#[scheme(name = "%template", sealed = true, opaque = true)]
 pub enum Template {
     Ellipsis(Box<Template>),
     List(Vec<Template>),
@@ -835,12 +820,6 @@ fn check_escaped_template(expr: &Syntax, env: &Environment) -> Vec<(Symbol, isiz
             }
         }
         _ => Vec::new(),
-    }
-}
-
-unsafe impl Embeddable for Template {
-    fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(ty: Template, name: "template", sealed: true, opaque: true)
     }
 }
 
