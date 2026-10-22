@@ -1,17 +1,13 @@
 use std::collections::HashMap;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{LazyLock, Mutex};
 
 use scheme_rs_macros::{Trace, bridge};
 
 use crate::records::Embedded;
-use crate::{
-    records::{Embeddable, RecordTypeDescriptor, rtd},
-    strings::WideString,
-    symbols::Symbol,
-    value::Value,
-};
+use crate::{records::Embeddable, strings::WideString, symbols::Symbol, value::Value};
 
-#[derive(Debug, Clone, Trace)]
+#[derive(Debug, Clone, Trace, Embeddable)]
+#[scheme(name = "keyword", sealed = true, opaque = true)]
 pub struct Keyword(Symbol);
 
 static INTERNED: LazyLock<Mutex<HashMap<Symbol, Value>>> =
@@ -25,12 +21,6 @@ impl Keyword {
             .entry(sym)
             .or_insert_with(|| Value::from(Keyword(sym)))
             .clone()
-    }
-}
-
-unsafe impl Embeddable for Keyword {
-    fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(ty: Keyword, name: "keyword", sealed: true, opaque: true)
     }
 }
 

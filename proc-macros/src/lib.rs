@@ -707,6 +707,221 @@ fn doc_string(attrs: &[Attribute]) -> String {
         .join("\n")
 }
 
+#[derive(Default)]
+struct EmbeddableOptions {
+    name: Option<LitStr>,
+    parent: Option<Expr>,
+    opaque: Option<LitBool>,
+    sealed: Option<LitBool>,
+    uid: Option<LitStr>,
+    constructor: Option<Expr>,
+    lib: Option<LitStr>,
+    debug: Option<Expr>,
+    display: Option<Expr>,
+    eq: Option<Expr>,
+    eqv: Option<Expr>,
+    equal: Option<Expr>,
+    eq_hash: Option<Expr>,
+    eqv_hash: Option<Expr>,
+    equal_hash: Option<Expr>,
+}
+
+#[proc_macro_derive(Embeddable, attributes(scheme))]
+pub fn derive_embeddable(input: TokenStream) -> TokenStream {
+    derive_embeddable_inner(parse_macro_input!(input))
+        .unwrap_or_else(Error::into_compile_error)
+        .into()
+}
+
+fn derive_embeddable_inner(input: DeriveInput) -> Result<proc_macro2::TokenStream> {
+    if !input.generics.params.is_empty() {
+        return Err(Error::new(
+            input.generics.span(),
+            "generics are currently not supported",
+        ));
+    }
+
+    let ty = &input.ident;
+
+    let options = EmbeddableOptions::parse(&input.attrs)?;
+
+    let Some(name) = options.name else {
+        // TODO: This should automatically default to kebab case
+        return Err(Error::new(input.span(), "`name` attribute must be present"));
+    };
+
+    let opaque = options.opaque.map(|opaque| quote!(opaque: #opaque,));
+    let sealed = options.sealed.map(|sealed| quote!(sealed: #sealed,));
+    let uid = options.uid.map(|uid| quote!(uid: #uid,));
+    let constructor = options
+        .constructor
+        .map(|constructor| quote!(constructor: #constructor,));
+    let lib = options.lib.map(|lib| quote!(lib: #lib,));
+
+    let parent = options
+        .parent
+        .as_ref()
+        .map(|parent| quote!(parent: #parent,));
+    let parent_record = options.parent.as_ref().map(|parent| {
+        quote! {
+            fn parent_record(
+                &self,
+                rtd: &::std::sync::Arc<::scheme_rs::records::RecordTypeDescriptor>
+            ) -> Option<&dyn ::scheme_rs::records::Embeddable> {
+                #parent::rtd().is_subtype_of(rtd).then(|| &self.parent as &dyn ::scheme_rs::records::Embeddable)
+            }
+        }
+    });
+
+    let debug = options.debug.map(|debug| {
+        quote! {
+            fn debug_fmt(
+                &self,
+                circular_values: &mut ::scheme_rs::indexmap::IndexMap<::scheme_rs::value::Value, bool>,
+                f: &mut ::std::fmt::Formatter<'_>
+            ) -> ::std::fmt::Result {
+                (#debug)(self, circular_values, f)
+            }
+        }
+    });
+
+    let display = options.display.map(|display| {
+        quote! {
+            fn display_fmt(
+                &self,
+                circular_values: &mut ::scheme_rs::indexmap::IndexMap<::scheme_rs::value::Value, bool>,
+                f: &mut ::std::fmt::Formatter<'_>
+            ) -> ::std::fmt::Result {
+                (#display)(self, circular_values, f)
+            }
+        }
+    });
+
+    let eq = options.eq.map(|eq| {
+        quote! {
+            fn eq(&self, rhs: &Record) -> bool {
+                (#eq)(self, rhs)
+            }
+        }
+    });
+    let eqv = options.eqv.map(|eqv| {
+        quote! {
+            fn eqv(&self, rhs: &Record) -> bool {
+                (#eqv)(self, rhs)
+            }
+        }
+    });
+    let equal = options.equal.map(|equal| {
+        quote! {
+            fn equal(&self, rhs: &Record) -> bool {
+                (#equal)(self, rhs)
+            }
+        }
+    });
+
+    let eq_hash = options.eq_hash.map(|eq_hash| {
+        quote! {
+            fn eq_hash(&self, hasher: &mut dyn ::std::hash::Hasher) {
+                (#eq_hash)(self, hasher)
+            }
+        }
+    });
+    let eqv_hash = options.eqv_hash.map(|eqv_hash| {
+        quote! {
+            fn eqv_hash(&self, hasher: &mut dyn ::std::hash::Hasher) {
+                (#eqv_hash)(self, hasher)
+            }
+        }
+    });
+    let equal_hash = options.equal_hash.map(|equal_hash| {
+        quote! {
+            fn equal_hash(
+                &self,
+                recursive: &mut ::scheme_rs::indexmap::IndexSet<::scheme_rs::value::Value>,
+                hasher: &mut dyn ::std::hash::Hasher
+            ) {
+                (#equal_hash)(self, recursive, hasher)
+            }
+        }
+    });
+
+    Ok(quote! {
+        unsafe impl ::scheme_rs::records::Embeddable for #ty {
+            fn rtd() -> ::std::sync::Arc<::scheme_rs::records::RecordTypeDescriptor> {
+                ::scheme_rs::records::rtd!(
+                    ty: #ty,
+                    name: #name,
+                    #parent
+                    #opaque
+                    #sealed
+                    #uid
+                    #constructor
+                    #lib
+                )
+            }
+
+            #parent_record
+
+            #debug
+            #display
+
+            #eq
+            #eqv
+            #equal
+
+            #eq_hash
+            #eqv_hash
+            #equal_hash
+        }
+    })
+}
+
+impl EmbeddableOptions {
+    fn parse(attrs: &[Attribute]) -> Result<EmbeddableOptions> {
+        let mut options = EmbeddableOptions::default();
+        for attr in attrs {
+            if attr.path().is_ident("scheme") {
+                attr.parse_nested_meta(|meta| {
+                    macro_rules! attribute {
+                        ( $field:ident ) => {
+                            if meta.path.is_ident(stringify!($field)) {
+                                if options.$field.is_some() {
+                                    return Err(Error::new(
+                                        meta.path.span(),
+                                        concat!("duplicate definition of ", stringify!($field)),
+                                    ));
+                                }
+                                let value = meta.value()?;
+                                options.$field = Some(value.parse()?);
+                                return Ok(());
+                            }
+                        };
+                    }
+
+                    attribute!(name);
+                    attribute!(parent);
+                    attribute!(opaque);
+                    attribute!(sealed);
+                    attribute!(uid);
+                    attribute!(constructor);
+                    attribute!(lib);
+                    attribute!(debug);
+                    attribute!(display);
+                    attribute!(eq);
+                    attribute!(eqv);
+                    attribute!(equal);
+                    attribute!(eq_hash);
+                    attribute!(eqv_hash);
+                    attribute!(equal_hash);
+
+                    Err(meta.error("unsupported attribute"))
+                })?;
+            }
+        }
+        Ok(options)
+    }
+}
+
 /// Derive the `Trace` trait for a type.
 ///
 /// `Trace` assumes that all fields of the type implement `Trace` or are a `Gc`
@@ -747,7 +962,7 @@ pub fn derive_trace(input: TokenStream) -> TokenStream {
         )),
     };
 
-    tokens.unwrap_or_else(syn::Error::into_compile_error).into()
+    tokens.unwrap_or_else(Error::into_compile_error).into()
 }
 
 fn derive_trace_struct(
@@ -1212,58 +1427,37 @@ impl Parse for Rtd {
         let mut constructor: Option<ExprClosure> = None;
         while !input.is_empty() {
             let keyword: Ident = input.parse()?;
-            if keyword == "name" {
-                if name.is_some() {
-                    return Err(Error::new(keyword.span(), "duplicate definition of name"));
+
+            macro_rules! field {
+                ( $field: ident ) => {
+                    if keyword == stringify!($field) {
+                        if $field.is_some() {
+                            return Err(Error::new(keyword.span(), concat!("duplicate definition of ", stringify!($field))));
+                        }
+
+                        let _: Token![:] = input.parse()?;
+
+                        $field = Some(input.parse()?);
+
+                        if !input.is_empty() {
+                            let _: Token![,] = input.parse()?;
+                        }
+
+                        continue;
+                    }
                 }
-                let _: Token![:] = input.parse()?;
-                name = Some(input.parse()?);
-            } else if keyword == "ty" {
-                if ty.is_some() {
-                    return Err(Error::new(keyword.span(), "duplicate definition of ty"));
-                }
-                let _: Token![:] = input.parse()?;
-                ty = Some(input.parse()?);
-            } else if keyword == "parent" {
-                if parent.is_some() {
-                    return Err(Error::new(keyword.span(), "duplicate definition of parent"));
-                }
-                let _: Token![:] = input.parse()?;
-                parent = Some(input.parse()?);
-            } else if keyword == "constructor" {
-                if constructor.is_some() {
-                    return Err(Error::new(
-                        keyword.span(),
-                        "duplicate definition of constructor",
-                    ));
-                }
-                let _: Token![:] = input.parse()?;
-                constructor = Some(input.parse()?);
-            } else if keyword == "opaque" {
-                if opaque.is_some() {
-                    return Err(Error::new(keyword.span(), "duplicate definition of opaque"));
-                }
-                let _: Token![:] = input.parse()?;
-                opaque = Some(input.parse()?);
-            } else if keyword == "sealed" {
-                if sealed.is_some() {
-                    return Err(Error::new(keyword.span(), "duplicate definition of sealed"));
-                }
-                let _: Token![:] = input.parse()?;
-                sealed = Some(input.parse()?);
-            } else if keyword == "uid" {
-                if uid.is_some() {
-                    return Err(Error::new(keyword.span(), "duplicate definition of uid"));
-                }
-                let _: Token![:] = input.parse()?;
-                uid = Some(input.parse()?);
-            } else if keyword == "lib" {
-                if lib.is_some() {
-                    return Err(Error::new(keyword.span(), "duplicate definition of lib"));
-                }
-                let _: Token![:] = input.parse()?;
-                lib = Some(input.parse()?);
-            } else if keyword == "fields" {
+            }
+
+            field!(name);
+            field!(ty);
+            field!(parent);
+            field!(constructor);
+            field!(opaque);
+            field!(sealed);
+            field!(uid);
+            field!(lib);
+
+            if keyword == "fields" {
                 if fields.is_some() {
                     return Err(Error::new(keyword.span(), "duplicate definition of fields"));
                 }
@@ -1272,13 +1466,15 @@ impl Parse for Rtd {
                 bracketed!(content in input);
                 let punctuated_fields = content.parse_terminated(RtdField::parse, Token![,])?;
                 fields = Some(punctuated_fields.into_iter().collect());
-            } else {
-                return Err(Error::new(keyword.span(), "unknown field name"));
+
+                if !input.is_empty() {
+                    let _: Token![,] = input.parse()?;
+                }
+
+                continue;
             }
 
-            if !input.is_empty() {
-                let _: Token![,] = input.parse()?;
-            }
+            return Err(Error::new(keyword.span(), "unknown field name"));
         }
 
         let Some(name) = name else {
@@ -1598,7 +1794,7 @@ pub fn define_condition_type(tokens: TokenStream) -> TokenStream {
         }
 
         unsafe impl ::scheme_rs::records::Embeddable for #rust_name {
-            fn rtd() -> std::sync::Arc<::scheme_rs::records::RecordTypeDescriptor> {
+            fn rtd() -> ::std::sync::Arc<::scheme_rs::records::RecordTypeDescriptor> {
                 ::scheme_rs::records::rtd!(
                     ty: #rust_name,
                     name: #scheme_name,
@@ -1611,7 +1807,7 @@ pub fn define_condition_type(tokens: TokenStream) -> TokenStream {
 
             fn parent_record(
                 &self,
-                rtd: &std::sync::Arc<::scheme_rs::records::RecordTypeDescriptor>
+                rtd: &::std::sync::Arc<::scheme_rs::records::RecordTypeDescriptor>
             ) -> Option<&dyn ::scheme_rs::records::Embeddable> {
                 #parent::rtd()
                     .is_subtype_of(rtd)
@@ -1627,9 +1823,9 @@ pub fn define_condition_type(tokens: TokenStream) -> TokenStream {
 
             fn debug_fmt(
                 &self,
-                _circular_values: &mut indexmap::IndexMap<::scheme_rs::value::Value, bool>,
-                f: &mut std::fmt::Formatter<'_>
-            ) -> std::fmt::Result {
+                _circular_values: &mut ::scheme_rs::indexmap::IndexMap<::scheme_rs::value::Value, bool>,
+                f: &mut ::std::fmt::Formatter<'_>
+            ) -> ::std::fmt::Result {
                 use std::fmt::Debug;
                 write!(f, "#<{}", #scheme_name)?;
                 #dbg

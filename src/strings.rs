@@ -5,11 +5,10 @@
 //! characters from indices. This means that Scheme strings are vectors of
 //! unicode code points rather that UTF-8 strings.
 
-use std::{fmt, hash::Hash, sync::Arc};
+use std::{fmt, hash::Hash};
 
-use indexmap::{IndexMap, IndexSet};
+use indexmap::IndexSet;
 use parking_lot::{MappedRwLockReadGuard, RwLock, RwLockReadGuard};
-use scheme_rs_macros::rtd;
 
 use crate::{
     Either,
@@ -17,13 +16,22 @@ use crate::{
     exceptions::Exception,
     gc::Trace,
     lists::iter_list,
-    records::{Embeddable, Embedded, Record, RecordTypeDescriptor},
+    records::{Embeddable, Embedded, Record},
     registry::bridge,
     value::Value,
 };
 
-#[derive(Trace)]
+#[derive(Trace, Embeddable)]
 #[repr(align(16))]
+#[scheme(
+    name = "string",
+    sealed = true,
+    opaque = true,
+    display = |this, _, fmt: &mut fmt::Formatter<'_>| write!(fmt, "{this}"),
+    debug = |this, _, fmt: &mut fmt::Formatter<'_>| write!(fmt, "{this:?}"),
+    equal = str_equal,
+    equal_hash = str_equal_hash
+)]
 pub(crate) struct WideStringInner {
     pub(crate) chars: RwLock<Vec<char>>,
     mutable: bool,
@@ -48,49 +56,22 @@ impl fmt::Debug for WideStringInner {
     }
 }
 
-unsafe impl Embeddable for WideStringInner {
-    fn rtd() -> Arc<RecordTypeDescriptor>
-    where
-        Self: Sized,
-    {
-        rtd!(ty: WideStringInner, name: "string", sealed: true, opaque: true)
-    }
+fn str_equal(string: &WideStringInner, rhs: &Record) -> bool {
+    let Some(rhs) = rhs.cast::<WideStringInner>() else {
+        return false;
+    };
+    *string.chars.read() == *rhs.chars.read()
+}
 
-    fn display_fmt(
-        &self,
-        _circular: &mut IndexMap<Value, bool>,
-        fmt: &mut fmt::Formatter<'_>,
-    ) -> fmt::Result {
-        write!(fmt, "{self}")
-    }
-
-    fn debug_fmt(
-        &self,
-        _circular: &mut IndexMap<Value, bool>,
-        fmt: &mut fmt::Formatter<'_>,
-    ) -> fmt::Result {
-        write!(fmt, "{self:?}")
-    }
-
-    fn equal(&self, rhs: &Record) -> bool
-    where
-        Self: Sized,
-    {
-        let Some(rhs) = rhs.cast::<Self>() else {
-            return false;
-        };
-        *self.chars.read() == *rhs.chars.read()
-    }
-
-    fn equal_hash(&self, _recursive: &mut IndexSet<Value>, hasher: &mut dyn std::hash::Hasher)
-    where
-        Self: Sized,
-    {
-        let chars = self.chars.read();
-        hasher.write_usize(chars.len());
-        for chr in chars.iter() {
-            hasher.write_u32(*chr as u32);
-        }
+fn str_equal_hash(
+    string: &WideStringInner,
+    _recursive: &mut IndexSet<Value>,
+    hasher: &mut dyn std::hash::Hasher,
+) {
+    let chars = string.chars.read();
+    hasher.write_usize(chars.len());
+    for chr in chars.iter() {
+        hasher.write_u32(*chr as u32);
     }
 }
 
