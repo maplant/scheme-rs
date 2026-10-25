@@ -1596,3 +1596,14 @@ pub fn record_field_mutable_pred(
 
     Ok(matches!(rtd.fields[k], Field::Mutable(_)))
 }
+
+/// Trait for implementing mutable fields via [the Embeddable derive macro](macro@Embeddable).
+pub trait MutableField {
+    fn set(&self, new_value: Value);
+}
+
+impl MutableField for Cell {
+    fn set(&self, new_value: Value) {
+        self.set(new_value);
+    }
+}

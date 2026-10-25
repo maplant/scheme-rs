@@ -1,8 +1,9 @@
+use heck::ToKebabCase;
 use proc_macro::{self, TokenStream};
 use proc_macro2::{Literal, Span};
 use quote::{format_ident, quote};
 use syn::{
-    Attribute, DataEnum, DataStruct, DeriveInput, Error, Expr, ExprClosure, Fields, FnArg,
+    Attribute, Data, DataEnum, DataStruct, DeriveInput, Error, Expr, ExprClosure, Fields, FnArg,
     GenericParam, Generics, Ident, ItemFn, Lit, LitBool, LitStr, Member, Meta, Pat, PatIdent,
     PatType, Result, ReturnType, Token, Type, TypePath, TypeReference, Visibility, braced,
     bracketed, parenthesized,
@@ -562,7 +563,9 @@ fn is_unit(ty: &Type) -> bool {
 }
 
 fn is_option(ty: &Type) -> bool {
-    if let Type::Path(TypePath { qself: None, path }) = ty
+    if let Type::Path(TypePath {
+        qself: None, path, ..
+    }) = ty
         && let Some(last) = path.segments.last()
     {
         last.ident == "Option"
@@ -572,7 +575,9 @@ fn is_option(ty: &Type) -> bool {
 }
 
 fn is_application(ty: &Type) -> bool {
-    if let Type::Path(TypePath { qself: None, path }) = ty
+    if let Type::Path(TypePath {
+        qself: None, path, ..
+    }) = ty
         && let Some(last) = path.segments.last()
     {
         last.ident == "Application"
@@ -707,26 +712,7 @@ fn doc_string(attrs: &[Attribute]) -> String {
         .join("\n")
 }
 
-#[derive(Default)]
-struct EmbeddableOptions {
-    name: Option<LitStr>,
-    parent: Option<Expr>,
-    opaque: Option<LitBool>,
-    sealed: Option<LitBool>,
-    uid: Option<LitStr>,
-    constructor: Option<Expr>,
-    lib: Option<LitStr>,
-    debug: Option<Expr>,
-    display: Option<Expr>,
-    eq: Option<Expr>,
-    eqv: Option<Expr>,
-    equal: Option<Expr>,
-    eq_hash: Option<Expr>,
-    eqv_hash: Option<Expr>,
-    equal_hash: Option<Expr>,
-}
-
-#[proc_macro_derive(Embeddable, attributes(scheme))]
+#[proc_macro_derive(Embeddable, attributes(scheme, immutable, mutable, parent))]
 pub fn derive_embeddable(input: TokenStream) -> TokenStream {
     derive_embeddable_inner(parse_macro_input!(input))
         .unwrap_or_else(Error::into_compile_error)
@@ -745,10 +731,9 @@ fn derive_embeddable_inner(input: DeriveInput) -> Result<proc_macro2::TokenStrea
 
     let options = EmbeddableOptions::parse(&input.attrs)?;
 
-    let Some(name) = options.name else {
-        // TODO: This should automatically default to kebab case
-        return Err(Error::new(input.span(), "`name` attribute must be present"));
-    };
+    let name = options.name.unwrap_or_else(|| {
+        LitStr::new(&input.ident.to_string().to_kebab_case(), Span::call_site())
+    });
 
     let opaque = options.opaque.map(|opaque| quote!(opaque: #opaque,));
     let sealed = options.sealed.map(|sealed| quote!(sealed: #sealed,));
@@ -758,17 +743,91 @@ fn derive_embeddable_inner(input: DeriveInput) -> Result<proc_macro2::TokenStrea
         .map(|constructor| quote!(constructor: #constructor,));
     let lib = options.lib.map(|lib| quote!(lib: #lib,));
 
-    let parent = options
-        .parent
-        .as_ref()
-        .map(|parent| quote!(parent: #parent,));
-    let parent_record = options.parent.as_ref().map(|parent| {
+    // Obtain all of the fields
+    let fields = match input.data {
+        Data::Struct(strct) => strct
+            .fields
+            .iter()
+            .filter(|field| field.ident.is_some())
+            .map(|field| {
+                let options = EmbeddableFieldOptions::parse(&field.attrs)?;
+                Ok(EmbeddableFields {
+                    ident: field.ident.clone().expect("todo: tuple structs"),
+                    ty: field.ty.clone(),
+                    options,
+                })
+            })
+            .collect::<Result<_>>()?,
+        // TODO: check for attributes in enums
+        _ => Vec::new(),
+    };
+
+    struct Parent {
+        ident: Ident,
+        ty: Type,
+    }
+
+    let mut parent = None;
+
+    // Check for a parent and construct the fields decl
+    let mut k = 0;
+    let mut field_decls = Vec::new();
+    let mut field_getters = Vec::new();
+    let mut field_setters = Vec::new();
+    for field in &fields {
+        if field.options.parent {
+            if !matches!(field.options.field_ty, FieldType::Ignore) {
+                return Err(Error::new(
+                    field.ident.span(),
+                    "cannot be both a field and a parent",
+                ));
+            }
+            if parent.is_some() {
+                return Err(Error::new(
+                    field.ident.span(),
+                    "cannot have multiple parents",
+                ));
+            }
+            parent = Some(Parent {
+                ident: field.ident.clone(),
+                ty: field.ty.clone(),
+            });
+        } else {
+            let field_name = field.ident.to_string().to_kebab_case();
+            match field.options.field_ty {
+                FieldType::Mutable => field_decls.push(quote!(mutable(#field_name))),
+                FieldType::Immutable => field_decls.push(quote!(immutable(#field_name))),
+                _ => (),
+            }
+            let ident = &field.ident;
+            let ty = &field.ty;
+            if matches!(field.options.field_ty, FieldType::Mutable) {
+                field_setters.push(quote!(
+                    #k => <#ty as ::scheme_rs::records::MutableField>::set(&self.#ident, new_val)
+                ));
+            }
+            if !matches!(field.options.field_ty, FieldType::Ignore) {
+                field_getters.push(quote!(
+                    #k => Ok(::scheme_rs::value::Value::from(self.#ident.clone()))
+                ));
+                k += 1;
+            }
+        }
+    }
+
+    let parent_ty = parent.as_ref().map(|parent| {
+        let ty = &parent.ty;
+        quote!(parent: #ty,)
+    });
+    let parent_record = parent.as_ref().map(|parent| {
+        let ty = &parent.ty;
+        let field = &parent.ident;
         quote! {
             fn parent_record(
                 &self,
                 rtd: &::std::sync::Arc<::scheme_rs::records::RecordTypeDescriptor>
             ) -> Option<&dyn ::scheme_rs::records::Embeddable> {
-                #parent::rtd().is_subtype_of(rtd).then(|| &self.parent as &dyn ::scheme_rs::records::Embeddable)
+                #ty::rtd().is_subtype_of(rtd).then(|| &self.#field as &dyn ::scheme_rs::records::Embeddable)
             }
         }
     });
@@ -851,14 +910,33 @@ fn derive_embeddable_inner(input: DeriveInput) -> Result<proc_macro2::TokenStrea
                 ::scheme_rs::records::rtd!(
                     ty: #ty,
                     name: #name,
-                    #parent
+                    #parent_ty
                     #opaque
                     #sealed
                     #uid
                     #constructor
                     #lib
+                    fields: [
+                        #( #field_decls, )*
+                    ],
                 )
             }
+
+            fn get_field(&self, k: usize) -> Result<::scheme_rs::value::Value, ::scheme_rs::exceptions::Exception> {
+                match k {
+                    #( #field_getters, )*
+                    _ => Err(::scheme_rs::exceptions::Exception::error(format!("invalid record field: {k}")))
+                }
+            }
+
+            fn set_field(&self, k: usize, new_value: ::scheme_rs::value::Value) -> Result<(), ::scheme_rs::exceptions::Exception> {
+                match k {
+                    #( #field_setters, )*
+                    _ => return Err(::scheme_rs::exceptions::Exception::error(format!("invalid record field: {k}")))
+                }
+                Ok(())
+            }
+
 
             #parent_record
 
@@ -874,6 +952,24 @@ fn derive_embeddable_inner(input: DeriveInput) -> Result<proc_macro2::TokenStrea
             #equal_hash
         }
     })
+}
+
+#[derive(Default)]
+struct EmbeddableOptions {
+    name: Option<LitStr>,
+    opaque: Option<LitBool>,
+    sealed: Option<LitBool>,
+    uid: Option<LitStr>,
+    constructor: Option<Expr>,
+    lib: Option<LitStr>,
+    debug: Option<Expr>,
+    display: Option<Expr>,
+    eq: Option<Expr>,
+    eqv: Option<Expr>,
+    equal: Option<Expr>,
+    eq_hash: Option<Expr>,
+    eqv_hash: Option<Expr>,
+    equal_hash: Option<Expr>,
 }
 
 impl EmbeddableOptions {
@@ -899,7 +995,6 @@ impl EmbeddableOptions {
                     }
 
                     attribute!(name);
-                    attribute!(parent);
                     attribute!(opaque);
                     attribute!(sealed);
                     attribute!(uid);
@@ -920,6 +1015,92 @@ impl EmbeddableOptions {
         }
         Ok(options)
     }
+}
+
+#[derive(Default)]
+enum FieldType {
+    #[default]
+    Ignore,
+    Mutable,
+    Immutable,
+}
+
+#[derive(Default)]
+struct EmbeddableFieldOptions {
+    parent: bool,
+    name: Option<LitStr>,
+    field_ty: FieldType,
+}
+
+impl EmbeddableFieldOptions {
+    fn parse(attrs: &[Attribute]) -> Result<Self> {
+        let mut options = Self::default();
+        for attr in attrs {
+            if attr.path().is_ident("immutable") {
+                match options.field_ty {
+                    FieldType::Mutable => {
+                        return Err(Error::new(attr.span(), "field already declared as mutable"));
+                    }
+                    FieldType::Immutable => {
+                        return Err(Error::new(attr.span(), "duplicate immutable attribute"));
+                    }
+                    _ => (),
+                }
+                options.field_ty = FieldType::Immutable;
+            } else if attr.path().is_ident("mutable") {
+                match options.field_ty {
+                    FieldType::Immutable => {
+                        return Err(Error::new(
+                            attr.span(),
+                            "field already declared as immutable",
+                        ));
+                    }
+                    FieldType::Mutable => {
+                        return Err(Error::new(attr.span(), "duplicate mutable attribute"));
+                    }
+                    _ => (),
+                }
+                options.field_ty = FieldType::Mutable;
+            } else if attr.path().is_ident("parent") {
+                let _ = attr.meta.require_path_only()?;
+                options.parent = true;
+                continue;
+            } else {
+                continue;
+            };
+
+            attr.parse_nested_meta(|meta| {
+                macro_rules! attribute {
+                    ( $field:ident ) => {
+                        if meta.path.is_ident(stringify!($field)) {
+                            if options.$field.is_some() {
+                                return Err(Error::new(
+                                    meta.path.span(),
+                                    concat!("duplicate definition of ", stringify!($field)),
+                                ));
+                            }
+                            let value = meta.value()?;
+                            options.$field = Some(value.parse()?);
+                            return Ok(());
+                        }
+                    };
+                }
+
+                attribute!(name);
+                // attribute!(set);
+                // attribute!(get);
+
+                Err(meta.error("unsupported attribute"))
+            })?;
+        }
+        Ok(options)
+    }
+}
+
+struct EmbeddableFields {
+    ident: Ident,
+    ty: Type,
+    options: EmbeddableFieldOptions,
 }
 
 /// Derive the `Trace` trait for a type.
