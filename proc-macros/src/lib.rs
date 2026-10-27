@@ -807,12 +807,12 @@ fn derive_embeddable_inner(input: DeriveInput) -> Result<proc_macro2::TokenStrea
             let ty = &field.ty;
             if matches!(field.options.field_ty, FieldType::Mutable) {
                 field_setters.push(quote!(
-                    #k => <#ty as ::scheme_rs::records::SetField>::set(&self.#ident, new_value)
+                    #k => <#ty as ::scheme_rs::records::MutableField>::set(&self.#ident, new_value)
                 ));
             }
             if !matches!(field.options.field_ty, FieldType::Ignore) {
                 field_getters.push(quote!(
-                    #k => Ok(<#ty as ::scheme_rs::records::GetField>::get(&self.#ident))
+                    #k => Ok(<#ty as ::scheme_rs::records::Field>::get(&self.#ident))
                 ));
                 k += 1;
             }
@@ -836,8 +836,8 @@ fn derive_embeddable_inner(input: DeriveInput) -> Result<proc_macro2::TokenStrea
         }
     });
 
-    let debug = options.debug.map(|debug| {
-        quote! {
+    let debug = match options.debug {
+        Some(debug) => quote! {
             fn debug_fmt(
                 &self,
                 circular_values: &mut ::scheme_rs::indexmap::IndexMap<::scheme_rs::value::Value, bool>,
@@ -845,8 +845,36 @@ fn derive_embeddable_inner(input: DeriveInput) -> Result<proc_macro2::TokenStrea
             ) -> ::std::fmt::Result {
                 (#debug)(self, circular_values, f)
             }
-        }
-    });
+        },
+        None => quote! {
+            fn debug_fmt(
+                &self,
+                circular_values: &mut ::scheme_rs::indexmap::IndexMap<::scheme_rs::value::Value, bool>,
+                fmt: &mut ::std::fmt::Formatter<'_>
+            ) -> ::std::fmt::Result {
+                let rtd = this_rtd();
+
+                // Inherited fields:
+                for parent_rtd in &rtd.inherits {
+                    let parent_record = self.parent_record(&parent_rtd.0).unwrap();
+                    for (i, name) in parent_rtd.fields.keys().enumerate() {
+                        write!(fmt, " {name}: ")?;
+                        parent_record
+                            .get_field(i)
+                            .unwrap()
+                            .debug_fmt(circular_values, fmt)?;
+                    }
+                }
+
+                for (i, name) in rtd.fields.keys().enumerate() {
+                    write!(fmt, " {name}: ")?;
+                    self.get_field(i).unwrap().debug_fmt(circular_values, fmt)?;
+                }
+
+                Ok(())
+            }
+        },
+    };
 
     let display = options.display.map(|display| {
         quote! {
@@ -909,9 +937,8 @@ fn derive_embeddable_inner(input: DeriveInput) -> Result<proc_macro2::TokenStrea
     });
 
     Ok(quote! {
-        #[automatically_derived]
-        unsafe impl ::scheme_rs::records::Embeddable for #ty {
-            fn rtd() -> ::std::sync::Arc<::scheme_rs::records::RecordTypeDescriptor> {
+        const _: () = {
+            fn this_rtd() -> ::std::sync::Arc<::scheme_rs::records::RecordTypeDescriptor> {
                 ::scheme_rs::records::rtd!(
                     ty: #ty,
                     name: #name,
@@ -927,35 +954,42 @@ fn derive_embeddable_inner(input: DeriveInput) -> Result<proc_macro2::TokenStrea
                 )
             }
 
-            fn get_field(&self, k: usize) -> Result<::scheme_rs::value::Value, ::scheme_rs::exceptions::Exception> {
-                match k {
-                    #( #field_getters, )*
-                    _ => Err(::scheme_rs::exceptions::Exception::error(format!("invalid record field: {k}")))
+            #[automatically_derived]
+            unsafe impl ::scheme_rs::records::Embeddable for #ty {
+                fn rtd() -> ::std::sync::Arc<::scheme_rs::records::RecordTypeDescriptor> {
+                    this_rtd()
                 }
-            }
 
-            fn set_field(&self, k: usize, new_value: ::scheme_rs::value::Value) -> Result<(), ::scheme_rs::exceptions::Exception> {
-                match k {
-                    #( #field_setters, )*
-                    _ => return Err(::scheme_rs::exceptions::Exception::error(format!("invalid record field: {k}")))
+                fn get_field(&self, k: usize) -> Result<::scheme_rs::value::Value, ::scheme_rs::exceptions::Exception> {
+                    match k {
+                        #( #field_getters, )*
+                        _ => Err(::scheme_rs::exceptions::Exception::error(format!("invalid record field: {k}")))
+                    }
                 }
-                Ok(())
+
+                fn set_field(&self, k: usize, new_value: ::scheme_rs::value::Value) -> Result<(), ::scheme_rs::exceptions::Exception> {
+                    match k {
+                        #( #field_setters, )*
+                        _ => return Err(::scheme_rs::exceptions::Exception::error(format!("invalid record field: {k}")))
+                    }
+                    Ok(())
+                }
+
+
+                #parent_record
+
+                #debug
+                #display
+
+                #eq
+                #eqv
+                #equal
+
+                #eq_hash
+                #eqv_hash
+                #equal_hash
             }
-
-
-            #parent_record
-
-            #debug
-            #display
-
-            #eq
-            #eqv
-            #equal
-
-            #eq_hash
-            #eqv_hash
-            #equal_hash
-        }
+        };
     })
 }
 
@@ -1578,10 +1612,10 @@ impl RtdField {
     fn into_token_stream(self) -> proc_macro2::TokenStream {
         match self {
             Self::Immutable(name) => quote! {
-                ::scheme_rs::records::Field::Immutable(::scheme_rs::symbols::Symbol::intern(#name))
+                (::scheme_rs::symbols::Symbol::intern(#name), ::scheme_rs::records::Mutability::Immutable)
             },
             Self::Mutable(name) => quote! {
-                ::scheme_rs::records::Field::Mutable(::scheme_rs::symbols::Symbol::intern(#name))
+                (::scheme_rs::symbols::Symbol::intern(#name), ::scheme_rs::records::Mutability::Mutable)
             },
         }
     }
@@ -1789,7 +1823,7 @@ pub fn rtd(tokens: TokenStream) -> TokenStream {
                         sealed: #sealed,
                         uid: #uid,
                         num_inherited_fields: #num_inherited_fields,
-                        fields: vec![ #( #fields, )* ],
+                        fields: vec![ #( #fields, )* ].into_iter().collect(),
                         embedded_constructor: #embedded_constructor,
                         embedded_vtable: Some(::scheme_rs::records::EmbeddableVTable::new::<#ty>(#num_embedded_fields)),
                     })

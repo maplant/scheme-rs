@@ -9,14 +9,14 @@
   (define-syntax define-rust-type
     (lambda (x)
       (syntax-case x ()
-        [(_ name rtd constructor predicate)
+        [(_ name builtin-rtd constructor predicate)
           #'(begin
-             (define rtd (builtin))
-             (define rcd (make-record-constructor-descriptor rtd #f #f))
-             (define constructor (record-constructor rcd))
-             (define predicate (condition-predicate rtd))
+             (define rec-rtd (builtin-rtd))
+             (define rec-rcd (make-record-constructor-descriptor rec-rtd #f #f))
+             (define constructor (record-constructor rec-rcd))
+             (define predicate (record-predicate rec-rtd))
              (define-syntax name
                (lambda (x)
                  (syntax-case x (rtd rcd)
-                   [(_ rtd) #'rtd]
-                   [(_ rcd) #'rcd])))))])))
+                   [(_ rtd) #'rec-rtd]
+                   [(_ rcd) #'rec-rcd]))))]))))

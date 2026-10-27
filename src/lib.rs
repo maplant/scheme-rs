@@ -36,6 +36,8 @@ use std::hash::Hasher;
 
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
+pub type Result<T> = std::result::Result<T, exceptions::Exception>;
+
 /// Internal `Either` type
 #[derive(Debug, Clone)]
 enum Either<L, R> {
