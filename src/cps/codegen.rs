@@ -1130,7 +1130,7 @@ impl CompilationUnit<'_, '_> {
                 globals_pool.insert(global.clone());
                 let cell = self.builder.ins().iconst(
                     types::I64,
-                    SchemeValue::as_raw(&SchemeValue::from(global.val.clone())) as i64,
+                    SchemeValue::as_raw(&global.val.clone().into_value()) as i64,
                 );
                 (cell, global.name.0)
             }
@@ -1499,7 +1499,7 @@ impl CompilationUnit<'_, '_> {
                 globals_pool.insert(global.clone());
                 self.builder.ins().iconst(
                     types::I64,
-                    SchemeValue::as_raw(&SchemeValue::from(global.val.clone())) as i64,
+                    SchemeValue::as_raw(&global.val.clone().into_value()) as i64,
                 )
             }
             CpsValue::Var(Var::Local(local)) => match self.live.fetch(local) {

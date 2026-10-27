@@ -72,4 +72,5 @@ compile_error!("async features requires the tokio feature to be enabled");
 compile_error!("32 bit architectures are currently not supported");
 
 // Re-exports for macros:
+pub use by_address;
 pub use indexmap;

@@ -62,7 +62,7 @@
 //! # fn main() {
 //! let next_num = Procedure::new(
 //!     // Cells must be converted to values:
-//!     vec![ Value::from(Cell::new(Value::from(3.1415))) ],
+//!     vec![ Cell::new(Value::from(3.1415)).into_value() ],
 //!     next_num as BridgePtr,
 //!     0,
 //!     false,

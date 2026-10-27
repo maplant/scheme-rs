@@ -1312,7 +1312,7 @@ fn constructor(
 
         for (i, (field, mutable)) in fields.into_iter().zip(field_mutability).enumerate() {
             let field = if mutable {
-                Value::from(Cell::new(field))
+                Cell::new(field).into_value()
             } else {
                 field
             };
@@ -1597,12 +1597,32 @@ pub fn record_field_mutable_pred(
     Ok(matches!(rtd.fields[k], Field::Mutable(_)))
 }
 
+pub trait GetField {
+    fn get(&self) -> Value;
+}
+
+impl<T> GetField for T
+where
+    T: Clone,
+    Value: From<T>,
+{
+    fn get(&self) -> Value {
+        Value::from(self.clone())
+    }
+}
+
+impl GetField for Cell {
+    fn get(&self) -> Value {
+        self.get()
+    }
+}
+
 /// Trait for implementing mutable fields via [the Embeddable derive macro](macro@Embeddable).
-pub trait MutableField {
+pub trait SetField: GetField {
     fn set(&self, new_value: Value);
 }
 
-impl MutableField for Cell {
+impl SetField for Cell {
     fn set(&self, new_value: Value) {
         self.set(new_value);
     }

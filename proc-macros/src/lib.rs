@@ -770,7 +770,7 @@ fn derive_embeddable_inner(input: DeriveInput) -> Result<proc_macro2::TokenStrea
     let mut parent = None;
 
     // Check for a parent and construct the fields decl
-    let mut k = 0;
+    let mut k = 0usize;
     let mut field_decls = Vec::new();
     let mut field_getters = Vec::new();
     let mut field_setters = Vec::new();
@@ -793,7 +793,11 @@ fn derive_embeddable_inner(input: DeriveInput) -> Result<proc_macro2::TokenStrea
                 ty: field.ty.clone(),
             });
         } else {
-            let field_name = field.ident.to_string().to_kebab_case();
+            let field_name = field
+                .options
+                .name
+                .as_ref()
+                .map_or_else(|| field.ident.to_string().to_kebab_case(), LitStr::value);
             match field.options.field_ty {
                 FieldType::Mutable => field_decls.push(quote!(mutable(#field_name))),
                 FieldType::Immutable => field_decls.push(quote!(immutable(#field_name))),
@@ -803,12 +807,12 @@ fn derive_embeddable_inner(input: DeriveInput) -> Result<proc_macro2::TokenStrea
             let ty = &field.ty;
             if matches!(field.options.field_ty, FieldType::Mutable) {
                 field_setters.push(quote!(
-                    #k => <#ty as ::scheme_rs::records::MutableField>::set(&self.#ident, new_val)
+                    #k => <#ty as ::scheme_rs::records::SetField>::set(&self.#ident, new_value)
                 ));
             }
             if !matches!(field.options.field_ty, FieldType::Ignore) {
                 field_getters.push(quote!(
-                    #k => Ok(::scheme_rs::value::Value::from(self.#ident.clone()))
+                    #k => Ok(<#ty as ::scheme_rs::records::GetField>::get(&self.#ident))
                 ));
                 k += 1;
             }
@@ -827,7 +831,7 @@ fn derive_embeddable_inner(input: DeriveInput) -> Result<proc_macro2::TokenStrea
                 &self,
                 rtd: &::std::sync::Arc<::scheme_rs::records::RecordTypeDescriptor>
             ) -> Option<&dyn ::scheme_rs::records::Embeddable> {
-                #ty::rtd().is_subtype_of(rtd).then(|| &self.#field as &dyn ::scheme_rs::records::Embeddable)
+                <#ty as ::scheme_rs::records::Embeddable>::rtd().is_subtype_of(rtd).then(|| &self.#field as &dyn ::scheme_rs::records::Embeddable)
             }
         }
     });
@@ -858,21 +862,21 @@ fn derive_embeddable_inner(input: DeriveInput) -> Result<proc_macro2::TokenStrea
 
     let eq = options.eq.map(|eq| {
         quote! {
-            fn eq(&self, rhs: &Record) -> bool {
+            fn eq(&self, rhs: &::scheme_rs::records::Record) -> bool {
                 (#eq)(self, rhs)
             }
         }
     });
     let eqv = options.eqv.map(|eqv| {
         quote! {
-            fn eqv(&self, rhs: &Record) -> bool {
+            fn eqv(&self, rhs: &::scheme_rs::records::Record) -> bool {
                 (#eqv)(self, rhs)
             }
         }
     });
     let equal = options.equal.map(|equal| {
         quote! {
-            fn equal(&self, rhs: &Record) -> bool {
+            fn equal(&self, rhs: &::scheme_rs::records::Record) -> bool {
                 (#equal)(self, rhs)
             }
         }
@@ -905,6 +909,7 @@ fn derive_embeddable_inner(input: DeriveInput) -> Result<proc_macro2::TokenStrea
     });
 
     Ok(quote! {
+        #[automatically_derived]
         unsafe impl ::scheme_rs::records::Embeddable for #ty {
             fn rtd() -> ::std::sync::Arc<::scheme_rs::records::RecordTypeDescriptor> {
                 ::scheme_rs::records::rtd!(
@@ -1062,6 +1067,9 @@ impl EmbeddableFieldOptions {
                 }
                 options.field_ty = FieldType::Mutable;
             } else if attr.path().is_ident("parent") {
+                if options.parent {
+                    return Err(Error::new(attr.span(), "duplicate parent attribute"));
+                }
                 let _ = attr.meta.require_path_only()?;
                 options.parent = true;
                 continue;
@@ -1069,29 +1077,25 @@ impl EmbeddableFieldOptions {
                 continue;
             };
 
-            attr.parse_nested_meta(|meta| {
-                macro_rules! attribute {
-                    ( $field:ident ) => {
-                        if meta.path.is_ident(stringify!($field)) {
-                            if options.$field.is_some() {
-                                return Err(Error::new(
-                                    meta.path.span(),
-                                    concat!("duplicate definition of ", stringify!($field)),
-                                ));
-                            }
-                            let value = meta.value()?;
-                            options.$field = Some(value.parse()?);
-                            return Ok(());
+            if matches!(attr.meta, Meta::List(_)) {
+                attr.parse_nested_meta(|meta| {
+                    if meta.path.is_ident("name") {
+                        if options.name.is_some() {
+                            return Err(Error::new(
+                                meta.path.span(),
+                                "duplicate definition of name attribute",
+                            ));
                         }
-                    };
-                }
-
-                attribute!(name);
-                // attribute!(set);
-                // attribute!(get);
-
-                Err(meta.error("unsupported attribute"))
-            })?;
+                        let value = meta.value()?;
+                        options.name = Some(value.parse()?);
+                        Ok(())
+                    } else {
+                        Err(meta.error("unsupported attribute"))
+                    }
+                })?;
+            } else {
+                let _ = attr.meta.require_path_only()?;
+            }
         }
         Ok(options)
     }
@@ -1730,7 +1734,7 @@ pub fn rtd(tokens: TokenStream) -> TokenStream {
         Some(parent) => quote!({
             let parent = <#parent as ::scheme_rs::records::Embeddable>::rtd();
             let mut inherits = parent.inherits.clone();
-            inherits.insert(::by_address::ByAddress(parent));
+            inherits.insert(::scheme_rs::by_address::ByAddress(parent));
             inherits
         }),
         None => quote!(Default::default()),
@@ -1974,6 +1978,7 @@ pub fn define_condition_type(tokens: TokenStream) -> TokenStream {
 
         }
 
+        #[automatically_derived]
         unsafe impl ::scheme_rs::records::Embeddable for #rust_name {
             fn rtd() -> ::std::sync::Arc<::scheme_rs::records::RecordTypeDescriptor> {
                 ::scheme_rs::records::rtd!(

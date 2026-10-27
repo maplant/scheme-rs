@@ -446,7 +446,7 @@ unsafe fn arc_from_ptr<T>(ptr: *const T) -> Option<Arc<T>> {
 /// Allocate a new Gc with a value of undefined
 #[runtime_fn]
 unsafe extern "C" fn alloc_cell() -> *const () {
-    Value::into_raw(Value::from(Cell(Gc::new(RwLock::new(Value::undefined())))))
+    Value::into_raw(Cell(Gc::new(RwLock::new(Value::undefined()))).into_value())
 }
 
 /// Read the value of a Cell.
