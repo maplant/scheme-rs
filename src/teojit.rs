@@ -167,6 +167,8 @@ pub(crate) struct LambdaCode {
     baseline: AtomicPtr<u8>,
     /// Number of calls to the specialized version whose guards failed.
     deopts: AtomicU64,
+    /// Values the specialized version embeds raw pointers to.
+    kept_alive: parking_lot::Mutex<Vec<Value>>,
 }
 
 impl LambdaCode {
@@ -185,6 +187,7 @@ impl LambdaCode {
             entry: AtomicPtr::new(std::ptr::null_mut()),
             baseline: AtomicPtr::new(std::ptr::null_mut()),
             deopts: AtomicU64::new(0),
+            kept_alive: Default::default(),
         }));
         teojit_trace!("{code}: -> baseline");
         code
@@ -271,6 +274,10 @@ impl LambdaCode {
                 self.ret_types()
             );
         }
+    }
+
+    pub(crate) fn keep_alive(&self, value: Value) {
+        self.kept_alive.lock().push(value);
     }
 
     pub(crate) fn retain(&self, retained: RetainedLambda) {

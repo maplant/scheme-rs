@@ -333,6 +333,7 @@ impl Cps {
             proc_local: None,
             owner: None,
             spec: None,
+            self_procs: HashSet::default(),
             debug_info,
         };
 
@@ -381,6 +382,8 @@ struct CompilationUnit<'m, 'a> {
     owner: Option<ReturnOwner>,
     /// Set when compiling a specialized version of the owner.
     spec: Option<Rc<Specialization>>,
+    /// Locals holding a read of the global in [`Specialization::self_ref`].
+    self_procs: HashSet<Local>,
     local_cont_blocks: HashMap<Local, Block>,
     runtime_funcs: &'a RuntimeFunctions,
     params: [Value; 2],
@@ -1142,6 +1145,13 @@ impl<'c> CompilationUnit<'_, '_> {
         deferred_procs: &mut Vec<ProcedureBundle<'c>>,
         deferred_local_conts: &mut Vec<ProcedureBundle<'c>>,
     ) {
+        if let CpsValue::Var(Var::Global(global)) = from
+            && self.fold_self_ref_read(global, result, cexpr)
+        {
+            self.cps_codegen(cexpr, deferred_procs, deferred_local_conts);
+            return;
+        }
+
         let (cell, symbol) = match from {
             CpsValue::Var(Var::Local(var))
                 if let IrValue::Cell(cell) | IrValue::CellRef(cell) = *self.live.fetch(var) =>
@@ -1401,6 +1411,9 @@ impl<'c> CompilationUnit<'_, '_> {
 
             let [arg1, arg2, arg3, arg4, argn] = self.arg_slots_codegen(args, &HashSet::default());
             let out = self.get_out();
+
+            let op =
+                self.self_call_codegen(operator, op, [arg1, arg2, arg3, arg4, argn, barrier, out]);
 
             // Check if the operator can be tail called:
             let tail_callable = self
@@ -2308,6 +2321,7 @@ impl<'c> ProcedureBundle<'c> {
             proc_local,
             owner: self.owner,
             spec: self.spec.clone(),
+            self_procs: HashSet::default(),
             runtime_funcs,
             params,
             module,
