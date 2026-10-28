@@ -10,7 +10,7 @@ use crate::{
         Cps,
         codegen::{
             JitContEntryFn, JitUserEntryFn, RuntimeFunctionsBuilder, codegen_jit_cont_entry_fn,
-            codegen_jit_user_entry_fn,
+            codegen_jit_user_entry_fn, specialize,
         },
         compile::Compiler,
     },
@@ -28,7 +28,7 @@ use crate::{
     registry::Registry,
     symbols::Symbol,
     syntax::{Span, Syntax},
-    teojit::LambdaCode,
+    teojit::{LambdaCode, teojit_trace},
     value::{Cell, TAG, UnpackedValue, Value},
 };
 use cranelift_jit::{ArenaMemoryProvider, JITModule};
@@ -163,7 +163,7 @@ impl Runtime {
     #[maybe_async]
     pub(crate) fn compile_expr(&self, expr: Cps) -> Result<Vec<Value>, Exception> {
         let (completion_tx, completion_rx) = completion();
-        let task = CompilationTask {
+        let task = CompilationTask::Unit {
             completion_tx,
             compilation_unit: expr,
         };
@@ -173,6 +173,15 @@ impl Runtime {
         let mut barrier = ContBarrier::new();
         let app = self.enter_jit_cont(jit, Args::empty(), &mut barrier);
         maybe_await!(app.eval(&mut barrier))
+    }
+
+    /// Ask the compilation task to specialize a hot lambda, without waiting
+    /// for it. The request is dropped if the compilation task is busy.
+    pub(crate) fn request_specialization(&self, code: &'static LambdaCode, baseline: UserPtr) {
+        let task = CompilationTask::Specialize { code, baseline };
+        if self.0.compilation_buffer_tx.try_send(task).is_err() {
+            teojit_trace!("{code}: specializing -> baseline (compilation queue full)");
+        }
     }
 
     pub(crate) fn enter_jit_cont(
@@ -326,9 +335,16 @@ async fn recv_continuation(rx: CompletionRx) -> ReturnAddress {
     rx.await.unwrap()
 }
 
-struct CompilationTask {
-    compilation_unit: Cps,
-    completion_tx: CompletionTx,
+enum CompilationTask {
+    Unit {
+        compilation_unit: Cps,
+        completion_tx: CompletionTx,
+    },
+    /// Compile a specialized version of a hot lambda. Nobody waits for it.
+    Specialize {
+        code: &'static LambdaCode,
+        baseline: UserPtr,
+    },
 }
 
 #[cfg(not(feature = "async"))]
@@ -395,14 +411,21 @@ fn compilation_task(mut module: JITModule, mut compilation_queue_rx: Compilation
     let mut debug_info = DebugInfo::default();
 
     while let Some(task) = recv_compilation_task(&mut compilation_queue_rx) {
-        let CompilationTask {
-            completion_tx,
-            compilation_unit,
-        } = task;
-
-        let proc = compilation_unit.compile(&runtime_funcs, &mut module, &mut debug_info);
-
-        let _ = completion_tx.send(proc);
+        match task {
+            CompilationTask::Unit {
+                completion_tx,
+                compilation_unit,
+            } => {
+                let proc = compilation_unit.compile(&runtime_funcs, &mut module, &mut debug_info);
+                let _ = completion_tx.send(proc);
+            }
+            CompilationTask::Specialize { code, baseline } => {
+                match specialize(code, baseline, &runtime_funcs, &mut module, &mut debug_info) {
+                    Ok(entry) => code.set_entry(entry),
+                    Err(reason) => teojit_trace!("{code}: specializing -> baseline ({reason})"),
+                }
+            }
+        }
     }
 
     // Free the JITed memory
@@ -788,6 +811,12 @@ unsafe extern "C" fn pop_return_address(
         }
         barrier.pop_return_address()
     }
+}
+
+/// A guard of a specialized lambda failed.
+#[runtime_fn]
+unsafe extern "C" fn teojit_deopt(code: *const LambdaCode) {
+    unsafe { (*code).deopt() }
 }
 
 /// Allocate a user function

@@ -10,16 +10,18 @@ use cranelift::{
 use cranelift_jit::JITModule;
 use cranelift_module::{FuncId, Linkage, Module};
 use indexmap::IndexMap;
-use std::{mem::MaybeUninit, ptr::NonNull, sync::Arc};
+use std::{cell::RefCell, mem::MaybeUninit, ptr::NonNull, rc::Rc, sync::Arc};
 
 use crate::{
     cps::{
         Value as CpsValue,
         analysis::{Escaping, FreeVariables, Liveness},
     },
-    proc::{Application, ContBarrier, ProcDebugInfo, Procedure, ReturnAddress, UserPtr},
+    proc::{
+        Application, ContBarrier, MAX_DIRECT_ARGS, ProcDebugInfo, Procedure, ReturnAddress, UserPtr,
+    },
     runtime::{DebugInfo, Runtime},
-    teojit::LambdaCode,
+    teojit::{LambdaCode, TEOJIT_DUMP_IR},
     value::{
         FALSE_VALUE, FIXNUM_MAX, FIXNUM_MIN, NULL_VALUE, TAG, TRUE_VALUE, Tag, UNDEFINED_VALUE,
         Value as SchemeValue,
@@ -27,6 +29,11 @@ use crate::{
 };
 
 use super::*;
+
+mod teojit;
+
+pub(crate) use teojit::{RetainedLambda, specialize};
+use teojit::{Specialization, guard_codegen};
 
 #[derive(Copy, Clone, Debug)]
 enum IrValue {
@@ -140,6 +147,9 @@ pub(crate) struct RuntimeFunctions {
     greater_equal: FuncId,
     lesser: FuncId,
     lesser_equal: FuncId,
+
+    // Typed JIT:
+    teojit_deopt: FuncId,
 }
 
 pub(crate) type JitContEntryFn = extern "C" fn(
@@ -266,13 +276,13 @@ impl Cps {
 
         let mut cells = HashSet::default();
         self.cells(&mut cells);
-        let unit = Unit {
+        let unit = Arc::new(Unit {
             cps: self,
             free_vars,
             escaping,
             liveness,
             cells,
-        };
+        });
         let mut builder_context = FunctionBuilderContext::new();
         let mut ctx = module.make_context();
         ctx.func.signature = cont_sig();
@@ -322,6 +332,7 @@ impl Cps {
             liveness: &unit.liveness,
             proc_local: None,
             owner: None,
+            spec: None,
             debug_info,
         };
 
@@ -368,6 +379,8 @@ struct CompilationUnit<'m, 'a> {
     proc_local: Option<Local>,
     /// The user lambda whose body is being compiled, if any.
     owner: Option<ReturnOwner>,
+    /// Set when compiling a specialized version of the owner.
+    spec: Option<Rc<Specialization>>,
     local_cont_blocks: HashMap<Local, Block>,
     runtime_funcs: &'a RuntimeFunctions,
     params: [Value; 2],
@@ -717,6 +730,7 @@ impl<'c> CompilationUnit<'_, '_> {
         deferred_local_conts: &mut Vec<ProcedureBundle<'c>>,
     ) {
         let arg_vals: Vec<Value> = vals.iter().map(|val| self.value_codegen(val)).collect();
+        let known_fixnums = vals.iter().all(|val| self.is_known_fixnum(val));
 
         // If we have two arguments and the operator is a numeric primop, we can
         // generate faster code.
@@ -737,6 +751,7 @@ impl<'c> CompilationUnit<'_, '_> {
                 primop,
                 lhs,
                 rhs,
+                known_fixnums,
                 dest,
                 cexpr,
                 deferred_procs,
@@ -876,29 +891,38 @@ impl<'c> CompilationUnit<'_, '_> {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn fixnum_binop_codegen(
         &mut self,
         primop: PrimOp,
         lhs: Value,
         rhs: Value,
+        known_fixnums: bool,
         dest: Local,
         cexpr: &'c Cps,
         deferred_procs: &mut Vec<ProcedureBundle<'c>>,
         deferred_local_conts: &mut Vec<ProcedureBundle<'c>>,
     ) {
-        // Both operands are fixnums iff the low bit of their bitwise-and is set.
-        let anded = self.builder.ins().band(lhs, rhs);
-        let low_bit = self.builder.ins().band_imm_s(anded, 1);
-        let both_fixnums = self.builder.ins().icmp_imm_s(IntCC::Equal, low_bit, 1);
-
         let fast_block = self.builder.create_block();
-        let slow_block = self.builder.create_block();
         let merge_block = self.builder.create_block();
         self.builder.append_block_param(merge_block, types::I64);
 
-        self.builder
-            .ins()
-            .brif(both_fixnums, fast_block, &[], slow_block, &[]);
+        // Without a known type we need a slow path for non-fixnum operands.
+        let slow_block = if known_fixnums {
+            self.builder.ins().jump(fast_block, &[]);
+            None
+        } else {
+            // Both operands are fixnums iff the low bit of their bitwise-and
+            // is set.
+            let anded = self.builder.ins().band(lhs, rhs);
+            let low_bit = self.builder.ins().band_imm_s(anded, 1);
+            let both_fixnums = self.builder.ins().icmp_imm_s(IntCC::Equal, low_bit, 1);
+            let slow_block = self.builder.create_block();
+            self.builder
+                .ins()
+                .brif(both_fixnums, fast_block, &[], slow_block, &[]);
+            Some(slow_block)
+        };
 
         // Fast path: both operands are fixnums.
         self.builder.switch_to_block(fast_block);
@@ -1025,12 +1049,14 @@ impl<'c> CompilationUnit<'_, '_> {
             _ => unreachable!(),
         }
 
-        self.builder.switch_to_block(slow_block);
-        self.builder.seal_block(slow_block);
-        let result = self.slow_value_primop_codegen(primop, &[lhs, rhs]);
-        self.builder
-            .ins()
-            .jump(merge_block, &[BlockArg::Value(result)]);
+        if let Some(slow_block) = slow_block {
+            self.builder.switch_to_block(slow_block);
+            self.builder.seal_block(slow_block);
+            let result = self.slow_value_primop_codegen(primop, &[lhs, rhs]);
+            self.builder
+                .ins()
+                .jump(merge_block, &[BlockArg::Value(result)]);
+        }
 
         // Merge the two paths.
         self.builder.switch_to_block(merge_block);
@@ -1323,10 +1349,13 @@ impl<'c> CompilationUnit<'_, '_> {
             let pop_return_address = self
                 .module
                 .declare_func_in_func(self.runtime_funcs.pop_return_address, self.builder.func);
-            // Returns from a user lambda pass the lambda along, so their types
-            // can be sampled.
+            // Returns from a baseline user lambda pass the lambda along, so
+            // their types can be sampled. Specialized lambdas are done
+            // sampling.
             let code = match self.owner {
-                Some(owner) if owner.cont == local => owner.code as *const LambdaCode as i64,
+                Some(owner) if owner.cont == local && self.spec.is_none() => {
+                    owner.code as *const LambdaCode as i64
+                }
                 _ => 0,
             };
             let code = self.builder.ins().iconst(types::I64, code);
@@ -1564,6 +1593,7 @@ impl<'c> CompilationUnit<'_, '_> {
             let bundle = ProcedureBundle::new(
                 binding,
                 self.owner,
+                self.spec.clone(),
                 self.continuations,
                 self.free_vars,
                 self.module,
@@ -1774,7 +1804,8 @@ impl<'c> CompilationUnit<'_, '_> {
     }
 }
 
-/// A compilation unit along with its analysis results.
+/// A compilation unit along with its analysis results, kept alive so that its
+/// lambdas can be compiled again.
 pub(crate) struct Unit {
     cps: Cps,
     free_vars: FreeVariables,
@@ -1797,6 +1828,8 @@ pub struct ProcedureBundle<'c> {
     /// For a user lambda, the lambda itself. For a continuation, the user
     /// lambda it belongs to.
     owner: Option<ReturnOwner>,
+    /// Set when compiling a specialized version of the owner.
+    spec: Option<Rc<Specialization>>,
     val: Local,
     env: Vec<Local>,
     binding: &'c LambdaBinding,
@@ -1836,6 +1869,7 @@ impl<'c> ProcedureBundle<'c> {
     fn new(
         binding: &'c LambdaBinding,
         parent: Option<ReturnOwner>,
+        parent_spec: Option<Rc<Specialization>>,
         continuations: &HashSet<Local>,
         free_vars: &FreeVariables,
         module: &mut JITModule,
@@ -1851,6 +1885,13 @@ impl<'c> ProcedureBundle<'c> {
             }),
             None => parent,
         };
+        // Continuations are part of the specialized lambda, nested user lambdas
+        // are not.
+        let spec = if args.continuation.is_some() {
+            None
+        } else {
+            parent_spec
+        };
         let func_id = module
             .declare_anonymous_function(&sig)
             .expect("Could not declare function");
@@ -1865,6 +1906,7 @@ impl<'c> ProcedureBundle<'c> {
         Self {
             func_id,
             owner,
+            spec,
             val: *val,
             env,
             binding,
@@ -1890,7 +1932,7 @@ impl<'c> ProcedureBundle<'c> {
     fn codegen(
         self,
         runtime_funcs: &RuntimeFunctions,
-        unit: &'c Unit,
+        unit: &'c Arc<Unit>,
         continuations: &mut HashSet<Local>,
         module: &mut JITModule,
         debug_info: &mut DebugInfo,
@@ -1902,10 +1944,22 @@ impl<'c> ProcedureBundle<'c> {
             liveness,
             cells,
             ..
-        } = unit;
+        } = &**unit;
         let mut builder_context = FunctionBuilderContext::new();
         let mut ctx = module.make_context();
         let is_user = Self::is_user(&self.binding.args);
+
+        // Keep the baseline of user lambdas around so they can be specialized.
+        if is_user
+            && self.spec.is_none()
+            && let Some(owner) = self.owner
+        {
+            owner.code.retain(RetainedLambda::new(
+                unit.clone(),
+                self.binding,
+                self.env.clone(),
+            ));
+        }
         ctx.func.signature = Self::sig(&self.binding.args);
 
         let (arg1_param, barrier_param, out_param) = if is_user {
@@ -1926,6 +1980,20 @@ impl<'c> ProcedureBundle<'c> {
             let block_params = builder.block_params(entry_block);
             [block_params[barrier_param], block_params[out_param]]
         };
+
+        if is_user
+            && let Some(ref spec) = self.spec
+            && let Some(owner) = self.owner
+        {
+            guard_codegen(
+                &mut builder,
+                module,
+                runtime_funcs,
+                entry_block,
+                spec,
+                owner.code,
+            );
+        }
 
         // Load environment:
         let proc_local = if is_user {
@@ -2239,6 +2307,7 @@ impl<'c> ProcedureBundle<'c> {
             liveness,
             proc_local,
             owner: self.owner,
+            spec: self.spec.clone(),
             runtime_funcs,
             params,
             module,
@@ -2263,6 +2332,21 @@ impl<'c> ProcedureBundle<'c> {
         }
 
         cu.builder.finalize(module.target_config());
+
+        if TEOJIT_DUMP_IR.is_some()
+            && let Some(owner) = self.owner
+        {
+            let part = if is_user {
+                "body".to_string()
+            } else {
+                format!("continuation {:?}", self.val)
+            };
+            let ir = ctx.func.display().to_string();
+            match self.spec {
+                Some(ref spec) => spec.ir.borrow_mut().push((part, ir)),
+                None => owner.code.store_baseline_ir(part, ir),
+            }
+        }
 
         module.define_function(self.func_id, &mut ctx).unwrap();
         module.clear_context(&mut ctx);
