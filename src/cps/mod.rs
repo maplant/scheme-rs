@@ -201,23 +201,23 @@ impl PrimOpInfo {
 #[derive(Debug, Clone)]
 pub struct Cps {
     pub(crate) inst: Inst,
-    pub(crate) local: Local,
+    pub(crate) dest: Local,
 }
 
 impl Cps {
     pub fn new(inst: Inst) -> Self {
-        Self::with_local(inst, Local::gensym())
+        Self::with_dest(inst, Local::gensym())
     }
 
-    pub fn with_local(inst: Inst, local: Local) -> Self {
-        Self { inst, local }
+    pub fn with_dest(inst: Inst, dest: Local) -> Self {
+        Self { inst, dest }
     }
 }
 
 #[derive(Debug, Clone)]
 pub enum Inst {
     /// Call to a primitive operator:
-    PrimOp(PrimOp, Vec<Value>, Local, Box<Cps>),
+    PrimOp(PrimOp, Vec<Value>, Box<Cps>),
 
     /// Function application:
     App(Value, Vec<Value>),
@@ -313,10 +313,10 @@ impl Cps {
     // occurred).
     fn substitute(&mut self, substitutions: &HashMap<Local, Value>, uses: &mut Uses) {
         match &mut self.inst {
-            Inst::PrimOp(_, args, val, cexp) => {
+            Inst::PrimOp(_, args, cexp) => {
                 substitute_values(args, substitutions);
                 cexp.substitute(substitutions, uses);
-                uses.remove(val);
+                uses.remove(&self.dest);
             }
             Inst::App(value, values) => {
                 substitute_value(value, substitutions);
@@ -342,19 +342,19 @@ impl Cps {
 
     pub(crate) fn pretty_print(&self, indent: usize) {
         match &self.inst {
-            Inst::PrimOp(PrimOp::SetCell, vals, _, cexp) => {
+            Inst::PrimOp(PrimOp::SetCell, vals, cexp) => {
                 eprintln!("{:>indent$}(set! {:?} {:?})", "", vals[0], vals[1]);
                 cexp.pretty_print(indent);
             }
-            Inst::PrimOp(_, _, _, _) => {
+            Inst::PrimOp(_, _, _) => {
                 let mut next = self;
                 eprint!("{:>indent$}(let* (", "");
                 let mut first = true;
-                while let Inst::PrimOp(op, vals, to, cexpr) = &next.inst {
+                while let Inst::PrimOp(op, vals, cexpr) = &next.inst {
                     if !first {
                         eprint!("\n{:>new_indent$}", "", new_indent = indent + 7);
                     }
-                    eprint!("[{to:?} ({op:?}");
+                    eprint!("[{:?} ({op:?}", next.dest);
                     pretty_print_values(vals);
                     eprint!(")]");
                     next = cexpr.as_ref();

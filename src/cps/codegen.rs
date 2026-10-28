@@ -386,7 +386,7 @@ impl CompilationUnit<'_, '_> {
         deferred_local_conts: &mut Vec<ProcedureBundle>,
     ) {
         let liveness = self.liveness;
-        self.drop_dead_codegen(liveness.live_in(cps.local));
+        self.drop_dead_codegen(liveness.live_in(cps.dest));
         match cps.inst {
             Inst::If(cond, success, failure) => {
                 self.if_codegen(
@@ -398,7 +398,7 @@ impl CompilationUnit<'_, '_> {
                 );
             }
             Inst::App(operator, args) => self.app_codegen(&operator, &args),
-            Inst::PrimOp(PrimOp::SetCell, args, _, cexpr) => {
+            Inst::PrimOp(PrimOp::SetCell, args, cexpr) => {
                 self.store_codegen(
                     &args[1],
                     &args[0],
@@ -407,32 +407,32 @@ impl CompilationUnit<'_, '_> {
                     deferred_local_conts,
                 );
             }
-            Inst::PrimOp(PrimOp::AllocCell, _, into, cexpr) => {
-                self.alloc_cell_codegen(into, *cexpr, deferred_procs, deferred_local_conts);
+            Inst::PrimOp(PrimOp::AllocCell, _, cexpr) => {
+                self.alloc_cell_codegen(cps.dest, *cexpr, deferred_procs, deferred_local_conts);
             }
-            Inst::PrimOp(PrimOp::ReadCell, args, result, cexpr) => {
+            Inst::PrimOp(PrimOp::ReadCell, args, cexpr) => {
                 self.read_codegen(
                     &args[0],
-                    result,
+                    cps.dest,
                     *cexpr,
                     deferred_procs,
                     deferred_local_conts,
                 );
             }
-            Inst::PrimOp(PrimOp::Matches, args, bind_to, cexpr) => {
+            Inst::PrimOp(PrimOp::Matches, args, cexpr) => {
                 let [pattern, expr] = args.as_slice() else {
                     unreachable!()
                 };
                 self.matches_codegen(
                     pattern,
                     expr,
-                    bind_to,
+                    cps.dest,
                     *cexpr,
                     deferred_procs,
                     deferred_local_conts,
                 );
             }
-            Inst::PrimOp(PrimOp::ExpandTemplate, args, expand_to, cexpr) => {
+            Inst::PrimOp(PrimOp::ExpandTemplate, args, cexpr) => {
                 let [template, expansion_combiner, expansions @ ..] = args.as_slice() else {
                     unreachable!()
                 };
@@ -440,60 +440,55 @@ impl CompilationUnit<'_, '_> {
                     template,
                     expansion_combiner,
                     expansions,
-                    expand_to,
+                    cps.dest,
                     *cexpr,
                     deferred_procs,
                     deferred_local_conts,
                 );
             }
-            Inst::PrimOp(PrimOp::ErrorNoPatternsMatch, _, _, _) => {
+            Inst::PrimOp(PrimOp::ErrorNoPatternsMatch, _, _) => {
                 self.error_no_patterns_match_codegen();
             }
             #[cfg(feature = "continuation-marks")]
-            Inst::PrimOp(PrimOp::GetFrame, args, dest, cexpr) => {
+            Inst::PrimOp(PrimOp::GetFrame, args, cexpr) => {
                 let [op, span] = args.as_slice() else {
                     unreachable!()
                 };
                 self.get_frame_codegen(
                     op,
                     span,
-                    dest,
+                    cps.dest,
                     *cexpr,
                     deferred_procs,
                     deferred_local_conts,
                 );
             }
             #[cfg(feature = "continuation-marks")]
-            Inst::PrimOp(PrimOp::SetContinuationMark, args, _, cexpr) => {
+            Inst::PrimOp(PrimOp::SetContinuationMark, args, cexpr) => {
                 let [tag, val] = args.as_slice() else {
                     unreachable!()
                 };
                 self.set_continuation_mark_codegen(tag, val);
                 self.cps_codegen(*cexpr, deferred_procs, deferred_local_conts);
             }
-            Inst::PrimOp(
-                primop @ (PrimOp::Not | PrimOp::IsNull | PrimOp::IsPair),
-                args,
-                result,
-                cexpr,
-            ) => {
+            Inst::PrimOp(primop @ (PrimOp::Not | PrimOp::IsNull | PrimOp::IsPair), args, cexpr) => {
                 let [arg] = args.as_slice() else {
                     unreachable!()
                 };
                 self.bool_primop_codegen(
                     primop,
                     arg,
-                    result,
+                    cps.dest,
                     *cexpr,
                     deferred_procs,
                     deferred_local_conts,
                 );
             }
-            Inst::PrimOp(primop, vals, result, cexpr) => {
+            Inst::PrimOp(primop, vals, cexpr) => {
                 self.value_primop_codegen(
                     primop,
                     &vals,
-                    result,
+                    cps.dest,
                     *cexpr,
                     deferred_procs,
                     deferred_local_conts,
@@ -743,7 +738,7 @@ impl CompilationUnit<'_, '_> {
         } else {
             let arg_vals = if matches!(primop, PrimOp::CallKnown0 | PrimOp::CallKnown1) {
                 let liveness = self.liveness;
-                let live_after = liveness.live_in(cexpr.local);
+                let live_after = liveness.live_in(cexpr.dest);
                 let mut owned = vec![arg_vals[0]];
                 owned.extend(self.take_args(&vals[1..], &arg_vals[1..], live_after));
                 owned
@@ -1622,7 +1617,7 @@ impl CompilationUnit<'_, '_> {
         // definition:
         self.live = self.local_cont_scopes[&bundle.val].clone();
         let liveness = self.liveness;
-        let live_in = liveness.live_in(bundle.body.local);
+        let live_in = liveness.live_in(bundle.body.dest);
         for (var, _) in self.live.owned() {
             if !live_in.contains(&var) && Some(var) != self.proc_local {
                 self.live.kill(var);
@@ -1814,7 +1809,7 @@ impl ProcedureBundle {
             .expect("Could not declare function");
 
         let env = free_vars
-            .free_in(body.local)
+            .free_in(body.dest)
             .difference(&args.iter().cloned().collect::<HashSet<_>>())
             .cloned()
             .filter(|var| !continuations.contains(var))

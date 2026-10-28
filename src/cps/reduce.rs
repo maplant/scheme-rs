@@ -31,18 +31,17 @@ impl Cps {
     /// is applied to exactly once in its continuation expression, its body is
     /// substituted for the application.
     fn beta_reduction(self, uses: &mut Uses, modified: &mut bool) -> Self {
-        let Cps { inst, local } = self;
+        let Cps { inst, dest: local } = self;
         match inst {
-            Inst::PrimOp(prim_op, values, result, cexp) => Cps::with_local(
+            Inst::PrimOp(prim_op, values, cexp) => Cps::with_dest(
                 Inst::PrimOp(
                     prim_op,
                     values,
-                    result,
                     Box::new(cexp.beta_reduction(uses, modified)),
                 ),
                 local,
             ),
-            Inst::If(cond, success, failure) => Cps::with_local(
+            Inst::If(cond, success, failure) => Cps::with_dest(
                 Inst::If(
                     cond,
                     Box::new(success.beta_reduction(uses, modified)),
@@ -71,7 +70,7 @@ impl Cps {
                     return cexpr;
                 }
 
-                Cps::with_local(
+                Cps::with_dest(
                     Inst::Fix(
                         vec![LambdaBinding {
                             args: binding.args,
@@ -92,12 +91,12 @@ impl Cps {
                     );
                     *binding.body = body.beta_reduction(uses, modified);
                 }
-                Cps::with_local(
+                Cps::with_dest(
                     Inst::Fix(bindings, Box::new(cexpr.beta_reduction(uses, modified))),
                     local,
                 )
             }
-            inst => Cps::with_local(inst, local),
+            inst => Cps::with_dest(inst, local),
         }
     }
 
@@ -109,10 +108,10 @@ impl Cps {
         uses: &mut Uses,
     ) -> bool {
         let new = match &mut self.inst {
-            Inst::PrimOp(_, _, val, cexp) => {
+            Inst::PrimOp(_, _, cexp) => {
                 let reduced = cexp.beta_reduce_function(func, args, func_body, uses);
                 if reduced {
-                    uses.remove(val);
+                    uses.remove(&self.dest);
                 }
                 return reduced;
             }
@@ -146,19 +145,21 @@ impl Cps {
                 if args.variadic {
                     let (req, var) = applied.split_at(args.num_required());
                     let var_args = Local::gensym();
-                    Cps::new(Inst::PrimOp(
-                        PrimOp::List,
-                        var.to_vec(),
+                    Cps::with_dest(
+                        Inst::PrimOp(
+                            PrimOp::List,
+                            var.to_vec(),
+                            Box::new(substitute(
+                                func_body.clone(),
+                                args,
+                                k.into_iter()
+                                    .chain(req.iter().cloned())
+                                    .chain(Some(Value::from(var_args))),
+                                uses,
+                            )),
+                        ),
                         var_args,
-                        Box::new(substitute(
-                            func_body.clone(),
-                            args,
-                            k.into_iter()
-                                .chain(req.iter().cloned())
-                                .chain(Some(Value::from(var_args))),
-                            uses,
-                        )),
-                    ))
+                    )
                 } else if args.num_required() == applied.len() {
                     substitute(
                         func_body.clone(),
@@ -182,24 +183,23 @@ impl Cps {
     /// arguments to another lambda with the body lambda.
     #[stacksafe::stacksafe]
     fn eta_reduction(self, uses: &mut Uses, modified: &mut bool) -> Self {
-        let Cps { inst, local } = self;
+        let Cps { inst, dest } = self;
         match inst {
-            Inst::PrimOp(prim_op, values, result, cexp) => Cps::with_local(
+            Inst::PrimOp(prim_op, values, cexp) => Cps::with_dest(
                 Inst::PrimOp(
                     prim_op,
                     values,
-                    result,
                     Box::new(cexp.eta_reduction(uses, modified)),
                 ),
-                local,
+                dest,
             ),
-            Inst::If(cond, success, failure) => Cps::with_local(
+            Inst::If(cond, success, failure) => Cps::with_dest(
                 Inst::If(
                     cond,
                     Box::new(success.eta_reduction(uses, modified)),
                     Box::new(failure.eta_reduction(uses, modified)),
                 ),
-                local,
+                dest,
             ),
             Inst::Fix(mut bindings, cexpr) if bindings.len() == 1 => {
                 let binding = bindings.pop().unwrap();
@@ -222,7 +222,7 @@ impl Cps {
                     cexpr.substitute(&[(binding.val, k.clone())].into_iter().collect(), uses);
                     cexpr
                 } else {
-                    Cps::with_local(
+                    Cps::with_dest(
                         Inst::Fix(
                             vec![LambdaBinding {
                                 args: binding.args,
@@ -232,7 +232,7 @@ impl Cps {
                             }],
                             Box::new(cexpr),
                         ),
-                        local,
+                        dest,
                     )
                 }
             }
@@ -244,34 +244,29 @@ impl Cps {
                     );
                     *binding.body = body.eta_reduction(uses, modified);
                 }
-                Cps::with_local(
+                Cps::with_dest(
                     Inst::Fix(bindings, Box::new(cexpr.eta_reduction(uses, modified))),
-                    local,
+                    dest,
                 )
             }
-            inst => Cps::with_local(inst, local),
+            inst => Cps::with_dest(inst, dest),
         }
     }
 
     /// Removes any closures and allocated cells that are left unused.
     fn dead_code_elimination(self, uses: &mut Uses) -> Self {
-        let Cps { inst, local } = self;
+        let Cps { inst, dest: local } = self;
         match inst {
-            Inst::PrimOp(PrimOp::AllocCell, _, result, cexpr)
-                if !uses.find_uses(&cexpr).contains_key(&result) =>
+            Inst::PrimOp(PrimOp::AllocCell, _, cexpr)
+                if !uses.find_uses(&cexpr).contains_key(&local) =>
             {
                 cexpr.dead_code_elimination(uses)
             }
-            Inst::PrimOp(prim_op, values, result, cexpr) => Cps::with_local(
-                Inst::PrimOp(
-                    prim_op,
-                    values,
-                    result,
-                    Box::new(cexpr.dead_code_elimination(uses)),
-                ),
+            Inst::PrimOp(prim_op, values, cexpr) => Cps::with_dest(
+                Inst::PrimOp(prim_op, values, Box::new(cexpr.dead_code_elimination(uses))),
                 local,
             ),
-            Inst::If(cond, success, failure) => Cps::with_local(
+            Inst::If(cond, success, failure) => Cps::with_dest(
                 Inst::If(
                     cond,
                     Box::new(success.dead_code_elimination(uses)),
@@ -311,10 +306,10 @@ impl Cps {
                 if bindings.is_empty() {
                     cexpr
                 } else {
-                    Cps::with_local(Inst::Fix(bindings, Box::new(cexpr)), local)
+                    Cps::with_dest(Inst::Fix(bindings, Box::new(cexpr)), local)
                 }
             }
-            inst => Cps::with_local(inst, local),
+            inst => Cps::with_dest(inst, local),
         }
     }
 }

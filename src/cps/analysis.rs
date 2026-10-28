@@ -40,14 +40,14 @@ impl FreeVariables {
     #[stacksafe::stacksafe]
     fn visit(&mut self, cps: &Cps) -> HashSet<Local> {
         let free = match &cps.inst {
-            Inst::PrimOp(PrimOp::AllocCell, _, bind, cexpr) => {
+            Inst::PrimOp(PrimOp::AllocCell, _, cexpr) => {
                 let mut free = self.visit(cexpr);
-                free.remove(bind);
+                free.remove(&cps.dest);
                 free
             }
-            Inst::PrimOp(_, args, bind, cexpr) => {
+            Inst::PrimOp(_, args, cexpr) => {
                 let mut free = self.visit(cexpr);
-                free.remove(bind);
+                free.remove(&cps.dest);
                 free.extend(values_to_locals(args));
                 free
             }
@@ -78,7 +78,7 @@ impl FreeVariables {
             }
             Inst::Halt(val) => val.to_local().into_iter().collect(),
         };
-        self.free_vars.insert(cps.local, free.clone());
+        self.free_vars.insert(cps.dest, free.clone());
         free
     }
 }
@@ -120,10 +120,10 @@ impl Liveness {
 
     #[stacksafe::stacksafe]
     fn visit(&mut self, cps: &Cps, free_vars: &FreeVariables, escaping: &Escaping) {
-        let live = self.expand(free_vars.free_in(cps.local).clone());
-        self.live.insert(cps.local, live);
+        let live = self.expand(free_vars.free_in(cps.dest).clone());
+        self.live.insert(cps.dest, live);
         match &cps.inst {
-            Inst::PrimOp(_, _, _, cexpr) => self.visit(cexpr, free_vars, escaping),
+            Inst::PrimOp(_, _, cexpr) => self.visit(cexpr, free_vars, escaping),
             Inst::If(_, succ, fail) => {
                 self.visit(succ, free_vars, escaping);
                 self.visit(fail, free_vars, escaping);
@@ -139,7 +139,7 @@ impl Liveness {
                 loop {
                     let mut changed = false;
                     for binding in &local_conts {
-                        let mut body = self.expand(free_vars.free_in(binding.body.local).clone());
+                        let mut body = self.expand(free_vars.free_in(binding.body.dest).clone());
                         for arg in binding.args.iter() {
                             body.remove(arg);
                         }
@@ -175,12 +175,12 @@ impl Uses {
 
     pub fn find_uses(&mut self, cps: &Cps) -> HashMap<Local, usize> {
         match &cps.inst {
-            Inst::PrimOp(_, args, val, cexpr) => {
-                if !self.uses.contains_key(val) {
+            Inst::PrimOp(_, args, cexpr) => {
+                if !self.uses.contains_key(&cps.dest) {
                     let uses = merge_uses(values_to_uses(args), self.find_uses(cexpr));
-                    self.uses.insert(*val, uses);
+                    self.uses.insert(cps.dest, uses);
                 }
-                self.uses[val].clone()
+                self.uses[&cps.dest].clone()
             }
             Inst::If(cond, success, failure) => {
                 let uses = merge_uses(self.find_uses(success), self.find_uses(failure));
@@ -259,7 +259,7 @@ impl Escaping {
                     self.escaping.insert(local);
                 }
             }
-            Inst::PrimOp(_, args, _, cexpr) => {
+            Inst::PrimOp(_, args, cexpr) => {
                 self.scan_vals(args, procs);
                 self.scan(cexpr, procs);
             }
@@ -299,7 +299,7 @@ impl Escaping {
     ) {
         let mut work_queue = self.escaping.iter().copied().collect::<VecDeque<_>>();
         while let Some(proc) = work_queue.pop_front() {
-            for p in free_variables.free_in(procs[&proc].body.local) {
+            for p in free_variables.free_in(procs[&proc].body.dest) {
                 if procs.contains_key(p) && !self.escaping.contains(p) {
                     self.escaping.insert(*p);
                     work_queue.push_back(*p);
@@ -312,11 +312,11 @@ impl Escaping {
 impl Cps {
     pub(super) fn cells(&self, out: &mut HashSet<Local>) {
         match &self.inst {
-            Inst::PrimOp(PrimOp::AllocCell, _, val, cexp) => {
+            Inst::PrimOp(PrimOp::AllocCell, _, cexp) => {
                 cexp.cells(out);
-                out.insert(*val);
+                out.insert(self.dest);
             }
-            Inst::PrimOp(_, _, _, cexp) => {
+            Inst::PrimOp(_, _, cexp) => {
                 cexp.cells(out);
             }
             Inst::If(_, succ, fail) => {
