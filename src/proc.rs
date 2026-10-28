@@ -90,6 +90,7 @@ use crate::{
     stack::{SealedStackRecord, StackRecord},
     symbols::Symbol,
     syntax::Span,
+    teojit::LambdaCode,
     value::Value,
 };
 use scheme_rs_macros::{bridge, maybe_async, maybe_await};
@@ -339,7 +340,7 @@ pub(crate) enum FuncPtr {
     /// An async function defined in Rust
     AsyncBridge(AsyncBridgePtr),
     /// A JIT compiled user function: its tail callable body
-    User(UserPtr),
+    User(UserPtr, &'static LambdaCode),
     /// A known function
     Known(KnownFunc),
 }
@@ -426,7 +427,10 @@ impl Procedure {
             FuncPtr::Bridge(sbridge) => apply_bridge(self, sbridge, args, barrier),
             #[cfg(feature = "async")]
             FuncPtr::AsyncBridge(abridge) => apply_async_bridge(self, abridge, args, barrier).await,
-            FuncPtr::User(addr) => Runtime::handle().enter_jit_user(addr, self, args, barrier),
+            FuncPtr::User(addr, code) => {
+                let entry = code.apply_entry(addr, &args, self.0.num_required_args);
+                Runtime::handle().enter_jit_user(entry, self, args, barrier)
+            }
             FuncPtr::Known(known) => known.apply(args, barrier),
         }
     }
@@ -440,7 +444,10 @@ impl Procedure {
                 Exception::error("attempt to apply async function in a sync-only context").into(),
                 barrier,
             ),
-            FuncPtr::User(addr) => Runtime::handle().enter_jit_user(addr, self, args, barrier),
+            FuncPtr::User(addr, code) => {
+                let entry = code.apply_entry(addr, &args, self.0.num_required_args);
+                Runtime::handle().enter_jit_user(entry, self, args, barrier)
+            }
             FuncPtr::Known(known) => known.apply(args, barrier),
         }
     }
@@ -1103,6 +1110,8 @@ pub struct ContBarrier<'a> {
     pub(crate) call_stack: StackRecord,
     /// The active installed mutable parameters
     params: HashMap<Symbol, Param<'a>>,
+    /// A sampling lambda whose return is passed to `call_continuation`.
+    pub(crate) sampled_return: Option<&'static LambdaCode>,
 }
 
 static NEXT_BARRIER_ID: AtomicUsize = AtomicUsize::new(0);
@@ -1114,6 +1123,7 @@ impl<'a> ContBarrier<'a> {
             state: DynState::default(),
             call_stack: StackRecord::alloc(None),
             params: HashMap::new(),
+            sampled_return: None,
         };
 
         // The call stack always contains a top-level halt continuation:
@@ -1384,6 +1394,7 @@ impl From<CapturedContinuation> for ContBarrier<'_> {
             state: value.state,
             call_stack: StackRecord::alloc(Some(value.call_stack)),
             params: HashMap::default(),
+            sampled_return: None,
         }
     }
 }

@@ -19,6 +19,7 @@ use crate::{
     },
     proc::{Application, ContBarrier, ProcDebugInfo, Procedure, ReturnAddress, UserPtr},
     runtime::{DebugInfo, Runtime},
+    teojit::LambdaCode,
     value::{
         FALSE_VALUE, FIXNUM_MAX, FIXNUM_MIN, NULL_VALUE, TAG, TRUE_VALUE, Tag, UNDEFINED_VALUE,
         Value as SchemeValue,
@@ -320,6 +321,7 @@ impl Cps {
             escaping: &unit.escaping,
             liveness: &unit.liveness,
             proc_local: None,
+            owner: None,
             debug_info,
         };
 
@@ -364,6 +366,8 @@ struct CompilationUnit<'m, 'a> {
     local_cont_scopes: HashMap<Local, LiveValues>,
     liveness: &'a Liveness,
     proc_local: Option<Local>,
+    /// The user lambda whose body is being compiled, if any.
+    owner: Option<ReturnOwner>,
     local_cont_blocks: HashMap<Local, Block>,
     runtime_funcs: &'a RuntimeFunctions,
     params: [Value; 2],
@@ -1319,7 +1323,17 @@ impl<'c> CompilationUnit<'_, '_> {
             let pop_return_address = self
                 .module
                 .declare_func_in_func(self.runtime_funcs.pop_return_address, self.builder.func);
-            let call = self.builder.ins().call(pop_return_address, &[barrier]);
+            // Returns from a user lambda pass the lambda along, so their types
+            // can be sampled.
+            let code = match self.owner {
+                Some(owner) if owner.cont == local => owner.code as *const LambdaCode as i64,
+                _ => 0,
+            };
+            let code = self.builder.ins().iconst(types::I64, code);
+            let call = self
+                .builder
+                .ins()
+                .call(pop_return_address, &[barrier, code]);
             let jit_cont = self.builder.inst_results(call)[0];
 
             // If jit_cont is null, we need to return to the trampoline
@@ -1547,8 +1561,13 @@ impl<'c> CompilationUnit<'_, '_> {
         let mut local_cont_bundles = Vec::new();
         for binding in bindings {
             let is_func = binding.is_func();
-            let bundle =
-                ProcedureBundle::new(binding, self.continuations, self.free_vars, self.module);
+            let bundle = ProcedureBundle::new(
+                binding,
+                self.owner,
+                self.continuations,
+                self.free_vars,
+                self.module,
+            );
             if is_func {
                 proc_bundles.push(bundle);
             } else if self.escaping.contains(binding.val) {
@@ -1688,6 +1707,12 @@ impl<'c> CompilationUnit<'_, '_> {
             } else {
                 self.builder.ins().iconst(types::I64, 0)
             });
+            let code = bundle.owner.unwrap().code;
+            args.push(
+                self.builder
+                    .ins()
+                    .iconst(types::I64, code as *const LambdaCode as i64),
+            );
             let make_user = self
                 .module
                 .declare_func_in_func(self.runtime_funcs.make_user, self.builder.func);
@@ -1758,8 +1783,20 @@ pub(crate) struct Unit {
     cells: HashSet<Local>,
 }
 
+/// A user lambda along with its continuation parameter. Calling that
+/// continuation, from the lambda's body or from any continuation nested in it,
+/// is a return from the lambda.
+#[derive(Copy, Clone)]
+struct ReturnOwner {
+    code: &'static LambdaCode,
+    cont: Local,
+}
+
 pub struct ProcedureBundle<'c> {
     func_id: FuncId,
+    /// For a user lambda, the lambda itself. For a continuation, the user
+    /// lambda it belongs to.
+    owner: Option<ReturnOwner>,
     val: Local,
     env: Vec<Local>,
     binding: &'c LambdaBinding,
@@ -1798,6 +1835,7 @@ fn cont_sig() -> Signature {
 impl<'c> ProcedureBundle<'c> {
     fn new(
         binding: &'c LambdaBinding,
+        parent: Option<ReturnOwner>,
         continuations: &HashSet<Local>,
         free_vars: &FreeVariables,
         module: &mut JITModule,
@@ -1806,6 +1844,13 @@ impl<'c> ProcedureBundle<'c> {
             val, args, body, ..
         } = binding;
         let sig = Self::sig(args);
+        let owner = match args.continuation {
+            Some(cont) => Some(ReturnOwner {
+                code: LambdaCode::alloc(val.name, binding.span.clone()),
+                cont,
+            }),
+            None => parent,
+        };
         let func_id = module
             .declare_anonymous_function(&sig)
             .expect("Could not declare function");
@@ -1819,6 +1864,7 @@ impl<'c> ProcedureBundle<'c> {
 
         Self {
             func_id,
+            owner,
             val: *val,
             env,
             binding,
@@ -2192,6 +2238,7 @@ impl<'c> ProcedureBundle<'c> {
             escaping,
             liveness,
             proc_local,
+            owner: self.owner,
             runtime_funcs,
             params,
             module,

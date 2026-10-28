@@ -28,6 +28,7 @@ use crate::{
     registry::Registry,
     symbols::Symbol,
     syntax::{Span, Syntax},
+    teojit::LambdaCode,
     value::{Cell, TAG, UnpackedValue, Value},
 };
 use cranelift_jit::{ArenaMemoryProvider, JITModule};
@@ -516,9 +517,11 @@ unsafe extern "C" fn tail_callable(op: *const ()) -> Option<NonNull<u8>> {
     unsafe {
         let op = ManuallyDrop::new(Value::from_raw(op));
         if let UnpackedValue::Procedure(proc) = &*op.unpacked_ref()
-            && let FuncPtr::User(func) = proc.0.func
+            && let FuncPtr::User(func, code) = proc.0.func
         {
-            Some(func.0)
+            // While sampling, return to the trampoline so Procedure::apply
+            // sees the arguments.
+            code.tail_call_entry(func).map(|entry| entry.0)
         } else {
             None
         }
@@ -757,19 +760,34 @@ unsafe extern "C" fn call_continuation(
     out: *mut MaybeUninit<Application>,
 ) {
     unsafe {
-        (*out).write(
-            barrier
-                .as_mut()
-                .unwrap()
-                .call_cont(Args([arg1, arg2, arg3, arg4, argn])),
-        );
+        let barrier = barrier.as_mut().unwrap();
+        if let Some(code) = barrier.sampled_return.take() {
+            code.record_return(&arg1, &arg2);
+        }
+        (*out).write(barrier.call_cont(Args([arg1, arg2, arg3, arg4, argn])));
     }
 }
 
 /// Pop the JIT continuation at the top of the stack, returning null if none exists.
+///
+/// If the continuation is the return of a user lambda, `code` is that lambda.
+/// While it is sampling, null is returned so that the returned values go
+/// through [`call_continuation`], which records their types.
 #[runtime_fn]
-unsafe extern "C" fn pop_return_address(barrier: *mut ContBarrier) -> Option<ReturnAddress> {
-    unsafe { barrier.as_mut().unwrap().pop_return_address() }
+unsafe extern "C" fn pop_return_address(
+    barrier: *mut ContBarrier,
+    code: *const LambdaCode,
+) -> Option<ReturnAddress> {
+    unsafe {
+        let barrier = barrier.as_mut().unwrap();
+        if let Some(code) = code.as_ref()
+            && code.is_sampling()
+        {
+            barrier.sampled_return = Some(code);
+            return None;
+        }
+        barrier.pop_return_address()
+    }
 }
 
 /// Allocate a user function
@@ -781,6 +799,7 @@ unsafe extern "C" fn make_user(
     num_required_args: u32,
     variadic: bool,
     debug_info: *const ProcDebugInfo,
+    code: *const LambdaCode,
 ) -> *const () {
     unsafe {
         // Collect the environment:
@@ -790,7 +809,7 @@ unsafe extern "C" fn make_user(
 
         let proc = Procedure(Gc::rooted(ProcedureInner::new(
             env,
-            FuncPtr::User(UserPtr(fn_ptr)),
+            FuncPtr::User(UserPtr(fn_ptr), &*code),
             num_required_args as usize,
             variadic,
             arc_from_ptr(debug_info),

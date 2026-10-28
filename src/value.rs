@@ -243,6 +243,11 @@ impl Value {
         }
     }
 
+    /// The pointer tag of the value.
+    pub(crate) fn tag(&self) -> Tag {
+        Tag::from(self.0 as usize & TAG)
+    }
+
     pub fn type_of(&self) -> ValueType {
         self.unpacked_ref().type_of()
     }
