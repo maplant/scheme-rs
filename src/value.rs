@@ -645,6 +645,12 @@ impl Cell {
     pub fn set(&self, new_val: Value) {
         *self.0.write() = new_val;
     }
+
+    /// Constructs a value from the Cell. The resulting Value contains a
+    /// reference to the cell and sees all mutations.
+    pub fn into_value(self) -> Value {
+        UnpackedValue::Cell(self).into_value()
+    }
 }
 
 impl From<&Value> for Option<Cell> {
@@ -1147,18 +1153,6 @@ impl TryFrom<&Value> for Value {
 
     fn try_from(v: &Value) -> Result<Self, Self::Error> {
         Ok(v.clone())
-    }
-}
-
-impl From<Cell> for UnpackedValue {
-    fn from(cell: Cell) -> Self {
-        Self::Cell(cell)
-    }
-}
-
-impl From<Cell> for Value {
-    fn from(cell: Cell) -> Self {
-        UnpackedValue::from(cell).into_value()
     }
 }
 

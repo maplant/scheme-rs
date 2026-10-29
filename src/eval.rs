@@ -1,6 +1,6 @@
 //! Dynamic evaluation.
 
-use std::{collections::BTreeSet, sync::Arc};
+use std::collections::BTreeSet;
 
 use scheme_rs_macros::{maybe_async, maybe_await};
 
@@ -11,7 +11,7 @@ use crate::{
     env::{Environment, TopLevelEnvironment},
     exceptions::Exception,
     proc::{Application, Args, ContBarrier},
-    records::{Embeddable, Embedded, RecordTypeDescriptor, rtd},
+    records::Embedded,
     registry::bridge,
     runtime::Runtime,
     syntax::{Span, Syntax},
@@ -32,12 +32,6 @@ pub fn eval(
     let expr = maybe_await!(Expression::parse(&ctxt, expr, &env, &mut mutable_vars))?;
     let result = maybe_await!(Compiler::new(mutable_vars).compile(Runtime::handle(), &expr))?;
     Ok(barrier.call_cont(Args::pack(result)))
-}
-
-unsafe impl Embeddable for Environment {
-    fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(ty: Environment, name: "environment", sealed: true, opaque: true)
-    }
 }
 
 #[maybe_async]

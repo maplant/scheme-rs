@@ -16,7 +16,7 @@ use async_lock::{RwLock, RwLockUpgradableReadGuard, RwLockWriteGuard};
 use parking_lot::Mutex;
 #[cfg(not(feature = "async"))]
 use parking_lot::{RwLock, RwLockUpgradableReadGuard, RwLockWriteGuard};
-use scheme_rs_macros::{maybe_async, maybe_await};
+use scheme_rs_macros::{Embeddable, maybe_async, maybe_await};
 
 #[cfg(feature = "async")]
 use futures::future::BoxFuture;
@@ -657,7 +657,8 @@ impl LexicalContour {
 }
 
 /// A lexical contour
-#[derive(Clone, Trace, Debug)]
+#[derive(Clone, Trace, Debug, Embeddable)]
+#[scheme(name = "%embeddable", sealed = true, opaque = true)]
 pub(crate) enum Environment {
     Top(TopLevelEnvironment),
     LexicalContour(Gc<LexicalContour>),

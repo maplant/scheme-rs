@@ -7,15 +7,22 @@
   (define (error who message)
     (raise (condition (make-who-condition who) (make-message-condition message))))
 
+  (define (field-index rtd k)
+    (if (symbol? k)
+        (record-field-absolute-index rtd k)
+        k))
+
   (define-syntax slot-ref
     (syntax-rules ()
       [(_ record-name rec k)
-       ((record-accessor (record-name rtd) k) rec)]))
+       (let ((rtd (record-name rtd)))
+         ((record-accessor-absolute rtd (field-index rtd k)) rec))]))
 
   (define-syntax slot-set!
     (syntax-rules ()
       [(_ record-name rec k value)
-       ((record-mutator (record-name rtd) k) rec value)]))
+       (let ((rtd (record-name rtd)))
+         ((record-mutator-absolute rtd (field-index rtd k)) rec value))]))
 
   (define-syntax is-a?
     (syntax-rules ()

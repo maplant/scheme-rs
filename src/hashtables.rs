@@ -2,19 +2,17 @@
 
 use indexmap::IndexSet;
 use parking_lot::RwLock;
-use scheme_rs_macros::rtd;
 use std::{
     collections::HashSet,
     fmt,
     hash::{DefaultHasher, Hash, Hasher},
-    sync::Arc,
 };
 
 use crate::{
     exceptions::Exception,
     gc::Trace,
     proc::{ContBarrier, Procedure},
-    records::{Embeddable, Embedded, RecordTypeDescriptor},
+    records::{Embeddable, Embedded},
     registry::bridge,
     strings::WideString,
     symbols::Symbol,
@@ -34,7 +32,8 @@ impl TableEntry {
     }
 }
 
-#[derive(Trace)]
+#[derive(Trace, Embeddable)]
+#[scheme(name = "hash-table", sealed = true, opaque = true)]
 pub(crate) struct HashTableInner {
     /// Inner table of values. This uses an inner RwLock to ensure that we can
     /// access eq and hash even if the table is locked.
@@ -49,15 +48,6 @@ pub(crate) struct HashTableInner {
     hash: Procedure,
     /// Whether or not the hashtable is mutable
     mutable: bool,
-}
-
-unsafe impl Embeddable for HashTableInner {
-    fn rtd() -> Arc<RecordTypeDescriptor>
-    where
-        Self: Sized,
-    {
-        rtd!(ty: HashTableInner, name: "%hash-table", sealed: true, opaque: true)
-    }
 }
 
 impl HashTableInner {

@@ -55,7 +55,7 @@ use crate::{
     lists::{Pair, iter_list, slice_to_list},
     ports::{IoDecodingError, IoEncodingError, IoError, IoReadError, IoWriteError},
     proc::{Application, Args, ContBarrier, DynStackElem, FuncPtr, Procedure, Rest},
-    records::{Embeddable, Embedded, RecordTypeDescriptor, rtd},
+    records::{Embeddable, Embedded, RecordTypeDescriptor},
     registry::bridge,
     runtime::Runtime,
     syntax::{Identifier, Span, Syntax, parse::ParseSyntaxError},
@@ -420,29 +420,17 @@ fn print_lines_with_offense_from_span(
 
 impl_into_condition_for!(std::num::TryFromIntError);
 
-#[derive(Copy, Clone, Default, Trace)]
+#[derive(Copy, Clone, Default, Trace, Embeddable)]
+#[scheme(
+    lib = "(rnrs conditions (6))",
+    name = "&condition",
+    constructor = || Ok(SimpleCondition)
+)]
 pub struct SimpleCondition;
 
 impl SimpleCondition {
     pub fn new() -> Self {
         Self
-    }
-}
-
-unsafe impl Embeddable for SimpleCondition {
-    fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(
-            lib: "(rnrs conditions (6))",
-            name: "&condition",
-            ty: SimpleCondition,
-            constructor: || Ok(SimpleCondition)
-        )
-    }
-}
-
-impl fmt::Debug for SimpleCondition {
-    fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        Ok(())
     }
 }
 
@@ -842,20 +830,14 @@ impl Default for Undefined {
     }
 }
 
-#[derive(Clone, Trace)]
+#[derive(Clone, Trace, Embeddable)]
+#[scheme(
+    lib = "(rnrs conditions (6))",
+    name = "compound-condition",
+    sealed = true,
+    opaque = true
+)]
 pub struct CompoundCondition(pub(crate) Vec<Value>);
-
-unsafe impl Embeddable for CompoundCondition {
-    fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(
-            lib: "(rnrs conditions (6))",
-            name: "compound-condition",
-            ty: CompoundCondition,
-            sealed: true,
-            opaque: true
-        )
-    }
-}
 
 impl fmt::Debug for CompoundCondition {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

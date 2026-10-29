@@ -7,7 +7,7 @@ use crate::{
     gc::Trace,
     ports::Port,
     proc::{ContBarrier, Procedure},
-    records::{Embeddable, Embedded, RecordTypeDescriptor, rtd},
+    records::{Embeddable, Embedded},
     registry::bridge,
     symbols::Symbol,
     syntax::parse::ParseSyntaxError,
@@ -30,7 +30,8 @@ pub mod lex;
 pub mod parse;
 
 /// Source location for an s-expression.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Trace)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Trace, Embeddable)]
+#[scheme(name = "span", sealed = true, opaque = true)]
 pub struct Span {
     pub line: u32,
     pub column: usize,
@@ -65,15 +66,9 @@ impl Default for Span {
     }
 }
 
-unsafe impl Embeddable for Span {
-    fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(ty: Span, name: "span", sealed: true, opaque: true)
-    }
-}
-
 /// Representation of a Scheme syntax object, or s-expression.
-#[derive(Clone, Trace)]
-#[repr(align(16))]
+#[derive(Clone, Trace, Embeddable)]
+#[scheme(name = "syntax", sealed = true, opaque = true, debug = Self::debug_fmt)]
 pub enum Syntax {
     /// A wrapped value.
     Wrapped {
@@ -97,17 +92,10 @@ pub enum Syntax {
     },
 }
 
-unsafe impl Embeddable for Syntax {
-    fn rtd() -> Arc<RecordTypeDescriptor>
-    where
-        Self: Sized,
-    {
-        rtd!(ty: Syntax, name: "syntax", sealed: true, opaque: true)
-    }
-
+impl Syntax {
     fn debug_fmt(
         &self,
-        _circular_values: &mut indexmap::IndexMap<Value, bool>,
+        _: &mut indexmap::IndexMap<Value, bool>,
         fmt: &mut fmt::Formatter<'_>,
     ) -> fmt::Result {
         write!(fmt, "#<syntax:{} {:#?}>", self.span(), self)
