@@ -31,6 +31,7 @@ pub mod threads;
 pub mod time;
 pub mod value;
 pub mod vectors;
+pub mod fmt;
 
 use std::hash::Hasher;
 

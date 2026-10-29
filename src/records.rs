@@ -267,7 +267,7 @@ pub struct RecordTypeDescriptor {
     pub num_inherited_fields: usize,
     /// The fields of the record, not including any of the ones inherited from
     /// parents.
-    pub fields: IndexMap<Symbol, Mutability>,
+    pub fields: Vec<Field>,
 }
 
 impl RecordTypeDescriptor {
@@ -302,45 +302,65 @@ impl fmt::Debug for RecordTypeDescriptor {
             write!(f, "parent: {} ", parent.name)?;
         }
         write!(f, "fields: (")?;
-        for (i, (name, mutability)) in self.fields.iter().enumerate() {
+        for (i, field) in self.fields.iter().enumerate() {
             if i > 0 {
                 write!(f, " ")?;
             }
-            match mutability {
-                Mutability::Immutable => write!(f, "(immutable {name})")?,
-                Mutability::Mutable => write!(f, "(mutable {name})")?,
-            }
+            field.fmt(f)?;
         }
         write!(f, ")>")?;
         Ok(())
     }
 }
 
-/// Description of a Record field's mutability.
+
+/// Description of a Record field.
 #[derive(Trace, Clone)]
-pub enum Mutability {
-    Immutable,
-    Mutable,
+pub enum Field {
+    Immutable(Symbol),
+    Mutable(Symbol),
 }
 
-fn parse_field(field: &Value) -> Result<(Symbol, Mutability), Exception> {
-    let (mutability, field_name) = field.clone().try_into()?;
-    let mutability: Symbol = mutability.try_into()?;
-    let (field_name, _) = field_name.clone().try_into()?;
-    let field_name: Symbol = field_name.try_into()?;
-    match &*mutability.to_str() {
-        "mutable" => Ok((field_name, Mutability::Mutable)),
-        "immutable" => Ok((field_name, Mutability::Immutable)),
-        _ => Err(Exception::error(
-            "mutability specifier must be mutable or immutable".to_string(),
-        )),
+impl Field {
+    fn parse(field: &Value) -> Result<Self, Exception> {
+        let (mutability, field_name) = field.clone().try_into()?;
+        let mutability: Symbol = mutability.try_into()?;
+        let (field_name, _) = field_name.clone().try_into()?;
+        let field_name: Symbol = field_name.try_into()?;
+        match &*mutability.to_str() {
+            "mutable" => Ok(Field::Mutable(field_name)),
+            "immutable" => Ok(Field::Immutable(field_name)),
+            _ => Err(Exception::error(
+                "mutability specifier must be mutable or immutable".to_string(),
+            )),
+        }
+    }
+
+    fn parse_fields(fields: &Value) -> Result<Vec<Self>, Exception> {
+        let fields: Vector = fields.clone().try_into()?;
+        fields.0.vec.read().iter().map(Self::parse).collect()
+    }
+
+    fn name(&self) -> Symbol {
+        match self {
+            Self::Immutable(sym) | Self::Mutable(sym) => *sym,
+        }
+    }
+
+    fn is_mutable(&self) -> bool {
+        matches!(self, Self::Mutable(_))
     }
 }
 
-fn parse_fields(fields: &Value) -> Result<IndexMap<Symbol, Mutability>, Exception> {
-    let fields = fields.try_to::<Vector>()?;
-    fields.0.vec.read().iter().map(parse_field).collect()
+impl fmt::Debug for Field {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Immutable(sym) => write!(f, "(immutable {sym})"),
+            Self::Mutable(sym) => write!(f, "(mutable {sym})"),
+        }
+    }
 }
+
 
 /// A Scheme record type. Effectively a tuple of a fixed size array and some type
 /// information.
@@ -403,6 +423,10 @@ impl Record {
             embedded_ptr: NonNull::from_ref(downcast_embedded),
             record: self.clone(),
         })
+    }
+
+    pub fn iter_fields(&self) -> impl Iterator<Item = &Value> {
+        vec![ todo!() ].into_iter()
     }
 
     /*
@@ -483,19 +507,19 @@ impl Record {
         if let Some(vtable) = self.0.rtd.embedded_vtable {
             (vtable.debug_fmt)(self.0.embedded_ptr().unwrap(), circular_values, fmt)?;
         }
-        for (name, field) in self
+        for (Field::Mutable(name) | Field::Immutable(name), field) in self
             .0
             .rtd
             .inherits
             .iter()
             .map(|parent| parent.as_ref())
             .chain([self.0.rtd.as_ref()])
-            .flat_map(|rtd| rtd.fields.keys().cloned())
+            .flat_map(|rtd| rtd.fields.iter())
             .zip(self.0.fields())
             .skip(self.0.num_embedded_fields())
         {
             write!(fmt, " {name}: ")?;
-            field.debug_fmt(circular_values, fmt)?;
+            field.write(circular_values, fmt)?;
         }
         write!(fmt, ">")
     }
@@ -1037,7 +1061,7 @@ pub fn make_record_type_descriptor(
     });
     let sealed = sealed.is_true();
     let opaque = opaque.is_true();
-    let fields = parse_fields(&fields)?;
+    let fields = Field::parse_fields(&fields)?;
 
     // Inherit any embedded vtable or constructors:
     let (embedded_vtable, embedded_constructor) = inherits
@@ -1289,7 +1313,7 @@ fn constructor(
             .iter()
             .flat_map(|parent| parent.fields.iter())
             .chain(rtd.fields.iter())
-            .map(|(_, mutability)| matches!(mutability, Mutability::Mutable))
+            .map(|field| field.is_mutable())
             .skip(rtd.embedded_vtable.map_or(0, |vt| vt.embedded_fields));
 
         for (i, (field, mutable)) in fields.into_iter().zip(field_mutability).enumerate() {
@@ -1523,7 +1547,7 @@ pub fn record_mutator(rtd: Arc<RecordTypeDescriptor>, idx: usize) -> Result<Proc
             rtd.fields.len()
         )));
     }
-    if matches!(rtd.fields[idx], Mutability::Immutable) {
+    if matches!(rtd.fields[idx], Field::Immutable(_)) {
         return Err(Exception::error(format!("{idx} is immutable")));
     }
     Ok(Procedure::new(
@@ -1547,7 +1571,7 @@ pub fn record_mutator_absolute(
         if num_fields + parent.num_inherited_fields > idx {
             if matches!(
                 parent.fields[idx - parent.num_inherited_fields],
-                Mutability::Immutable
+                Field::Immutable(_)
             ) {
                 return Err(Exception::error(format!("{idx} is immutable")));
             }
@@ -1571,7 +1595,7 @@ pub fn record_mutator_absolute(
     }
     if matches!(
         rtd.fields[idx - rtd.num_inherited_fields],
-        Mutability::Immutable
+        Mutability::Immutable(_)
     ) {
         return Err(Exception::error(format!("{idx} is immutable")));
     }
@@ -1701,14 +1725,14 @@ pub fn record_field_mutable_pred(
         return Err(Exception::invalid_index(k, rtd.fields.len()));
     }
 
-    Ok(matches!(rtd.fields[k], Mutability::Mutable))
+    Ok(matches!(rtd.fields[k], Field::Mutable(_)))
 }
 
-pub trait Field {
+pub trait GetField {
     fn get(&self) -> Value;
 }
 
-impl<T> Field for T
+impl<T> GetField for T
 where
     T: Clone,
     Value: From<T>,
@@ -1718,18 +1742,18 @@ where
     }
 }
 
-impl Field for Cell {
+impl GetField for Cell {
     fn get(&self) -> Value {
         self.get()
     }
 }
 
 /// Trait for implementing mutable fields via [the Embeddable derive macro](macro@Embeddable).
-pub trait MutableField: Field {
+pub trait SetField: GetField {
     fn set(&self, new_value: Value);
 }
 
-impl MutableField for Cell {
+impl SetField for Cell {
     fn set(&self, new_value: Value) {
         self.set(new_value);
     }

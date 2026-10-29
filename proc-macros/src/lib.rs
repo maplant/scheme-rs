@@ -807,12 +807,12 @@ fn derive_embeddable_inner(input: DeriveInput) -> Result<proc_macro2::TokenStrea
             let ty = &field.ty;
             if matches!(field.options.field_ty, FieldType::Mutable) {
                 field_setters.push(quote!(
-                    #k => <#ty as ::scheme_rs::records::MutableField>::set(&self.#ident, new_value)
+                    #k => <#ty as ::scheme_rs::records::SetField>::set(&self.#ident, new_value)
                 ));
             }
             if !matches!(field.options.field_ty, FieldType::Ignore) {
                 field_getters.push(quote!(
-                    #k => Ok(<#ty as ::scheme_rs::records::Field>::get(&self.#ident))
+                    #k => Ok(<#ty as ::scheme_rs::records::GetField>::get(&self.#ident))
                 ));
                 k += 1;
             }

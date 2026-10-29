@@ -386,55 +386,6 @@ impl Value {
         }
     }
 
-    pub fn display_fmt(
-        &self,
-        circular_values: &mut IndexMap<Value, bool>,
-        f: &mut fmt::Formatter<'_>,
-    ) -> fmt::Result {
-        match self.clone().unpack() {
-            UnpackedValue::Undefined => write!(f, "<undefined>"),
-            UnpackedValue::Null => write!(f, "()"),
-            UnpackedValue::Boolean(true) => write!(f, "#t"),
-            UnpackedValue::Boolean(false) => write!(f, "#f"),
-            UnpackedValue::Number(number) => write!(f, "{number}"),
-            UnpackedValue::Character(c) => write!(f, "#\\{c}"),
-            UnpackedValue::Symbol(symbol) => write!(f, "{symbol}"),
-            UnpackedValue::Pair(pair) => {
-                let (car, cdr) = pair.into();
-                lists::write_list(&car, &cdr, Value::display_fmt, circular_values, f)
-            }
-            UnpackedValue::Procedure(_) => write!(f, "<procedure>"),
-            UnpackedValue::Record(record) => record.display_fmt(circular_values, f),
-            UnpackedValue::RecordTypeDescriptor(rtd) => write!(f, "{rtd:?}"),
-            UnpackedValue::Cell(cell) => cell.0.read().display_fmt(circular_values, f),
-            UnpackedValue::ReturnAddress(_) => write!(f, "%return-address"),
-        }
-    }
-
-    pub fn debug_fmt(
-        &self,
-        circular_values: &mut IndexMap<Value, bool>,
-        f: &mut fmt::Formatter<'_>,
-    ) -> fmt::Result {
-        match self.clone().unpack() {
-            UnpackedValue::Undefined => write!(f, "<undefined>"),
-            UnpackedValue::Null => write!(f, "()"),
-            UnpackedValue::Boolean(true) => write!(f, "#t"),
-            UnpackedValue::Boolean(false) => write!(f, "#f"),
-            UnpackedValue::Number(number) => write!(f, "{number}"),
-            UnpackedValue::Character(c) => write!(f, "#\\{c}"),
-            UnpackedValue::Symbol(symbol) => write!(f, "{symbol}"),
-            UnpackedValue::Pair(pair) => {
-                let (car, cdr) = pair.into();
-                lists::write_list(&car, &cdr, Value::debug_fmt, circular_values, f)
-            }
-            UnpackedValue::Procedure(proc) => write!(f, "#<procedure {proc:?}>"),
-            UnpackedValue::Record(record) => record.debug_fmt(circular_values, f),
-            UnpackedValue::RecordTypeDescriptor(rtd) => write!(f, "{rtd:?}"),
-            UnpackedValue::Cell(cell) => cell.0.read().debug_fmt(circular_values, f),
-            UnpackedValue::ReturnAddress(_) => write!(f, "%return-address"),
-        }
-    }
 
     /// The eq? predicate as defined by the R6RS specification.
     #[allow(clippy::should_implement_trait)]
@@ -599,23 +550,6 @@ impl Eq for Value {}
 unsafe impl Send for Value {}
 unsafe impl Sync for Value {}
 
-impl fmt::Display for Value {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut circular_values = IndexSet::default();
-        determine_circularity(self, &mut IndexSet::default(), &mut circular_values);
-        let mut circular_values = circular_values.into_iter().map(|k| (k, false)).collect();
-        write_value(self, Value::display_fmt, &mut circular_values, f)
-    }
-}
-
-impl fmt::Debug for Value {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut circular_values = IndexSet::default();
-        determine_circularity(self, &mut IndexSet::default(), &mut circular_values);
-        let mut circular_values = circular_values.into_iter().map(|k| (k, false)).collect();
-        write_value(self, Value::debug_fmt, &mut circular_values, f)
-    }
-}
 
 unsafe impl Trace for Value {
     unsafe fn visit_children(&self, visitor: &mut dyn FnMut(HeapObject)) {
@@ -1376,56 +1310,6 @@ where
     }
 }
 
-/// Determines which children of the given list are circular, i.e. have children
-/// that refer to back to them. This is just a depth-first search.
-fn determine_circularity(
-    curr: &Value,
-    visited: &mut IndexSet<Value>,
-    circular: &mut IndexSet<Value>,
-) {
-    if visited.contains(curr) {
-        circular.insert(curr.clone());
-        return;
-    }
-
-    visited.insert(curr.clone());
-
-    match curr.clone().unpack() {
-        UnpackedValue::Pair(pair) => {
-            let (car, cdr) = pair.into();
-            determine_circularity(&car, visited, circular);
-            determine_circularity(&cdr, visited, circular);
-        }
-        UnpackedValue::Record(rec) if let Some(vec) = rec.cast::<VectorInner<Value>>() => {
-            let vec_read = vec.vec.read();
-            for item in vec_read.iter() {
-                determine_circularity(item, visited, circular);
-            }
-        }
-        _ => (),
-    }
-
-    visited.swap_remove(curr);
-}
-
-pub(crate) fn write_value(
-    val: &Value,
-    fmt: fn(&Value, &mut IndexMap<Value, bool>, &mut fmt::Formatter<'_>) -> fmt::Result,
-    circular_values: &mut IndexMap<Value, bool>,
-    f: &mut fmt::Formatter<'_>,
-) -> fmt::Result {
-    if let Some((idx, _, seen)) = circular_values.get_full_mut(val) {
-        if *seen {
-            write!(f, "#{idx}#")?;
-            return Ok(());
-        } else {
-            write!(f, "#{idx}=")?;
-            *seen = true;
-        }
-    }
-
-    fmt(val, circular_values, f)
-}
 
 #[bridge(name = "not", lib = "(rnrs base builtins (6))")]
 pub fn not(a: Value, _: &mut ContBarrier) -> bool {
