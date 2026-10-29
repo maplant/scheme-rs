@@ -75,7 +75,7 @@ impl Cps {
                 succ.flip_in_place_contifiables(escaping, dominators, scope);
                 fail.flip_in_place_contifiables(escaping, dominators, scope);
             }
-            Inst::PrimOp(_, _, _, cexpr) => {
+            Inst::PrimOp(_, _, cexpr) => {
                 cexpr.flip_in_place_contifiables(escaping, dominators, scope)
             }
             Inst::App(op, args)
@@ -96,7 +96,7 @@ impl Cps {
         dominators: &Dominators,
         places: &mut HashMap<Local, Vec<LambdaBinding>>,
     ) -> Cps {
-        let Cps { inst, local } = self;
+        let Cps { inst, dest: local } = self;
         match inst {
             Inst::Fix(bindings, cexpr) => {
                 let bindings = bindings
@@ -121,10 +121,10 @@ impl Cps {
                 if bindings.is_empty() {
                     cexpr
                 } else {
-                    Cps::with_local(Inst::Fix(bindings, Box::new(cexpr)), local)
+                    Cps::with_dest(Inst::Fix(bindings, Box::new(cexpr)), local)
                 }
             }
-            Inst::If(cond, succ, fail) => Cps::with_local(
+            Inst::If(cond, succ, fail) => Cps::with_dest(
                 Inst::If(
                     cond,
                     Box::new(succ.collect_relocatable_contifiables(escaping, dominators, places)),
@@ -132,16 +132,15 @@ impl Cps {
                 ),
                 local,
             ),
-            Inst::PrimOp(op, args, res, cexpr) => Cps::with_local(
+            Inst::PrimOp(op, args, cexpr) => Cps::with_dest(
                 Inst::PrimOp(
                     op,
                     args,
-                    res,
                     Box::new(cexpr.collect_relocatable_contifiables(escaping, dominators, places)),
                 ),
                 local,
             ),
-            inst => Cps::with_local(inst, local),
+            inst => Cps::with_dest(inst, local),
         }
     }
 
@@ -178,9 +177,7 @@ impl Cps {
                 succ.relocate_and_contify(escaping, dominators, places);
                 fail.relocate_and_contify(escaping, dominators, places);
             }
-            Inst::PrimOp(_, _, _, cexpr) => {
-                cexpr.relocate_and_contify(escaping, dominators, places)
-            }
+            Inst::PrimOp(_, _, cexpr) => cexpr.relocate_and_contify(escaping, dominators, places),
             Inst::App(_, _) => (),
             Inst::Halt(_) => (),
         }
@@ -396,7 +393,7 @@ impl ReturnGraph {
                 }
                 self.collect_escaping(args, bindings);
             }
-            Inst::PrimOp(_, args, _, cexpr) => {
+            Inst::PrimOp(_, args, cexpr) => {
                 self.collect_escaping(args, bindings);
                 self.collect_returns(cexpr, bindings, cont_owners);
             }
@@ -461,7 +458,7 @@ fn lookup_value<'a>(
 impl Cps {
     pub(super) fn collect_bindings<'a>(&'a self, bindings: &mut HashMap<Local, &'a LambdaBinding>) {
         match &self.inst {
-            Inst::PrimOp(_, _, _, cexpr) => cexpr.collect_bindings(bindings),
+            Inst::PrimOp(_, _, cexpr) => cexpr.collect_bindings(bindings),
             Inst::If(_, succ, fail) => {
                 succ.collect_bindings(bindings);
                 fail.collect_bindings(bindings);
