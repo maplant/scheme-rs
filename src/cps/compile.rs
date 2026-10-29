@@ -91,6 +91,28 @@ impl Compile for Lambda {
     }
 }
 
+/// Compile the value of a binding. Lambdas take on the name of the variable
+/// they are bound to, so they show up with a useful name in debug output.
+fn compile_named(
+    expr: &Expression,
+    name: Option<Symbol>,
+    ctxt: &Compiler,
+    meta_cont: &mut dyn FnMut(Value) -> Cps,
+) -> Cps {
+    match expr {
+        Expression::Lambda(lambda) => compile_lambda(
+            ctxt,
+            lambda.args.iter().cloned().collect(),
+            lambda.args.is_variadic(),
+            &lambda.body,
+            lambda.span.clone(),
+            name,
+            meta_cont,
+        ),
+        expr => expr.compile(ctxt, meta_cont),
+    }
+}
+
 fn compile_lambda(
     ctxt: &Compiler,
     args: Vec<Local>,
@@ -155,9 +177,12 @@ fn compile_let(
                         val: k3,
                         span: None,
                     }],
-                    Box::new(curr_expr.compile(ctxt, &mut move |result| {
-                        Cps::new(Inst::App(result, vec![Value::from(k3)]))
-                    })),
+                    Box::new(compile_named(
+                        curr_expr,
+                        curr_bind.name,
+                        ctxt,
+                        &mut move |result| Cps::new(Inst::App(result, vec![Value::from(k3)])),
+                    )),
                 ))),
                 val: k1,
                 span: None,
@@ -276,9 +301,12 @@ fn compile_letrec_complex_bindings(
                         val: k3,
                         span: None,
                     }],
-                    Box::new(curr_expr.compile(ctxt, &mut move |result| {
-                        Cps::new(Inst::App(result, vec![Value::from(k3)]))
-                    })),
+                    Box::new(compile_named(
+                        curr_expr,
+                        curr_bind.name,
+                        ctxt,
+                        &mut move |result| Cps::new(Inst::App(result, vec![Value::from(k3)])),
+                    )),
                 ))),
                 val: k1,
                 span: None,
@@ -843,9 +871,12 @@ impl Compile for Set {
                         val: k3,
                         span: None,
                     }],
-                    Box::new(self.val.compile(ctxt, &mut move |result| {
-                        Cps::new(Inst::App(result, vec![Value::from(k3)]))
-                    })),
+                    Box::new(compile_named(
+                        &self.val,
+                        self.var.symbol(),
+                        ctxt,
+                        &mut move |result| Cps::new(Inst::App(result, vec![Value::from(k3)])),
+                    )),
                 ))),
                 val: k1,
                 span: None,

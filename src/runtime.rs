@@ -10,7 +10,7 @@ use crate::{
         Cps,
         codegen::{
             JitContEntryFn, JitUserEntryFn, RuntimeFunctionsBuilder, codegen_jit_cont_entry_fn,
-            codegen_jit_user_entry_fn,
+            codegen_jit_user_entry_fn, specialize,
         },
         compile::Compiler,
     },
@@ -28,6 +28,7 @@ use crate::{
     registry::Registry,
     symbols::Symbol,
     syntax::{Span, Syntax},
+    teojit::{LambdaCode, teojit_trace},
     value::{Cell, TAG, UnpackedValue, Value},
 };
 use cranelift_jit::{ArenaMemoryProvider, JITModule};
@@ -162,7 +163,7 @@ impl Runtime {
     #[maybe_async]
     pub(crate) fn compile_expr(&self, expr: Cps) -> Result<Vec<Value>, Exception> {
         let (completion_tx, completion_rx) = completion();
-        let task = CompilationTask {
+        let task = CompilationTask::Unit {
             completion_tx,
             compilation_unit: expr,
         };
@@ -172,6 +173,15 @@ impl Runtime {
         let mut barrier = ContBarrier::new();
         let app = self.enter_jit_cont(jit, Args::empty(), &mut barrier);
         maybe_await!(app.eval(&mut barrier))
+    }
+
+    /// Ask the compilation task to specialize a hot lambda, without waiting
+    /// for it. The request is dropped if the compilation task is busy.
+    pub(crate) fn request_specialization(&self, code: &'static LambdaCode, baseline: UserPtr) {
+        let task = CompilationTask::Specialize { code, baseline };
+        if self.0.compilation_buffer_tx.try_send(task).is_err() {
+            teojit_trace!("{code}: specializing -> baseline (compilation queue full)");
+        }
     }
 
     pub(crate) fn enter_jit_cont(
@@ -325,9 +335,16 @@ async fn recv_continuation(rx: CompletionRx) -> ReturnAddress {
     rx.await.unwrap()
 }
 
-struct CompilationTask {
-    compilation_unit: Cps,
-    completion_tx: CompletionTx,
+enum CompilationTask {
+    Unit {
+        compilation_unit: Cps,
+        completion_tx: CompletionTx,
+    },
+    /// Compile a specialized version of a hot lambda. Nobody waits for it.
+    Specialize {
+        code: &'static LambdaCode,
+        baseline: UserPtr,
+    },
 }
 
 #[cfg(not(feature = "async"))]
@@ -394,14 +411,21 @@ fn compilation_task(mut module: JITModule, mut compilation_queue_rx: Compilation
     let mut debug_info = DebugInfo::default();
 
     while let Some(task) = recv_compilation_task(&mut compilation_queue_rx) {
-        let CompilationTask {
-            completion_tx,
-            compilation_unit,
-        } = task;
-
-        let proc = compilation_unit.compile(&runtime_funcs, &mut module, &mut debug_info);
-
-        let _ = completion_tx.send(proc);
+        match task {
+            CompilationTask::Unit {
+                completion_tx,
+                compilation_unit,
+            } => {
+                let proc = compilation_unit.compile(&runtime_funcs, &mut module, &mut debug_info);
+                let _ = completion_tx.send(proc);
+            }
+            CompilationTask::Specialize { code, baseline } => {
+                match specialize(code, baseline, &runtime_funcs, &mut module, &mut debug_info) {
+                    Ok(entry) => code.set_entry(entry),
+                    Err(reason) => teojit_trace!("{code}: specializing -> baseline ({reason})"),
+                }
+            }
+        }
     }
 
     // Free the JITed memory
@@ -516,9 +540,11 @@ unsafe extern "C" fn tail_callable(op: *const ()) -> Option<NonNull<u8>> {
     unsafe {
         let op = ManuallyDrop::new(Value::from_raw(op));
         if let UnpackedValue::Procedure(proc) = &*op.unpacked_ref()
-            && let FuncPtr::User(func) = proc.0.func
+            && let FuncPtr::User(func, code) = proc.0.func
         {
-            Some(func.0)
+            // While sampling, return to the trampoline so Procedure::apply
+            // sees the arguments.
+            code.tail_call_entry(func).map(|entry| entry.0)
         } else {
             None
         }
@@ -757,19 +783,40 @@ unsafe extern "C" fn call_continuation(
     out: *mut MaybeUninit<Application>,
 ) {
     unsafe {
-        (*out).write(
-            barrier
-                .as_mut()
-                .unwrap()
-                .call_cont(Args([arg1, arg2, arg3, arg4, argn])),
-        );
+        let barrier = barrier.as_mut().unwrap();
+        if let Some(code) = barrier.sampled_return.take() {
+            code.record_return(&arg1, &arg2);
+        }
+        (*out).write(barrier.call_cont(Args([arg1, arg2, arg3, arg4, argn])));
     }
 }
 
 /// Pop the JIT continuation at the top of the stack, returning null if none exists.
+///
+/// If the continuation is the return of a user lambda, `code` is that lambda.
+/// While it is sampling, null is returned so that the returned values go
+/// through [`call_continuation`], which records their types.
 #[runtime_fn]
-unsafe extern "C" fn pop_return_address(barrier: *mut ContBarrier) -> Option<ReturnAddress> {
-    unsafe { barrier.as_mut().unwrap().pop_return_address() }
+unsafe extern "C" fn pop_return_address(
+    barrier: *mut ContBarrier,
+    code: *const LambdaCode,
+) -> Option<ReturnAddress> {
+    unsafe {
+        let barrier = barrier.as_mut().unwrap();
+        if let Some(code) = code.as_ref()
+            && code.is_sampling()
+        {
+            barrier.sampled_return = Some(code);
+            return None;
+        }
+        barrier.pop_return_address()
+    }
+}
+
+/// A guard of a specialized lambda failed.
+#[runtime_fn]
+unsafe extern "C" fn teojit_deopt(code: *const LambdaCode) {
+    unsafe { (*code).deopt() }
 }
 
 /// Allocate a user function
@@ -781,6 +828,7 @@ unsafe extern "C" fn make_user(
     num_required_args: u32,
     variadic: bool,
     debug_info: *const ProcDebugInfo,
+    code: *const LambdaCode,
 ) -> *const () {
     unsafe {
         // Collect the environment:
@@ -790,7 +838,7 @@ unsafe extern "C" fn make_user(
 
         let proc = Procedure(Gc::rooted(ProcedureInner::new(
             env,
-            FuncPtr::User(UserPtr(fn_ptr)),
+            FuncPtr::User(UserPtr(fn_ptr), &*code),
             num_required_args as usize,
             variadic,
             arc_from_ptr(debug_info),

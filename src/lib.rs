@@ -27,6 +27,7 @@ pub mod stack;
 pub mod strings;
 pub mod symbols;
 pub mod syntax;
+pub(crate) mod teojit;
 pub mod threads;
 pub mod time;
 pub mod value;
