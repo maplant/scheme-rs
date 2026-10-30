@@ -32,6 +32,9 @@ use crate::{
 };
 use cranelift_jit::{ArenaMemoryProvider, JITModule};
 use parking_lot::{Mutex, MutexGuard, RwLock};
+#[cfg(not(feature = "async"))]
+use scheme_rs_gc::without_gc_watching;
+use scheme_rs_gc::{park_self, with_gc_watching};
 use scheme_rs_macros::{maybe_async, maybe_await, runtime_fn};
 use std::{
     collections::HashSet,
@@ -182,7 +185,9 @@ impl Runtime {
     ) -> Application {
         let mut out = MaybeUninit::uninit();
         let Args([arg1, arg2, arg3, arg4, argn]) = args;
-        (self.0.jit_cont_entry_fn)(jit, arg1, arg2, arg3, arg4, argn, barrier, &mut out);
+        with_gc_watching(|| {
+            (self.0.jit_cont_entry_fn)(jit, arg1, arg2, arg3, arg4, argn, barrier, &mut out);
+        });
         unsafe { out.assume_init() }
     }
 
@@ -195,7 +200,9 @@ impl Runtime {
     ) -> Application {
         let mut out = MaybeUninit::uninit();
         let Args([arg1, arg2, arg3, arg4, argn]) = args;
-        (self.0.jit_user_entry_fn)(jit, proc, arg1, arg2, arg3, arg4, argn, barrier, &mut out);
+        with_gc_watching(|| {
+            (self.0.jit_user_entry_fn)(jit, proc, arg1, arg2, arg3, arg4, argn, barrier, &mut out);
+        });
         unsafe { out.assume_init() }
     }
 
@@ -317,7 +324,7 @@ fn completion() -> (CompletionTx, CompletionRx) {
 
 #[cfg(not(feature = "async"))]
 fn recv_continuation(rx: CompletionRx) -> ReturnAddress {
-    rx.recv().unwrap()
+    without_gc_watching(|| rx.recv().unwrap())
 }
 
 #[cfg(feature = "async")]
@@ -447,6 +454,13 @@ unsafe fn arc_from_ptr<T>(ptr: *const T) -> Option<Arc<T>> {
 #[runtime_fn]
 unsafe extern "C" fn alloc_cell() -> *const () {
     Value::into_raw(Value::from(Cell(Gc::new(RwLock::new(Value::undefined())))))
+}
+
+/// Called from JIT code when the collector asks threads to stop. Parks the
+/// thread until the collector resumes it.
+#[runtime_fn]
+unsafe extern "C" fn safepoint_park() {
+    park_self()
 }
 
 /// Read the value of a Cell.

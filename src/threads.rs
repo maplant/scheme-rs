@@ -8,6 +8,7 @@ use std::{
 };
 
 use parking_lot::Mutex;
+use scheme_rs_gc::without_gc_watching;
 use scheme_rs_macros::bridge;
 
 use crate::{
@@ -69,14 +70,18 @@ pub fn join(
             "thread {curr_id:?} attempted to join itself"
         )))
     } else {
-        Ok(barrier.call_cont(Args::pack(handle.result.lock().clone()?)))
+        Ok(barrier.call_cont(Args::pack(
+            without_gc_watching(|| handle.result.lock()).clone()?,
+        )))
     }
 }
 
 #[bridge(name = "sleep", lib = "(threads (1))")]
 pub fn sleep(ms: u64) -> Result<(), Exception> {
-    thread::sleep(Duration::from_millis(ms));
-    Ok(())
+    without_gc_watching(|| {
+        thread::sleep(Duration::from_millis(ms));
+        Ok(())
+    })
 }
 
 #[bridge(name = "join-handle?", lib = "(threads (1))")]
