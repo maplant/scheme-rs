@@ -4,21 +4,22 @@ use core::{alloc::Layout, ptr::NonNull};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use scheme_rs_gc::{
-    AllocError, Allocator, BLOCK_SIZE, Global, Heap, LINE_SIZE, Mutator, ObjectModel,
+    AllocError, Allocator, BLOCK_SIZE, Global, Heap, LINE_SIZE, Mutator, ObjectHeader,
 };
 
-/// Test objects keep their layout in their first 16 bytes.
-pub struct TestModel;
+/// Test objects keep their layout in their first 16 bytes
+pub struct TestHeader {
+    layout: Layout,
+}
 
-unsafe impl ObjectModel for TestModel {
-    type Header = Layout;
-
-    fn layout(header: &Layout) -> Layout {
-        *header
+unsafe impl ObjectHeader for TestHeader {
+    type HeapState = ();
+    fn layout(&self) -> Layout {
+        self.layout
     }
 }
 
-pub type TestHeap<A = Global> = Heap<TestModel, A>;
+pub type TestHeap<A = Global> = Heap<TestHeader, A>;
 
 pub const LINES_PER_BLOCK: usize = BLOCK_SIZE / LINE_SIZE;
 
@@ -38,7 +39,7 @@ pub fn stamp(obj: NonNull<u8>, layout: Layout) -> NonNull<u8> {
 }
 
 pub fn init_obj<A: Allocator>(
-    m: &mut Mutator<'_, TestModel, A>,
+    m: &mut Mutator<'_, TestHeader, A>,
     size: usize,
     align: usize,
 ) -> NonNull<u8> {

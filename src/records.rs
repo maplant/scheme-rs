@@ -228,7 +228,7 @@ use indexmap::{IndexMap, IndexSet};
 
 use crate::{
     exceptions::Exception,
-    gc::{Gc, HeapObject, Trace, unroot},
+    gc::{Gc, HeapObject, Trace, alloc_layout, unroot},
     lists::{append_list, iter_list, split_list},
     proc::{Application, Args, ContBarrier, FuncPtr, Procedure},
     registry::bridge,
@@ -380,7 +380,7 @@ impl Record {
         let layout = layout.pad_to_align();
 
         let ptr = unsafe {
-            let record = HeapObject::alloc_layout(layout).cast::<RecordInner>();
+            let record = alloc_layout(layout).cast::<RecordInner>();
             record.write(RecordInner {
                 rtd: E::rtd(),
                 fields: [],
@@ -1309,7 +1309,7 @@ fn constructor(
     let layout = layout.pad_to_align();
 
     let record = unsafe {
-        let record = HeapObject::alloc_layout(layout).cast::<RecordInner>();
+        let record = alloc_layout(layout).cast::<RecordInner>();
 
         record.write(RecordInner {
             rtd: rtd.clone(),
