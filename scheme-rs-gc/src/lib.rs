@@ -15,6 +15,8 @@ mod reclaimer;
 mod region;
 mod safepoint;
 mod sync;
+#[cfg(not(loom))]
+mod trace;
 
 #[cfg(all(test, loom))]
 mod loom_tests;
@@ -24,6 +26,8 @@ pub use allocator_api2::alloc::{AllocError, Allocator, Global};
 pub use cycle_collector::{CycleCollector, CycleHeader, CycleList, collect_garbage_in, unroot_in};
 #[cfg(not(loom))]
 pub use heap_object::{HEADER_SIZE, Header, HeapObject, VTable};
+#[cfg(not(loom))]
+pub use trace::{GcOrTrace, Trace};
 
 pub use heap::{Heap, HeapStats, ObjectHeader};
 pub use mutator::Mutator;
