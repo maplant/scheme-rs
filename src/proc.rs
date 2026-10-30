@@ -92,6 +92,7 @@ use crate::{
     syntax::Span,
     value::Value,
 };
+use scheme_rs_gc::{park_self, should_park};
 use scheme_rs_macros::{bridge, maybe_async, maybe_await};
 use std::{
     any::Any,
@@ -675,6 +676,9 @@ impl Application {
     #[maybe_async]
     pub fn eval(mut self, barrier: &mut ContBarrier<'_>) -> Result<Vec<Value>, Exception> {
         loop {
+            if should_park() {
+                park_self();
+            }
             let Application { op, args } = self;
             self = match op {
                 OpType::Proc(proc) => maybe_await!(proc.apply(args, barrier)),
@@ -692,6 +696,9 @@ impl Application {
     /// Just like [eval] but throws an error if we encounter an async function.
     pub fn eval_sync(mut self, barrier: &mut ContBarrier) -> Result<Vec<Value>, Exception> {
         loop {
+            if should_park() {
+                park_self();
+            }
             let Application { op, args } = self;
             self = match op {
                 OpType::Proc(proc) => proc.apply_sync(args, barrier),
