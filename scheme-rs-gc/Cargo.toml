@@ -12,8 +12,14 @@ repository = "https://github.com/maplant/scheme-rs"
 
 [dependencies]
 allocator-api2 = "0.4"
+async-lock = { version = "3.4", optional = true }
+by_address = "1.2"
+futures = { version = "0.3", optional = true }
+hashbrown = "0.16.1"
+indexmap = "2"
 parking_lot = "0.12.5"
 rustc-hash = "2.1"
+tokio = { version = "1.47", features = ["sync"], optional = true }
 
 [target.'cfg(loom)'.dependencies]
 loom = "0.7"
@@ -33,3 +39,5 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
 
 [features]
 lxr = []
+async = ["dep:futures", "dep:async-lock"]
+tokio = ["dep:tokio"]
