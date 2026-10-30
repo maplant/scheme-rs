@@ -12,7 +12,10 @@
 //! providing all of the semantics Scheme expects and also plays nicely as a
 //! Rust type (no need to root/unroot).
 
-pub use scheme_rs_gc::{HeapAlreadyCreated, HeapObject, init_gc, set_heap_size};
+mod heap;
+
+pub use heap::{HeapAlreadyCreated, budget, init_gc, set_heap_size, shutdown_gc};
+pub use scheme_rs_gc::HeapObject;
 pub use scheme_rs_macros::Trace;
 
 use std::{
@@ -26,7 +29,9 @@ use std::{
     sync::atomic::Ordering,
 };
 
-use scheme_rs_gc::{HEADER_SIZE, VTable, collect_garbage as collect_garbage_sync};
+pub(crate) use heap::alloc_layout;
+use heap::{alloc, alloc_zeroed, collect_garbage_sync, unroot_obj};
+use scheme_rs_gc::{HEADER_SIZE, VTable};
 use scheme_rs_macros::{maybe_async, maybe_await};
 #[cfg(feature = "tokio")]
 use tokio::task::spawn_blocking;
@@ -54,9 +59,7 @@ impl<T: Send + GcOrTrace + 'static> Gc<T> {
     /// Allocate a new object and do not track it. The object will only become
     /// tracked when it is called with `unroot`.
     pub(crate) fn rooted(data: T) -> Gc<T> {
-        Gc {
-            ptr: HeapObject::alloc(data),
-        }
+        Gc { ptr: alloc(data) }
     }
 
     /// Allocate a new, zeroed `T` in place.
@@ -66,7 +69,7 @@ impl<T: Send + GcOrTrace + 'static> Gc<T> {
     /// `T` must be valid with a zeroed bit pattern
     pub(crate) unsafe fn new_zeroed() -> Gc<T> {
         let gc = Gc {
-            ptr: unsafe { HeapObject::alloc_zeroed() },
+            ptr: unsafe { alloc_zeroed() },
         };
         unsafe { unroot(&gc) };
         gc
@@ -269,7 +272,7 @@ fn vtable<T: GcOrTrace>() -> VTable {
 #[allow(private_bounds)]
 pub(crate) unsafe fn unroot<T: GcOrTrace>(gc: &Gc<T>) {
     unsafe {
-        scheme_rs_gc::unroot(
+        unroot_obj(
             HeapObject::from_data(gc.ptr),
             TypeId::of::<T>(),
             vtable::<T>,
@@ -997,7 +1000,7 @@ mod test {
 
     #[test]
     fn cycles() {
-        init_gc();
+        _ = init_gc();
 
         #[derive(Default, Trace)]
         struct Cyclic {
@@ -1058,7 +1061,7 @@ mod test {
 
     #[test]
     fn release_cascade_finalizes_children_before_parents() {
-        init_gc();
+        _ = init_gc();
 
         // 0 -> (1 -> (3, 4), 2 -> 5)
         let root = tree_node(
@@ -1111,7 +1114,7 @@ mod test {
 
     #[test]
     fn deep_chain_drop_releases_fully() {
-        init_gc();
+        _ = init_gc();
 
         let out = Arc::new(());
         let head = deep_chain(DEEP, &out);
@@ -1134,7 +1137,7 @@ mod test {
     /// `cyclic_decrement`, rather than the rc-zero sweep.
     #[test]
     fn deep_chain_behind_freed_cycle_releases_fully() {
-        init_gc();
+        _ = init_gc();
 
         let out = Arc::new(());
         let chain = deep_chain(DEEP, &out);
