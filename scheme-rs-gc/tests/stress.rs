@@ -12,7 +12,7 @@ struct Sent(NonNull<u8>, usize, u8);
 
 unsafe impl Send for Sent {}
 
-fn check_and_free(c: &mut Reclaimer<'_, TestModel>, Sent(p, size, fill): Sent) {
+fn check_and_free(c: &mut Reclaimer<'_, TestHeader>, Sent(p, size, fill): Sent) {
     let body = unsafe { from_raw_parts(p.add(16).as_ptr(), size - 16) };
     assert!(
         body.iter().all(|&b| b == fill),

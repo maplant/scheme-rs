@@ -1,13 +1,15 @@
 //! Immix line/block heap: the first step toward an LXR collector for scheme-rs.
 
 mod bitmap;
-#[cfg(not(loom))]
-mod collection;
+mod collector;
+mod cycle_collector;
 mod gc_stack;
-#[cfg(not(loom))]
-mod global;
 mod heap;
+#[cfg(not(loom))]
+mod heap_object;
 mod large;
+#[cfg(feature = "lxr")]
+mod lxr_collector;
 mod mutator;
 mod reclaimer;
 mod region;
@@ -17,16 +19,13 @@ mod sync;
 #[cfg(all(test, loom))]
 mod loom_tests;
 
-use core::alloc::Layout;
-
 pub use allocator_api2::alloc::{AllocError, Allocator, Global};
 #[cfg(not(loom))]
-pub use collection::{
-    HEADER_SIZE, HeapObject, VTable, collect_garbage, init_gc, shutdown_gc, unroot,
-};
+pub use cycle_collector::{CycleCollector, CycleHeader, CycleList, collect_garbage_in, unroot_in};
 #[cfg(not(loom))]
-pub use global::{HeapAlreadyCreated, budget, set_heap_size};
-pub use heap::{Heap, HeapStats};
+pub use heap_object::{HEADER_SIZE, Header, HeapObject, VTable};
+
+pub use heap::{Heap, HeapStats, ObjectHeader};
 pub use mutator::Mutator;
 pub use reclaimer::Reclaimer;
 pub use region::{BLOCK_SIZE, GRANULE, LINE_SIZE, LOS_MAX_SIZE, MAX_ALIGN};
@@ -36,18 +35,13 @@ pub use safepoint::{
 };
 
 #[cfg(not(loom))]
+pub use collector::{
+    Collector, CollectorAlreadyRunning, CollectorHandle, DefaultCollector, on_collector_thread,
+    start_collector,
+};
+
+#[cfg(feature = "lxr")]
+pub(crate) use lxr_collector::LxrCollector;
+
+#[cfg(not(loom))]
 pub use safepoint::safepoint_flag;
-
-/// Tells the heap how to read an object it allocated.
-///
-/// # Safety
-///
-/// Every object allocated in a `Heap<Self, _>` starts with an initialized
-/// `Header` until it is freed, and `layout` returns the exact layout the
-/// object was allocated with.
-pub unsafe trait ObjectModel {
-    /// The type every object starts with.
-    type Header;
-
-    fn layout(header: &Self::Header) -> Layout;
-}
