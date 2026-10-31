@@ -1,4 +1,4 @@
-use core::{alloc::Layout, cmp::max, marker::PhantomData, ptr::NonNull};
+use core::{alloc::Layout, marker::PhantomData, ptr::NonNull};
 
 use allocator_api2::alloc::{AllocError, Allocator, Global};
 
@@ -9,9 +9,6 @@ use crate::{
     region::{ALL_LINES, BLOCK_SIZE, OwnedBlock, Region, State},
     sync::{AtomicUsize, Condvar, Mutex, Ordering, lock, wait_while},
 };
-
-const COLLECTION_THRESHOLD_HEAP_PERCENT: usize = 80;
-const COLLECTION_THRESHOLD_BYTES_PERCENT: usize = 5;
 
 /// Tells the heap how to read an object it allocated.
 ///
@@ -256,23 +253,12 @@ impl<H: ObjectHeader, A: Allocator> Heap<H, A> {
         }
     }
 
-    pub(crate) fn collection_threshold(&self) -> usize {
-        self.budget / 100 * COLLECTION_THRESHOLD_HEAP_PERCENT
-    }
-
-    pub(crate) fn min_bytes_to_collect(&self) -> usize {
-        self.budget / 100 * COLLECTION_THRESHOLD_BYTES_PERCENT
-    }
-
     // In theory something could allocate between reading used
     // and storing to next_trigger, making the calculation wrong.
     // In practice this will not have any effect, so I'm leaving it.
-    pub(crate) fn set_trigger(&self) {
+    pub(crate) fn set_trigger(&self, distance: usize) {
         self.next_trigger.store(
-            max(
-                self.collection_threshold(),
-                self.used.load(Ordering::Relaxed) + self.min_bytes_to_collect(),
-            ),
+            self.used.load(Ordering::Relaxed) + distance,
             Ordering::Relaxed,
         );
     }

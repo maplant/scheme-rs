@@ -150,6 +150,13 @@ pub struct CycleCollector {
 impl Collector for CycleCollector {
     type Header = CycleHeader;
 
+    /// Small, frequent epochs: an epoch's cost grows with the objects unrooted
+    /// since the last one, and runs concurrently with the mutators. 4 MiB
+    /// measured best on integrate, yin_yang and fib.
+    fn trigger_distance(_heap: &Heap<CycleHeader>) -> usize {
+        4 << 20
+    }
+
     fn collect(&mut self) {
         self.epoch();
     }

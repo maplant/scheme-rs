@@ -44,6 +44,10 @@ pub trait Collector: Sized {
     /// Called once, on the collector thread, after the last epoch. Cleans up
     /// collector state; the thread is joined when the `CollectorHandle` drops.
     fn shutdown(&mut self);
+    /// Bytes to allocate after an epoch before the next one is requested.
+    fn trigger_distance(heap: &Heap<Self::Header>) -> usize {
+        heap.budget() / 20
+    }
 }
 
 #[cfg(feature = "lxr")]
@@ -87,7 +91,7 @@ pub fn start_collector<C: Collector>(
     status.alive = true;
     // Before the spawn: a mutator that allocates right after this call must
     // already see the trigger.
-    heap.set_trigger();
+    heap.set_trigger(C::trigger_distance(heap));
     drop(status);
     let thread = spawn(move || run::<C>(heap));
     Ok(CollectorHandle {
@@ -128,7 +132,7 @@ fn run<C: Collector>(heap: &'static Heap<C::Header>) {
 
         let mut status = lock(&heap.signal.status);
         status.epoch += 1;
-        heap.set_trigger();
+        heap.set_trigger(C::trigger_distance(heap));
         status.running = false;
         heap.signal.done.notify_all();
     }
