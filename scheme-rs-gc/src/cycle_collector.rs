@@ -13,7 +13,7 @@ use crate::{
     HeapObject, MAX_ALIGN, Reclaimer, VTable,
     collector::{Collector, DropAction, INVALID_VTABLE, on_collector_thread},
     heap::{Heap, ObjectHeader},
-    sync::{AtomicUsize, Ordering, lock, wait_while},
+    sync::{AtomicUsize, Ordering},
 };
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -601,14 +601,7 @@ pub unsafe fn unroot_in(
 /// Force a garbage collection pause.
 pub fn collect_garbage_in(heap: &Heap<CycleHeader>) {
     assert!(!on_collector_thread(), "Collect garbage in gc thread.");
-
-    let mut t = lock(&heap.signal.status);
-    let target_epoch = if t.running { t.epoch + 2 } else { t.epoch + 1 };
-    t.requested = true;
-    heap.signal.start.notify_one();
-    drop(wait_while(&heap.signal.done, t, |t| {
-        t.epoch < target_epoch && t.alive
-    }));
+    heap.wait_for_epochs(1);
 }
 
 unsafe fn for_each_child(s: HeapObject, visitor: &mut dyn FnMut(HeapObject)) {
