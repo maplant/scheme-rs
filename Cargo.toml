@@ -55,7 +55,6 @@ async-lock = { version = "3.4", optional = true }
 default = ["load-libraries-from-fs"]
 async = ["dep:futures", "dep:async-stream", "dep:async-lock"]
 lsp = ["dep:lsp-server", "dep:lsp-types", "dep:serde", "dep:serde_json"]
-lxr = ["scheme-rs-gc/lxr"]
 load-libraries-from-fs = []
 continuation-marks = []
 
