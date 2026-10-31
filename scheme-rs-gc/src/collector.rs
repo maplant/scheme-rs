@@ -85,6 +85,9 @@ pub fn start_collector<C: Collector>(
         return Err(CollectorAlreadyRunning);
     }
     status.alive = true;
+    // Before the spawn: a mutator that allocates right after this call must
+    // already see the trigger.
+    heap.set_trigger();
     drop(status);
     let thread = spawn(move || run::<C>(heap));
     Ok(CollectorHandle {
@@ -107,8 +110,6 @@ fn run<C: Collector>(heap: &'static Heap<C::Header>) {
     ON_COLLECTOR_THREAD.set(true);
     let _alive = ClearAlive(heap);
     let mut collector = C::new(heap);
-
-    heap.set_trigger();
 
     loop {
         let mut status = lock(&heap.signal.status);
