@@ -683,6 +683,11 @@ unsafe impl Trace for RecordInner {
 
 /// A Rust type that can be embedded safely in a Scheme record.
 ///
+/// Any [`Value`] an `Embeddable` keeps must be stored as a [`HeapValue`] and
+/// written with [`set`](HeapValue::set) or [`replace`](HeapValue::replace).
+/// See [`HeapValue`] for why. An opt-in escape, `#[trace(unbarriered)]`, is
+/// planned for types that cannot comply.
+///
 /// # Safety
 ///
 /// The [rtd] function cannot return a RecordTypeDescriptor created for a
