@@ -16,7 +16,7 @@ use crate::{
     },
     env::{Environment, Global, Scope, TopLevelEnvironment},
     exceptions::{Exception, SourceCache, raise},
-    gc::{Gc, Trace, init_gc},
+    gc::{Gc, HeapValue, Trace, init_gc},
     hashtables::EqualHashSet,
     lists::Pair,
     num,
@@ -31,7 +31,7 @@ use crate::{
     value::{Cell, TAG, UnpackedValue, Value},
 };
 use cranelift_jit::{ArenaMemoryProvider, JITModule};
-use parking_lot::{Mutex, MutexGuard, RwLock};
+use parking_lot::{Mutex, MutexGuard};
 #[cfg(not(feature = "async"))]
 use scheme_rs_gc::without_gc_watching;
 use scheme_rs_gc::{park_self, with_gc_watching};
@@ -470,8 +470,8 @@ unsafe extern "C" fn safepoint_park() {
 #[runtime_fn]
 unsafe extern "C" fn read_cell(cell: *const ()) -> *const () {
     unsafe {
-        let lock = &*((cell as usize & !TAG) as *const RwLock<Value>);
-        Value::into_raw(lock.read().clone())
+        let hv = &*((cell as usize & !TAG) as *const HeapValue);
+        Value::into_raw(hv.get())
     }
 }
 
@@ -542,15 +542,16 @@ unsafe extern "C" fn tail_callable(op: *const ()) -> Option<NonNull<u8>> {
     }
 }
 
-/// Borrow the environment pointer of a procedure value.
+/// Read slot `i` of a procedure's environment. The returned value is borrowed
+/// from the procedure and is not counted.
 #[runtime_fn]
-unsafe extern "C" fn proc_env(proc: *const ()) -> *const Value {
+unsafe extern "C" fn proc_env_slot(proc: *const (), i: u32) -> *const () {
     unsafe {
         let proc = ManuallyDrop::new(Value::from_raw(proc));
         let UnpackedValue::Procedure(proc) = &*proc.unpacked_ref() else {
-            unreachable!("proc_env called with a non-procedure");
+            unreachable!("proc_env_slot called with a non-procedure");
         };
-        proc.0.env.as_ptr()
+        Value::as_raw(&proc.0.env[i as usize].read())
     }
 }
 
@@ -826,7 +827,7 @@ unsafe extern "C" fn patch_env_slot(proc: *const (), slot_idx: u32, value: *cons
         let proc_gc = ManuallyDrop::new(Gc::from_raw(
             proc.map_addr(|raw| raw & !TAG) as *mut ProcedureInner
         ));
-        (&mut *Gc::as_ptr(&proc_gc)).env[slot_idx as usize] = Value::from_raw_inc_rc(value);
+        proc_gc.env[slot_idx as usize].set(Value::from_raw_inc_rc(value));
     }
 }
 

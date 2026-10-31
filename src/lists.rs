@@ -3,12 +3,11 @@
 use std::{marker::PhantomData, mem::ManuallyDrop, num::NonZeroUsize, ptr::NonNull};
 
 use hashbrown::HashSet;
-use parking_lot::RwLock;
 use scheme_rs_gc::HeapObject;
 
 use crate::{
     exceptions::Exception,
-    gc::{Gc, Trace},
+    gc::{Gc, HeapValue, Trace},
     proc::{Application, Args, ContBarrier, Procedure},
     registry::bridge,
     value::{UnpackedValue, Value, ValueType},
@@ -18,9 +17,9 @@ use crate::{
 #[repr(align(16))]
 pub(crate) struct PairInner {
     /// The head of the pair
-    pub(crate) car: RwLock<Value>,
+    pub(crate) car: HeapValue,
     /// The tail of the pair
-    pub(crate) cdr: RwLock<Value>,
+    pub(crate) cdr: HeapValue,
 }
 
 /// A pair of Scheme [Values](Value). Has a head (the [car](Pair::car())) and a
@@ -36,8 +35,8 @@ impl Pair {
     pub fn mutable(car: Value, cdr: Value) -> Self {
         Self {
             inner: NonNull::new(Gc::into_raw(Gc::new(PairInner {
-                car: RwLock::new(car),
-                cdr: RwLock::new(cdr),
+                car: HeapValue::new(car),
+                cdr: HeapValue::new(cdr),
             })))
             .unwrap()
             .map_addr(|addr| addr | 1),
@@ -48,8 +47,8 @@ impl Pair {
     pub fn immutable(car: Value, cdr: Value) -> Self {
         Self {
             inner: NonNull::new(Gc::into_raw(Gc::new(PairInner {
-                car: RwLock::new(car),
-                cdr: RwLock::new(cdr),
+                car: HeapValue::new(car),
+                cdr: HeapValue::new(cdr),
             })))
             .unwrap(),
         }
@@ -74,12 +73,11 @@ impl Pair {
 
     /// Extract the car (aka the head) from the Pair.
     pub fn car(&self) -> Value {
-        let (inner, mutable) = self.inner_and_mutability();
-        if mutable {
-            inner.car.read().clone()
-        } else {
-            unsafe { (*inner.car.data_ptr()).clone() }
-        }
+        // Temporary: immutable pairs also take the read lock, because the
+        // std RwLock has no stable unlocked read. Read without the lock
+        // when HeapSlot becomes one atomic word.
+        let (inner, _) = self.inner_and_mutability();
+        inner.car.get()
     }
 
     /// Alias for [`car`](Pair::car())
@@ -89,12 +87,11 @@ impl Pair {
 
     /// Extract the cdr (aka the tail) from the Pair.
     pub fn cdr(&self) -> Value {
-        let (inner, mutable) = self.inner_and_mutability();
-        if mutable {
-            inner.cdr.read().clone()
-        } else {
-            unsafe { (*inner.cdr.data_ptr()).clone() }
-        }
+        // Temporary: immutable pairs also take the read lock, because the
+        // std RwLock has no stable unlocked read. Read without the lock
+        // when HeapSlot becomes one atomic word.
+        let (inner, _) = self.inner_and_mutability();
+        inner.cdr.get()
     }
 
     /// Alias for [`cdr`](Pair::cdr())
@@ -106,7 +103,7 @@ impl Pair {
     pub fn set_car(&self, new_car: Value) -> Result<(), Exception> {
         let (inner, mutable) = self.inner_and_mutability();
         if mutable {
-            *inner.car.write() = new_car;
+            inner.car.set(new_car);
             Ok(())
         } else {
             Err(Exception::error("pair is not mutable"))
@@ -117,7 +114,7 @@ impl Pair {
     pub fn set_cdr(&self, new_cdr: Value) -> Result<(), Exception> {
         let (inner, mutable) = self.inner_and_mutability();
         if mutable {
-            *inner.cdr.write() = new_cdr;
+            inner.cdr.set(new_cdr);
             Ok(())
         } else {
             Err(Exception::error("pair is not mutable"))
@@ -166,21 +163,15 @@ pub struct PairRef<'a> {
 
 impl PairRef<'_> {
     pub fn car(&self) -> Value {
-        let (inner, mutable) = self.inner.inner_and_mutability();
-        if mutable {
-            inner.car.read().clone()
-        } else {
-            unsafe { (*inner.car.data_ptr()).clone() }
-        }
+        // Temporary: see Pair::car.
+        let (inner, _) = self.inner.inner_and_mutability();
+        inner.car.get()
     }
 
     pub fn cdr(&self) -> Value {
-        let (inner, mutable) = self.inner.inner_and_mutability();
-        if mutable {
-            inner.cdr.read().clone()
-        } else {
-            unsafe { (*inner.cdr.data_ptr()).clone() }
-        }
+        // Temporary: see Pair::cdr.
+        let (inner, _) = self.inner.inner_and_mutability();
+        inner.cdr.get()
     }
 }
 
@@ -338,6 +329,12 @@ pub fn slice_to_list(items: &[Value]) -> Value {
         [] => Value::null(),
         [head, tail @ ..] => Value::from(Pair::immutable(head.clone(), slice_to_list(tail))),
     }
+}
+
+pub fn heap_values_to_list(values: &[HeapValue]) -> Value {
+    values.iter().rev().fold(Value::null(), |tail, v| {
+        Value::from(Pair::immutable(v.get(), tail))
+    })
 }
 
 pub fn list_to_vec(curr: &Value, out: &mut Vec<Value>) {
@@ -630,5 +627,36 @@ pub fn zip(list1: Value, #[rest_args] listn: Value) -> Result<Value, Exception> 
         Ok(slice_to_list(&output))
     } else {
         Ok(Value::null())
+    }
+}
+
+#[cfg(all(test, feature = "barrier_count", not(feature = "async")))]
+mod pair_tests {
+    use crate::{ast::ImportPolicy, env::TopLevelEnvironment};
+    use scheme_rs_gc::barrier_count;
+
+    /// Runs `setup`, then counts the barriers while `code` runs.
+    fn barriers_during(setup: &str, code: &str) -> usize {
+        let env = TopLevelEnvironment::new_repl();
+        env.eval(ImportPolicy::Allow, "(import (rnrs) (rnrs mutable-pairs))")
+            .unwrap();
+        env.eval(ImportPolicy::Allow, setup).unwrap();
+        let before = barrier_count();
+        env.eval(ImportPolicy::Allow, code).unwrap();
+        barrier_count() - before
+    }
+
+    #[test]
+    pub fn set_car_triggers_barrier() {
+        let setup = "(define x (cons 1 '(2)))";
+        let code = "(set-car! x 2)";
+        assert_eq!(barriers_during(setup, code), 1);
+    }
+
+    #[test]
+    pub fn set_cdr_triggers_barrier() {
+        let setup = "(define x (cons 1 '(2)))";
+        let code = "(set-cdr! x '(3))";
+        assert_eq!(barriers_during(setup, code), 1);
     }
 }
