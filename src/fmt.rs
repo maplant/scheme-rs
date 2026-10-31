@@ -5,7 +5,7 @@ use indexmap::{IndexMap, IndexSet};
 use crate::{
     symbols::Symbol,
     value::{UnpackedValue, Value, ValueType},
-    vectors::VectorInner,
+    vectors::TmpVecInner,
 };
 
 #[derive(Copy, Clone, Debug)]
@@ -215,10 +215,9 @@ fn determine_circularity(
             determine_circularity(&car, visited, circular);
             determine_circularity(&cdr, visited, circular);
         }
-        UnpackedValue::Record(rec) if let Some(vec) = rec.cast::<VectorInner<Value>>() => {
-            let vec_read = vec.vec.read();
-            for item in vec_read.iter() {
-                determine_circularity(item, visited, circular);
+        UnpackedValue::Record(rec) if let Some(vec) = rec.cast::<TmpVecInner>() => {
+            for item in vec.vec.iter() {
+                determine_circularity(&item.get(), visited, circular);
             }
         }
         UnpackedValue::Record(rec) => {

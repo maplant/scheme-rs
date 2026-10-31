@@ -14,6 +14,7 @@ mod mutator;
 mod reclaimer;
 mod region;
 mod safepoint;
+mod slot;
 mod sync;
 #[cfg(not(loom))]
 mod trace;
@@ -28,6 +29,11 @@ pub use cycle_collector::{CycleCollector, CycleHeader, CycleList, collect_garbag
 pub use heap_object::{HEADER_SIZE, Header, HeapObject, VTable};
 #[cfg(not(loom))]
 pub use trace::{GcOrTrace, Trace};
+
+pub use slot::{HeapSlot, SlotValue};
+
+#[cfg(feature = "barrier_count")]
+pub use slot::barrier_count;
 
 pub use heap::{Heap, HeapStats, ObjectHeader};
 pub use mutator::Mutator;

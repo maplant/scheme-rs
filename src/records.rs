@@ -224,7 +224,7 @@ use indexmap::IndexSet;
 use crate::{
     exceptions::Exception,
     fmt::{Formatter, Mode},
-    gc::{Gc, HeapObject, Trace, alloc_layout, unroot},
+    gc::{Gc, HeapObject, HeapValue, Trace, alloc_layout, unroot},
     lists::{append_list, iter_list, split_list},
     proc::{Application, Args, ContBarrier, FuncPtr, Procedure},
     registry::bridge,
@@ -333,17 +333,18 @@ impl Field {
 
     fn parse_fields(fields: &Value) -> Result<Vec<Self>, Exception> {
         let fields: Vector = fields.clone().try_into()?;
-        fields.0.vec.read().iter().map(Self::parse).collect()
+        fields
+            .0
+            .vec
+            .iter()
+            .map(|hv: &HeapValue| Self::parse(&hv.read()))
+            .collect()
     }
 
     pub fn name(&self) -> Symbol {
         match self {
             Self::Immutable(sym) | Self::Mutable(sym) => *sym,
         }
-    }
-
-    pub fn is_mutable(&self) -> bool {
-        matches!(self, Self::Mutable(_))
     }
 }
 
@@ -474,7 +475,7 @@ impl Record {
         self.fields()
             .skip(self.0.num_embedded_fields())
             .map(|(_, _, field)| field.name())
-            .zip(self.0.fields().iter().map(Value::read))
+            .zip(self.0.fields().iter().map(HeapValue::get))
     }
 
     pub fn fmt(&self, fmt: &mut Formatter<'_>) -> fmt::Result {
@@ -560,7 +561,7 @@ pub(crate) struct RecordInner {
     rtd: Arc<RecordTypeDescriptor>,
     /// Pointer to the first field. If the record contains an embedded value it
     /// will be stored after the last field.
-    fields: [Value; 0],
+    fields: [HeapValue; 0],
 }
 
 impl RecordInner {
@@ -575,7 +576,7 @@ impl RecordInner {
         self.rtd.num_fields() - self.num_embedded_fields()
     }
 
-    pub(crate) fn fields(&self) -> &[Value] {
+    pub(crate) fn fields(&self) -> &[HeapValue] {
         unsafe { slice::from_raw_parts(self.fields_ptr(), self.num_unembedded_fields()) }
     }
 
@@ -583,20 +584,22 @@ impl RecordInner {
         std::mem::offset_of!(RecordInner, fields)
     }
 
-    pub(crate) fn fields_ptr(&self) -> *const Value {
-        &self.fields as *const Value
+    pub(crate) fn fields_ptr(&self) -> *const HeapValue {
+        &self.fields as *const HeapValue
     }
 
-    pub(crate) fn fields_ptr_mut(&mut self) -> *mut Value {
-        &mut self.fields as *mut Value
+    pub(crate) fn fields_ptr_mut(&mut self) -> *mut HeapValue {
+        &mut self.fields as *mut HeapValue
     }
 
     pub(crate) fn embedded_ptr(&self) -> Option<*const ()> {
         let vtable = self.rtd.embedded_vtable?;
         unsafe {
+            // Pad in bytes: `align_offset` counts in elements of the pointer's type.
             let fields_end = self
                 .fields_ptr()
-                .add(self.rtd.num_fields() - vtable.embedded_fields);
+                .add(self.rtd.num_fields() - vtable.embedded_fields)
+                .cast::<u8>();
             Some(fields_end.add(fields_end.align_offset(vtable.layout.align())) as *const ())
         }
     }
@@ -606,7 +609,8 @@ impl RecordInner {
         unsafe {
             let fields_end = self
                 .fields_ptr_mut()
-                .add(self.rtd.num_fields() - vtable.embedded_fields);
+                .add(self.rtd.num_fields() - vtable.embedded_fields)
+                .cast::<u8>();
             Some(fields_end.add(fields_end.align_offset(vtable.layout.align())) as *mut ())
         }
     }
@@ -1140,11 +1144,11 @@ pub fn record_constructor(
 
     let protocols = protocols.into_iter().map(Value::from).collect::<Vec<_>>();
     let rtds = rtds.into_iter().map(Value::from).collect::<Vec<_>>();
-    barrier.push_cont([Value::from(protocols)], chain_protocols);
+    barrier.push_cont([Value::from(protocols), Value::from(0)], chain_protocols);
 
     Ok(Application::new(
         Procedure::new(
-            vec![Value::from(rtds), Value::null()],
+            vec![Value::from(rtds), Value::from(0), Value::null()],
             FuncPtr::Bridge(chain_constructors),
             0,
             true,
@@ -1166,16 +1170,20 @@ fn rcd_to_protocols_and_rtds(
     (protocols, rtds)
 }
 
-fn chain_protocols(env: [Value; 1], constructor: Value, barrier: &mut ContBarrier) -> Application {
-    let [protocols] = env;
+fn chain_protocols(env: [Value; 2], constructor: Value, barrier: &mut ContBarrier) -> Application {
+    let [protocols, index] = env;
+    let i: usize = index.try_into().unwrap();
     let protocols: Vector = protocols.try_into().unwrap();
 
-    let mut protocols = protocols.0.vec.read().clone();
-    let remaining_protocols = protocols.split_off(1);
-    let curr_protocol: Procedure = protocols[0].clone().try_into().unwrap();
+    let len = protocols.0.vec.len();
+    let curr = protocols.0.vec[i].get();
+    let curr_protocol: Procedure = curr.try_into().unwrap();
 
-    if !remaining_protocols.is_empty() {
-        barrier.push_cont([Value::from(remaining_protocols)], chain_protocols);
+    if i + 1 < len {
+        barrier.push_cont(
+            [Value::from(protocols), Value::from(i + 1)],
+            chain_protocols,
+        );
     }
 
     Application::new(curr_protocol, Args::pack([constructor]))
@@ -1184,33 +1192,30 @@ fn chain_protocols(env: [Value; 1], constructor: Value, barrier: &mut ContBarrie
 #[bridge]
 fn chain_constructors(
     #[env] rtds: Vector,
+    #[env] index: usize,
     #[env] collected: Value,
     #[rest_args] args: Value,
     barrier: &mut ContBarrier,
 ) -> Result<Application, Exception> {
-    let mut rtds = rtds.0.vec.read().clone();
-    let remaining_rtds = rtds.split_off(1);
-    let curr_rtd: Arc<RecordTypeDescriptor> = rtds[0].clone().try_into()?;
-    let rtds_remain = !remaining_rtds.is_empty();
+    let curr_rtd: Arc<RecordTypeDescriptor> = rtds.0.vec[index].get().try_into()?;
     let num_args = curr_rtd.fields.len();
     let collected = append_list(&collected, args)?;
-    let next_proc = Procedure::new(
-        vec![
-            if rtds_remain {
-                Value::from(remaining_rtds)
-            } else {
-                Value::from(curr_rtd)
-            },
-            collected,
-        ],
-        if rtds_remain {
-            FuncPtr::Bridge(chain_constructors)
-        } else {
-            FuncPtr::Bridge(constructor)
-        },
-        num_args,
-        false,
-    );
+
+    let next_proc = if index + 1 < rtds.0.vec.len() {
+        Procedure::new(
+            vec![Value::from(rtds), Value::from(index + 1), collected],
+            FuncPtr::Bridge(chain_constructors),
+            num_args,
+            false,
+        )
+    } else {
+        Procedure::new(
+            vec![Value::from(curr_rtd), collected],
+            FuncPtr::Bridge(constructor),
+            num_args,
+            false,
+        )
+    };
     Ok(barrier.call_cont(Args::pack([Value::from(next_proc)])))
 }
 
@@ -1240,7 +1245,7 @@ fn constructor(
     let prefix =
         Layout::from_size_align(RecordInner::fields_offset(), align_of::<RecordInner>()).unwrap();
     let (layout, fields_offset) = prefix
-        .extend(Layout::array::<Value>(fields.len()).unwrap())
+        .extend(Layout::array::<HeapValue>(fields.len()).unwrap())
         .unwrap();
 
     let (layout, embedded_offset_and_writer) =
@@ -1261,23 +1266,11 @@ fn constructor(
             fields: [],
         });
 
-        let fields_ptr = record.byte_add(fields_offset).cast::<Value>().as_ptr();
+        let fields_ptr = record.byte_add(fields_offset).cast::<HeapValue>().as_ptr();
 
-        let field_mutability = rtd
-            .inherits
-            .iter()
-            .flat_map(|parent| parent.fields.iter())
-            .chain(rtd.fields.iter())
-            .map(|field| field.is_mutable())
-            .skip(rtd.embedded_vtable.map_or(0, |vt| vt.embedded_fields));
-
-        for (i, (field, mutable)) in fields.into_iter().zip(field_mutability).enumerate() {
-            let field = if mutable {
-                Cell::new(field).into_value()
-            } else {
-                field
-            };
-            fields_ptr.add(i).write(field);
+        // Mutability is still checked in record_mutator
+        for (i, field) in fields.into_iter().enumerate() {
+            fields_ptr.add(i).write(HeapValue::new(field));
         }
 
         if let Some((embedded_offset, writer)) = embedded_offset_and_writer {
@@ -1383,7 +1376,7 @@ fn record_accessor_fn(
         }
     } else {
         let k = abs_idx - record.0.num_embedded_fields();
-        record.0.fields()[k].read()
+        record.0.fields()[k].get()
     };
     if val.is_undefined() {
         return Err(Exception::error(format!(
@@ -1470,16 +1463,14 @@ fn record_mutator_fn(
         let embedded_ptr = record.0.embedded_ptr().unwrap();
         let embedded_vtable = record.0.rtd.embedded_vtable.as_ref().unwrap();
         if rtd.embedded_vtable.unwrap().type_id == embedded_vtable.type_id {
-            (embedded_vtable.set_field)(embedded_ptr, local_idx, new_val.clone())?;
+            (embedded_vtable.set_field)(embedded_ptr, local_idx, new_val)?;
         } else {
             let embedded = embedded_vtable.ancestor(embedded_ptr, &rtd).unwrap();
-            embedded.set_field(local_idx, new_val.clone())?;
+            embedded.set_field(local_idx, new_val)?;
         }
     } else {
         let slot = abs_idx - record.0.num_embedded_fields();
-        record.0.fields()[slot]
-            .try_to::<Cell>()?
-            .set(new_val.clone());
+        record.0.fields()[slot].set(new_val);
     }
     Ok(barrier.call_cont(Args::pack([])))
 }
