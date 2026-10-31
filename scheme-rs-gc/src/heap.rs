@@ -7,7 +7,7 @@ use crate::{
     large::{PAGE, Run},
     reclaimer::ReclaimerState,
     region::{ALL_LINES, BLOCK_SIZE, OwnedBlock, Region, State},
-    sync::{AtomicUsize, Condvar, Mutex, Ordering, lock},
+    sync::{AtomicUsize, Condvar, Mutex, Ordering, lock, wait_while},
 };
 
 const COLLECTION_THRESHOLD_HEAP_PERCENT: usize = 80;
@@ -236,6 +236,24 @@ impl<H: ObjectHeader, A: Allocator> Heap<H, A> {
     pub fn request_collection(&self) {
         lock(&self.signal.status).requested = true;
         self.signal.start.notify_one();
+    }
+
+    /// Requests collections and waits until `epochs` epochs that started
+    /// after this call have finished, or until the collector exits.
+    pub fn wait_for_epochs(&self, epochs: usize) {
+        for _ in 0..epochs {
+            let mut status = lock(&self.signal.status);
+            let target = if status.running {
+                status.epoch + 2
+            } else {
+                status.epoch + 1
+            };
+            status.requested = true;
+            self.signal.start.notify_one();
+            drop(wait_while(&self.signal.done, status, |s| {
+                s.epoch < target && s.alive
+            }));
+        }
     }
 
     pub(crate) fn collection_threshold(&self) -> usize {

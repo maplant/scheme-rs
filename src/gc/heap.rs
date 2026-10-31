@@ -16,6 +16,7 @@ use parking_lot::Mutex;
 use scheme_rs_gc::{
     CollectorAlreadyRunning, CollectorHandle, DefaultCollector, Header, Heap, HeapObject, Mutator,
     VTable, collect_garbage_in, on_collector_thread, start_collector, unroot_in,
+    without_gc_watching,
 };
 
 const DEFAULT_HEAP_SIZE: usize = 512 * 1024 * 1024;
@@ -97,16 +98,19 @@ thread_local! {
 /// On exiting threads: Drop and thread-local allocators must not allocate via `alloc`
 pub(crate) unsafe fn alloc_layout(layout: Layout) -> NonNull<u8> {
     assert!(!on_collector_thread(), "Gc allocated during finalization");
-    let obj = MUTATOR
-        .try_with(|m| unsafe { HeapObject::alloc_layout_in(&mut m.borrow_mut(), layout) })
-        .expect("Gc allocated after this thread's GC mutator was destroyed");
-    match obj {
-        Ok(obj) => obj,
-        Err(_) => {
-            heap().request_collection();
-            handle_alloc_error(layout)
-        }
+    let try_alloc = || {
+        MUTATOR
+            .try_with(|m| unsafe { HeapObject::alloc_layout_in(&mut m.borrow_mut(), layout) })
+            .expect("Gc allocated after this thread's GC mutator was destroyed")
+    };
+    if let Ok(obj) = try_alloc() {
+        return obj;
     }
+    // A full heap waits for the collector, outside GC watching so a pause never
+    // waits on this thread. Two epochs: freed lines are reusable only after the
+    // sweep that follows the one that found them.
+    without_gc_watching(|| heap().wait_for_epochs(2));
+    try_alloc().unwrap_or_else(|_| handle_alloc_error(layout))
 }
 
 pub(crate) fn alloc<T>(data: T) -> NonNull<T> {
