@@ -4,7 +4,7 @@ use crate::{
     ast::Primitive,
     env::{Binding, Environment, Scope, add_binding, resolve},
     exceptions::{CompoundCondition, Exception, Message, SyntaxViolation, Who},
-    gc::Trace,
+    gc::{HeapValue, Trace},
     ports::Port,
     proc::{ContBarrier, Procedure},
     records::{Embeddable, Embedded, RecordTypeDescriptor, rtd},
@@ -12,7 +12,7 @@ use crate::{
     symbols::Symbol,
     syntax::parse::ParseSyntaxError,
     value::{Expect1, UnpackedValue, Value},
-    vectors::VectorInner,
+    vectors::TmpVecInner,
 };
 use scheme_rs_macros::{maybe_async, maybe_await};
 use std::{
@@ -164,13 +164,12 @@ impl Syntax {
             UnpackedValue::Record(rec) if let Some(syn) = rec.cast::<Syntax>() => {
                 syn.as_ref().clone()
             }
-            UnpackedValue::Record(rec) if let Some(vec) = rec.cast::<VectorInner<Value>>() => {
+            UnpackedValue::Record(rec) if let Some(vec) = rec.cast::<TmpVecInner>() => {
                 Syntax::Vector {
                     vector: vec
                         .vec
-                        .read()
                         .iter()
-                        .map(|value| Syntax::wrap(value.clone(), span))
+                        .map(|value| Syntax::wrap(value.get(), span))
                         .collect(),
                     span: span.clone(),
                 }
@@ -217,13 +216,12 @@ impl Syntax {
                 }
             }
 
-            UnpackedValue::Record(rec) if let Some(vec) = rec.cast::<VectorInner<Value>>() => {
+            UnpackedValue::Record(rec) if let Some(vec) = rec.cast::<TmpVecInner>() => {
                 Syntax::Vector {
                     vector: vec
                         .vec
-                        .read()
                         .iter()
-                        .map(|value| Syntax::datum_to_syntax(scopes, value.clone(), span))
+                        .map(|value| Syntax::datum_to_syntax(scopes, value.get(), span))
                         .collect(),
                     span: Span::default(),
                 }
@@ -255,12 +253,11 @@ impl Syntax {
                 let (car, cdr) = pair.into();
                 Value::cons(Self::syntax_to_datum(car), Self::syntax_to_datum(cdr))
             }
-            UnpackedValue::Record(rec) if let Some(vec) = rec.cast::<VectorInner<Value>>() => {
+            UnpackedValue::Record(rec) if let Some(vec) = rec.cast::<TmpVecInner>() => {
                 Value::from(
                     vec.vec
-                        .read()
                         .iter()
-                        .cloned()
+                        .map(HeapValue::get)
                         .map(Self::syntax_to_datum)
                         .collect::<Vec<_>>(),
                 )

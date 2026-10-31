@@ -2,11 +2,10 @@
 
 use hashbrown::HashSet;
 use indexmap::IndexMap;
-use parking_lot::RwLock;
 
 use crate::{
     exceptions::Exception,
-    gc::{Gc, Trace},
+    gc::{Gc, HeapValue, Trace},
     proc::{Application, Args, ContBarrier, Procedure},
     registry::bridge,
     strings::WideString,
@@ -18,9 +17,9 @@ use std::fmt;
 #[repr(align(16))]
 pub(crate) struct PairInner {
     /// The head of the pair
-    pub(crate) car: RwLock<Value>,
+    pub(crate) car: HeapValue,
     /// The tail of the pair
-    pub(crate) cdr: RwLock<Value>,
+    pub(crate) cdr: HeapValue,
     /// Whether or not the pair can be modified post creation
     mutable: bool,
 }
@@ -34,8 +33,8 @@ impl Pair {
     /// Construct a new mutable Pair from a car and cdr
     pub fn mutable(car: Value, cdr: Value) -> Self {
         Self(Gc::new(PairInner {
-            car: RwLock::new(car),
-            cdr: RwLock::new(cdr),
+            car: HeapValue::new(car),
+            cdr: HeapValue::new(cdr),
             mutable: true,
         }))
     }
@@ -43,15 +42,15 @@ impl Pair {
     /// Construct a new immutable Pair from a car and cdr
     pub fn immutable(car: Value, cdr: Value) -> Self {
         Self(Gc::new(PairInner {
-            car: RwLock::new(car),
-            cdr: RwLock::new(cdr),
+            car: HeapValue::new(car),
+            cdr: HeapValue::new(cdr),
             mutable: false,
         }))
     }
 
     /// Extract the car (aka the head) from the Pair.
     pub fn car(&self) -> Value {
-        self.0.car.read().clone()
+        self.0.car.get()
     }
 
     /// Alias for [`car`](Pair::car())
@@ -61,7 +60,7 @@ impl Pair {
 
     /// Extract the cdr (aka the tail) from the Pair.
     pub fn cdr(&self) -> Value {
-        self.0.cdr.read().clone()
+        self.0.cdr.get()
     }
 
     /// Alias for [`cdr`](Pair::cdr())
@@ -72,7 +71,7 @@ impl Pair {
     /// Set the car of the Pair. Returns an error if pair is immutable.
     pub fn set_car(&self, new_car: Value) -> Result<(), Exception> {
         if self.0.mutable {
-            *self.0.car.write() = new_car;
+            self.0.car.set(new_car);
             Ok(())
         } else {
             Err(Exception::error("pair is not mutable"))
@@ -82,7 +81,7 @@ impl Pair {
     /// Set the cdr of the Pair. Returns an error if pair is immutable.
     pub fn set_cdr(&self, new_cdr: Value) -> Result<(), Exception> {
         if self.0.mutable {
-            *self.0.cdr.write() = new_cdr;
+            self.0.cdr.set(new_cdr);
             Ok(())
         } else {
             Err(Exception::error("pair is not mutable"))
@@ -310,6 +309,12 @@ pub fn slice_to_list(items: &[Value]) -> Value {
         [] => Value::null(),
         [head, tail @ ..] => Value::from(Pair::immutable(head.clone(), slice_to_list(tail))),
     }
+}
+
+pub fn heap_values_to_list(values: &[HeapValue]) -> Value {
+    values.iter().rev().fold(Value::null(), |tail, v| {
+        Value::from(Pair::immutable(v.get(), tail))
+    })
 }
 
 pub fn list_to_vec(curr: &Value, out: &mut Vec<Value>) {
@@ -606,5 +611,35 @@ pub fn zip(list1: Value, #[rest_args] listn: Value) -> Result<Value, Exception> 
         Ok(slice_to_list(&output))
     } else {
         Ok(Value::null())
+    }
+}
+
+#[cfg(all(test, feature = "barrier_count", not(feature = "async")))]
+mod pair_tests {
+    use crate::{ast::ImportPolicy, env::TopLevelEnvironment};
+    use scheme_rs_gc::barrier_count;
+
+    /// Runs `setup`, then counts the barriers while `code` runs.
+    fn barriers_during(setup: &str, code: &str) -> usize {
+        let env = TopLevelEnvironment::new_repl();
+        env.eval(ImportPolicy::Allow, "(import (rnrs) (rnrs mutable-pairs))").unwrap();
+        env.eval(ImportPolicy::Allow, setup).unwrap();
+        let before = barrier_count();
+        env.eval(ImportPolicy::Allow, code).unwrap();
+        barrier_count() - before
+    }
+
+    #[test]
+    pub fn set_car_triggers_barrier() {
+        let setup = "(define x (cons 1 '(2)))";
+        let code = "(set-car! x 2)";
+        assert_eq!(barriers_during(setup, code), 1);
+    }
+
+    #[test]
+    pub fn set_cdr_triggers_barrier() {
+        let setup = "(define x (cons 1 '(2)))";
+        let code = "(set-cdr! x '(3))";
+        assert_eq!(barriers_during(setup, code), 1);
     }
 }

@@ -892,7 +892,7 @@ impl Global {
         if !self.mutable {
             return Err(Exception::error("cannot modify immutable variable"));
         }
-        *self.val.0.write() = new;
+        self.val.0.set(new);
         Ok(())
     }
 }

@@ -132,7 +132,9 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
         if is_env_var {
             let env_idx = env_var_idx;
             env_var_idx += 1;
-            args.push(convert_arg(quote!((&env[#env_idx]))));
+            // `get` clones (a count today); with deferred RC it becomes an
+            // uncounted load.
+            args.push(convert_arg(quote!((&env[#env_idx].get()))));
             continue;
         }
 
@@ -393,7 +395,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                         #[allow(unused)]
                         const NUM_REQUIRED: usize = #num_required;
                         #[allow(unused)]
-                        let env: &[::scheme_rs::value::Value] = proc.env();
+                        let env: &[::scheme_rs::gc::HeapValue] = proc.env();
                         #(#bindings)*
 
                         __inner__(#(#args,)*).await.into_application(barrier)
@@ -418,7 +420,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 #bridge
 
                 #[allow(unused)]
-                let env: &[::scheme_rs::value::Value] = proc.env();
+                let env: &[::scheme_rs::gc::HeapValue] = proc.env();
 
                 let app = (move || -> ::scheme_rs::proc::Application {
                     #[allow(unused)]

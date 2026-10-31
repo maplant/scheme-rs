@@ -81,7 +81,7 @@ use crate::{
     cps::PrimOp,
     env::Local,
     exceptions::{Exception, raise},
-    gc::{Gc, Trace},
+    gc::{Gc, HeapValue, Trace},
     lists::{Pair, list_len, list_to_vec},
     ports::{BufferMode, Port, Transcoder},
     records::{Embeddable, Embedded, RecordTypeDescriptor, rtd},
@@ -362,7 +362,7 @@ impl From<AsyncBridgePtr> for FuncPtr {
 #[repr(align(16))]
 pub(crate) struct ProcedureInner {
     /// Environmental variables used by the procedure.
-    pub(crate) env: Vec<Value>,
+    pub(crate) env: Box<[HeapValue]>, // Temporary, until we get the HeapArray
     /// Fuction pointer to the body of the procecure.
     #[trace(skip)]
     pub(crate) func: FuncPtr,
@@ -379,14 +379,14 @@ pub(crate) struct ProcedureInner {
 
 impl ProcedureInner {
     pub(crate) fn new(
-        env: Vec<Value>,
+        env: impl IntoIterator<Item = Value, IntoIter: ExactSizeIterator>,
         func: FuncPtr,
         num_required_args: usize,
         variadic: bool,
         debug_info: Option<Arc<ProcDebugInfo>>,
     ) -> Self {
         Self {
-            env,
+            env: env.into_iter().map(HeapValue::new).collect(),
             func,
             num_required_args,
             variadic,
@@ -513,7 +513,7 @@ impl Procedure {
     }
 
     /// Borrow the environment slice of this procedure.
-    pub fn env(&self) -> &[Value] {
+    pub fn env(&self) -> &[HeapValue] {
         &self.0.env
     }
 

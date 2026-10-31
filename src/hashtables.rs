@@ -12,7 +12,7 @@ use std::{
 
 use crate::{
     exceptions::Exception,
-    gc::Trace,
+    gc::{HeapValue, Trace},
     proc::{ContBarrier, Procedure},
     records::{Embeddable, Embedded, RecordTypeDescriptor},
     registry::bridge,
@@ -23,8 +23,8 @@ use crate::{
 
 #[derive(Clone, Trace)]
 struct TableEntry {
-    key: Value,
-    val: Value,
+    key: HeapValue,
+    val: HeapValue,
     hash: u64,
 }
 
@@ -96,8 +96,8 @@ impl HashTableInner {
         let table = self.table.read();
         let hash = self.hash(key.clone())?;
         for entry in table.iter_hash(hash) {
-            if entry.hash == hash && self.eq(key.clone(), entry.key.clone())? {
-                return Ok(entry.val.clone());
+            if entry.hash == hash && self.eq(key.clone(), entry.key.get())? {
+                return Ok(entry.val.get());
             }
         }
         Ok(default.clone())
@@ -111,8 +111,8 @@ impl HashTableInner {
         let mut table = self.table.write();
         let hash = self.hash(key.clone())?;
         for entry in table.iter_hash_mut(hash) {
-            if entry.hash == hash && self.eq(key.clone(), entry.key.clone())? {
-                entry.val = val.clone();
+            if entry.hash == hash && self.eq(key.clone(), entry.key.get())? {
+                entry.val.set(val.clone());
                 return Ok(());
             }
         }
@@ -121,8 +121,8 @@ impl HashTableInner {
         table.insert_unique(
             hash,
             TableEntry {
-                key: key.clone(),
-                val: val.clone(),
+                key: HeapValue::new_published(key.clone()),
+                val: HeapValue::new_published(val.clone()),
                 hash,
             },
             TableEntry::get_hash,
@@ -143,9 +143,11 @@ impl HashTableInner {
             if let Ok(entry) = table.get_bucket_entry(bucket)
                 && let inner = entry.get()
                 && inner.hash == hash
-                && self.eq(key.clone(), inner.key.clone())?
+                && self.eq(key.clone(), inner.key.get())?
             {
-                entry.remove();
+                let (removed, _) = entry.remove();
+                removed.key.retire();
+                removed.val.retire();
                 return Ok(());
             }
         }
@@ -157,7 +159,7 @@ impl HashTableInner {
         let table = self.table.write();
         let hash = self.hash(key.clone())?;
         for entry in table.iter_hash(hash) {
-            if entry.hash == hash && self.eq(key.clone(), entry.key.clone())? {
+            if entry.hash == hash && self.eq(key.clone(), entry.key.get())? {
                 return Ok(true);
             }
         }
@@ -175,17 +177,18 @@ impl HashTableInner {
         let mut table = self.table.write();
         let hash = self.hash(key.clone())?;
         for entry in table.iter_hash_mut(hash) {
-            if entry.hash == hash && self.eq(key.clone(), entry.key.clone())? {
+            if entry.hash == hash && self.eq(key.clone(), entry.key.get())? {
+                let current = entry.val.get();
+
                 #[cfg(not(feature = "async"))]
                 let updated =
-                    proc.call(slice::from_ref(&entry.val), &mut ContBarrier::new())?[0].clone();
+                    proc.call(slice::from_ref(&current), &mut ContBarrier::new())?[0].clone();
 
                 #[cfg(feature = "async")]
-                let updated = proc
-                    .call_sync(slice::from_ref(&entry.val), &mut ContBarrier::new())?[0]
-                    .clone();
+                let updated =
+                    proc.call_sync(slice::from_ref(&current), &mut ContBarrier::new())?[0].clone();
 
-                entry.val = updated;
+                entry.val.set(updated);
                 return Ok(());
             }
         }
@@ -199,8 +202,8 @@ impl HashTableInner {
         table.insert_unique(
             hash,
             TableEntry {
-                key: key.clone(),
-                val: updated,
+                key: HeapValue::new_published(key.clone()),
+                val: HeapValue::new_published(updated),
                 hash,
             },
             TableEntry::get_hash,
@@ -223,7 +226,10 @@ impl HashTableInner {
             return Err(Exception::error("hashtable is immutable"));
         }
 
-        self.table.write().clear();
+        for entry in self.table.write().drain() {
+            entry.key.retire();
+            entry.val.retire();
+        }
 
         Ok(())
     }
@@ -232,7 +238,7 @@ impl HashTableInner {
         self.table
             .read()
             .iter()
-            .map(|entry| entry.key.clone())
+            .map(|entry| entry.key.get())
             .collect()
     }
 
@@ -240,7 +246,7 @@ impl HashTableInner {
         self.table
             .read()
             .iter()
-            .map(|entry| (entry.key.clone(), entry.val.clone()))
+            .map(|entry| (entry.key.get(), entry.val.get()))
             .unzip()
     }
 }
