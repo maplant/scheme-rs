@@ -29,12 +29,14 @@ use std::{
 
 pub(crate) use heap::alloc_layout;
 use heap::{alloc, alloc_zeroed, collect_garbage_sync, unroot_obj};
-use scheme_rs_gc::{GcOrTrace, HEADER_SIZE, VTable};
+use scheme_rs_gc::{GcOrTrace, HEADER_SIZE, HeapSlot, VTable};
 use scheme_rs_macros::{maybe_async, maybe_await};
 #[cfg(feature = "tokio")]
 use tokio::task::spawn_blocking;
 
-use crate::{Either, registry::bridge};
+use crate::{Either, registry::bridge, value::Value};
+
+pub type HeapValue = HeapSlot<Value>;
 
 /// A heap allocated garbage collected smart pointer. Gc requires that `T`
 /// implements the [`Trace`] trait to properly track references.
@@ -506,5 +508,46 @@ mod test {
             1,
             "chain behind freed cycle not released"
         );
+    }
+}
+
+#[cfg(all(test, feature = "barrier_count", not(feature = "async")))]
+mod barrier_tests {
+    use crate::{ast::ImportPolicy, env::TopLevelEnvironment};
+    use scheme_rs_gc::barrier_count;
+
+    /// Runs `setup`, then counts the barriers while `code` runs.
+    fn barriers_during(setup: &str, code: &str) -> usize {
+        let env = TopLevelEnvironment::new_repl();
+        env.eval(ImportPolicy::Allow, "(import (rnrs))").unwrap();
+        env.eval(ImportPolicy::Allow, setup).unwrap();
+        let before = barrier_count();
+        env.eval(ImportPolicy::Allow, code).unwrap();
+        barrier_count() - before
+    }
+
+    const N: usize = 100;
+    const LOOP: &str = "(do ((i 0 (+ i 1))) ((= i 100)) (step!))";
+
+    #[test]
+    fn set_on_a_global_reaches_the_barrier() {
+        let setup = "(define g 0) (define (step!) (set! g (+ g 1)))";
+        assert!(barriers_during(setup, LOOP) >= N);
+    }
+
+    #[test]
+    fn set_on_a_captured_variable_reaches_the_barrier() {
+        let setup = "(define step!
+                       (let ((n 0))
+                         (lambda () (set! n (+ n 1)))))";
+        assert!(barriers_during(setup, LOOP) >= N);
+    }
+
+    #[test]
+    fn a_record_mutator_reaches_the_barrier() {
+        let setup = "(define-record-type counter (fields (mutable n)))
+                     (define c (make-counter 0))
+                     (define (step!) (counter-n-set! c (+ (counter-n c) 1)))";
+        assert!(barriers_during(setup, LOOP) >= N);
     }
 }

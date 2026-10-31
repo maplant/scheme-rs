@@ -84,11 +84,11 @@
 
 use indexmap::{IndexMap, IndexSet};
 use malachite::Integer;
-use parking_lot::RwLock;
+use scheme_rs_gc::SlotValue;
 
 use crate::{
     exceptions::Exception,
-    gc::{Gc, HeapObject, Trace},
+    gc::{Gc, HeapObject, HeapValue, Trace},
     lists::{self, Pair, PairInner},
     num::{ComplexNumber, Number, NumberInner, NumberRepr, SimpleNumber},
     proc::{ContBarrier, Procedure, ProcedureInner, ReturnAddress},
@@ -97,7 +97,7 @@ use crate::{
     strings::WideString,
     symbols::Symbol,
     syntax::Syntax,
-    vectors::VectorInner,
+    vectors::TmpVecInner,
 };
 use std::{
     collections::HashMap,
@@ -339,7 +339,7 @@ impl Value {
                 UnpackedValue::Pair(Pair(pair))
             }
             Tag::Cell => {
-                let cell = unsafe { Gc::from_raw(untagged as *mut RwLock<Value>) };
+                let cell = unsafe { Gc::from_raw(untagged as *mut HeapValue) };
                 UnpackedValue::Cell(Cell(cell))
             }
             Tag::FixNum => UnpackedValue::Number(Number(NumberRepr::Fixed(raw as i64 >> 1))),
@@ -563,7 +563,7 @@ impl Drop for Value {
                         drop(Gc::from_raw(untagged as *mut PairInner));
                     }
                 }
-                Tag::Cell => drop(Gc::from_raw(untagged as *mut RwLock<Value>)),
+                Tag::Cell => drop(Gc::from_raw(untagged as *mut HeapValue)),
                 Tag::ReturnAddress | Tag::FixNum | Tag::SmallValue => (),
             }
         }
@@ -631,19 +631,19 @@ unsafe impl Trace for Value {
 
 /// A Cell is a value that is mutable, essentially a variable.
 #[derive(Clone, Trace)]
-pub struct Cell(pub(crate) Gc<RwLock<Value>>);
+pub struct Cell(pub(crate) Gc<HeapValue>);
 
 impl Cell {
     pub fn new(val: Value) -> Self {
-        Self(Gc::new(RwLock::new(val)))
+        Self(Gc::new(HeapValue::new(val)))
     }
 
     pub fn get(&self) -> Value {
-        self.0.read().clone()
+        self.0.get()
     }
 
     pub fn set(&self, new_val: Value) {
-        *self.0.write() = new_val;
+        self.0.set(new_val);
     }
 }
 
@@ -694,6 +694,25 @@ where
 impl From<Exception> for Value {
     fn from(value: Exception) -> Self {
         value.0
+    }
+}
+
+unsafe impl SlotValue for Value {
+    fn object(&self) -> Option<HeapObject> {
+        let raw = Value::as_raw(self);
+        let data = NonNull::new(raw.map_addr(|a| a & !TAG) as *mut ())?; // '() and undefined are null
+        match Tag::from(raw as usize & TAG) {
+            // Non-immediates GC
+            Tag::Pair | Tag::Procedure | Tag::Record | Tag::Cell => {
+                Some(unsafe { HeapObject::from_data(data) })
+            }
+            // Immediates
+            Tag::FixNum
+            | Tag::SmallValue
+            | Tag::Number // Arc, when this moves to Gc put it above
+            | Tag::RecordTypeDescriptor // Arc, when this moves to GC put it above
+            | Tag::ReturnAddress => None,
+        }
     }
 }
 
@@ -969,25 +988,23 @@ fn pair_eq(ht: &mut HashMap<Value, Value>, obj1: &Value, obj2: &Value, k: i64) -
 
 fn vector_eq(
     ht: &mut HashMap<Value, Value>,
-    vobj1: Embedded<VectorInner<Value>>,
-    vobj2: Embedded<VectorInner<Value>>,
+    vobj1: Embedded<TmpVecInner>,
+    vobj2: Embedded<TmpVecInner>,
     k: i64,
 ) -> Option<i64> {
-    let vobj1 = vobj1.vec.read();
-    let vobj2 = vobj2.vec.read();
-    if vobj1.len() != vobj2.len() {
+    if vobj1.vec.len() != vobj2.vec.len() {
         return None;
     }
     let mut k = k - 1;
-    for (x, y) in vobj1.iter().zip(vobj2.iter()) {
-        k = e(ht, x, y, k)?;
+    for (x, y) in vobj1.vec.iter().zip(vobj2.vec.iter()) {
+        k = e(ht, &x.get(), &y.get(), k)?;
     }
     Some(k)
 }
 
 fn record_equal(ht: &mut HashMap<Value, Value>, obj1: Record, obj2: Record, k: i64) -> Option<i64> {
-    if let Some(vobj1) = obj1.cast::<VectorInner<Value>>() {
-        obj2.cast::<VectorInner<Value>>()
+    if let Some(vobj1) = obj1.cast::<TmpVecInner>() {
+        obj2.cast::<TmpVecInner>()
             .and_then(|vobj2| vector_eq(ht, vobj1, vobj2, k))
     } else {
         (obj1.equal(&obj2)).then_some(k)
@@ -1402,10 +1419,9 @@ fn determine_circularity(
             determine_circularity(&car, visited, circular);
             determine_circularity(&cdr, visited, circular);
         }
-        UnpackedValue::Record(rec) if let Some(vec) = rec.cast::<VectorInner<Value>>() => {
-            let vec_read = vec.vec.read();
-            for item in vec_read.iter() {
-                determine_circularity(item, visited, circular);
+        UnpackedValue::Record(rec) if let Some(vec) = rec.cast::<TmpVecInner>() => {
+            for item in vec.vec.iter() {
+                determine_circularity(&item.get(), visited, circular);
             }
         }
         _ => (),
@@ -1486,4 +1502,58 @@ pub fn pair_pred(arg: Value, _: &mut ContBarrier) -> bool {
 #[bridge(name = "procedure?", lib = "(rnrs base builtins (6))")]
 pub fn procedure_pred(arg: Value) -> bool {
     arg.type_of() == ValueType::Procedure
+}
+
+#[cfg(all(test, not(feature = "async")))]
+mod slot_value_tests {
+    use super::*;
+    use crate::{
+        env::{ImportPolicy, TopLevelEnvironment},
+        gc::Trace,
+    };
+    use scheme_rs_gc::{HeapObject, SlotValue};
+
+    /// What the trace says this value points to: exactly the objects the
+    /// barrier must log. A Value holds at most one heap object directly.
+    fn traced(v: &Value) -> Option<HeapObject> {
+        let mut found = Vec::new();
+        unsafe { v.visit_children(&mut |o| found.push(o)) };
+        assert!(found.len() <= 1, "a Value points to at most one object");
+        found.pop()
+    }
+
+    fn eval(env: &TopLevelEnvironment, code: &str) -> Value {
+        env.eval(ImportPolicy::Allow, code).unwrap().pop().unwrap()
+    }
+
+    #[test]
+    fn object_agrees_with_the_trace_for_every_tag() {
+        // This test enforces what tags get reported by visit_children and object
+        // so if it ever changes, you don't forget to change the other place as well.
+        let env = TopLevelEnvironment::new_repl();
+        env.eval(ImportPolicy::Allow, "(import (rnrs))").unwrap();
+        let values = [
+            // heap objects
+            ("pair", Value::cons(1, 2)),
+            ("cell", Value::from(Cell::new(Value::from(1)))),
+            ("procedure", eval(&env, "(lambda (x) x)")),
+            (
+                "record",
+                eval(&env, "(define-record-type point (fields x)) (make-point 1)"),
+            ),
+            // not on the GC heap
+            ("null", Value::null()),
+            ("undefined", Value::undefined()),
+            ("fixnum", Value::from(42)),
+            ("big number", eval(&env, "(expt 2 100)")),
+            ("flonum", eval(&env, "2.5")),
+            ("character", eval(&env, "#\\a")),
+            ("symbol", eval(&env, "'sym")),
+            ("boolean", Value::from(true)),
+            ("rtd", eval(&env, "(record-type-descriptor point)")),
+        ];
+        for (name, v) in &values {
+            assert_eq!(v.object(), traced(v), "{name}");
+        }
+    }
 }

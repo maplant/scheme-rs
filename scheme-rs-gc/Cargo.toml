@@ -39,5 +39,6 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
 
 [features]
 lxr = []
+barrier_count = []
 async = ["dep:futures", "dep:async-lock"]
 tokio = ["dep:tokio"]

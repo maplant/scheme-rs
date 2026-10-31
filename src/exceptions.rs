@@ -535,7 +535,7 @@ define_condition_type!(
         })
     },
     debug: |this, f| {
-        for trace in &*this.trace.0.vec.read() {
+        for trace in this.trace.0.vec.iter() {
             write!(f, " {trace}")?;
         }
         Ok(())

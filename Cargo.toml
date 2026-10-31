@@ -56,6 +56,7 @@ default = ["load-libraries-from-fs"]
 async = ["dep:futures", "dep:async-stream", "dep:async-lock", "scheme-rs-gc/async"]
 tokio = ["dep:tokio", "scheme-rs-gc/tokio"]
 lsp = ["dep:lsp-server", "dep:lsp-types", "dep:serde", "dep:serde_json"]
+barrier_count = ["scheme-rs-gc/barrier_count"]
 load-libraries-from-fs = []
 continuation-marks = []
 
