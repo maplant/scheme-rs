@@ -36,6 +36,24 @@ use tokio::task::spawn_blocking;
 
 use crate::{Either, registry::bridge, value::Value};
 
+/// A [`Value`] stored inside a heap object.
+///
+/// Every `Value` kept by a heap object, including any
+/// [`Embeddable`](crate::records::Embeddable), must be a `HeapValue`. The
+/// collector will soon use deferred reference counting, which counts only
+/// heap edges written through the barrier; a bare `Value` in a heap object
+/// is not counted and can be freed while still referenced.
+///
+/// Write with [`set`](HeapSlot::set) or [`replace`](HeapSlot::replace).
+/// Create with [`new`](HeapSlot::new) only for an object that is not yet
+/// published; use [`new_published`](HeapSlot::new_published) and
+/// [`retire`](HeapSlot::retire) to add or remove a slot of a published
+/// object. Read with [`get`](HeapSlot::get), or [`read`](HeapSlot::read)
+/// when the guard is not held across a Scheme call or a write to the same
+/// slot.
+///
+/// An opt-in escape, `#[trace(unbarriered)]`, is planned for types that
+/// cannot comply.
 pub type HeapValue = HeapSlot<Value>;
 
 /// A heap allocated garbage collected smart pointer. Gc requires that `T`
