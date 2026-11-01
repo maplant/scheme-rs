@@ -8,7 +8,7 @@
 
 use memchr::{memchr, memmem};
 use rustyline::Editor;
-use scheme_rs_macros::{bridge, define_condition_type, maybe_async, maybe_await, rtd};
+use scheme_rs_macros::{bridge, define_condition_type, maybe_async, maybe_await};
 use std::{
     any::Any,
     borrow::Cow,
@@ -16,16 +16,17 @@ use std::{
     io::{Cursor, ErrorKind},
     path::Path,
     pin::Pin,
-    sync::{Arc, LazyLock},
+    sync::LazyLock,
 };
 
 use crate::{
     Either,
     enumerations::{EnumerationSet, EnumerationType},
     exceptions::{Assertion, Error, Exception},
+    fmt::Formatter,
     gc::Trace,
     proc::{Application, Args, ContBarrier, DynStackElem, FuncPtr, Procedure, Rest, pop_dyn_stack},
-    records::{Embeddable, Embedded, RecordTypeDescriptor},
+    records::{Embeddable, Embedded, Record},
     strings::WideString,
     symbols::Symbol,
     syntax::{
@@ -264,21 +265,12 @@ impl BufferMode {
     }
 }
 
-#[derive(Copy, Clone, Trace)]
+#[derive(Copy, Clone, Trace, Embeddable)]
+#[scheme(opaque = true, sealed = true, fmt = Self::fmt)]
 pub struct Transcoder {
     codec: Codec,
     eol_type: EolStyle,
     error_handling_mode: ErrorHandlingMode,
-}
-
-impl fmt::Debug for Transcoder {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{:?} {:?} {:?}",
-            self.codec, self.eol_type, self.error_handling_mode
-        )
-    }
 }
 
 impl Transcoder {
@@ -289,11 +281,13 @@ impl Transcoder {
             error_handling_mode: ErrorHandlingMode::Replace,
         }
     }
-}
 
-unsafe impl Embeddable for Transcoder {
-    fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(ty: Transcoder, name: "transcoder", opaque: true, sealed: true)
+    fn fmt(transcoder: &Transcoder, _: &Record, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "#<transcoder {:?} {:?} {:?}>",
+            transcoder.codec, transcoder.eol_type, transcoder.error_handling_mode
+        )
     }
 }
 
@@ -341,17 +335,12 @@ pub fn transcoder_error_handling_mode(transcoder: Embedded<Transcoder>) -> Symbo
     transcoder.error_handling_mode.to_sym()
 }
 
-#[derive(Copy, Clone, Trace)]
+#[derive(Copy, Clone, Trace, Embeddable)]
+#[scheme(name = "codec", opaque = true, sealed = true)]
 pub enum Codec {
     Latin1,
     Utf8,
     Utf16,
-}
-
-unsafe impl Embeddable for Codec {
-    fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(ty: Codec, name: "codec", opaque: true, sealed: true)
-    }
 }
 
 static LATIN_1_CODEC: LazyLock<Embedded<Codec>> = LazyLock::new(|| Embedded::new(Codec::Latin1));
@@ -1174,7 +1163,8 @@ where
 
 pub type PollReadyFn = Box<dyn Fn(&dyn Any) -> bool + Send + Sync>;
 
-#[derive(Trace)]
+#[derive(Trace, Embeddable)]
+#[scheme(name = "port", sealed = true, opaque = true)]
 pub(crate) struct PortInner {
     #[trace(skip)]
     pub(crate) info: PortInfo,
@@ -1317,21 +1307,6 @@ impl PortInner {
                 output_buffer: buffer_mode.new_output_char_buffer(is_write),
             })),
         }
-    }
-}
-
-unsafe impl Embeddable for PortInner {
-    fn rtd() -> Arc<RecordTypeDescriptor>
-    where
-        Self: Sized,
-    {
-        rtd!(ty: PortInner, name: "port", sealed: true, opaque: true)
-    }
-}
-
-impl fmt::Debug for PortInner {
-    fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        Ok(())
     }
 }
 
@@ -2984,6 +2959,7 @@ mod prompt {
 #[cfg(feature = "tokio")]
 mod prompt {
     use super::*;
+    use std::sync::Arc;
     use tokio::{
         sync::mpsc::{Receiver, Sender},
         task::JoinHandle,
@@ -3189,9 +3165,6 @@ define_condition_type!(
             position: position.try_into()?,
         })
     },
-    debug: |this, f| {
-        write!(f, " position: {}", this.position)
-    }
 );
 
 define_condition_type!(
@@ -3208,9 +3181,6 @@ define_condition_type!(
             filename: filename.to_string(),
         })
     },
-    debug: |this, f| {
-        write!(f, " filename: {}", this.filename)
-    }
 );
 
 impl IoFilenameError {
@@ -3232,9 +3202,6 @@ define_condition_type!(
             parent: IoFilenameError::new(filename.to_string())
         })
     },
-    debug: |this, f| {
-        this.parent.fmt(f)
-    }
 );
 
 impl IoFileProtectionError {
@@ -3255,9 +3222,6 @@ define_condition_type!(
             parent: IoFileProtectionError::new(filename.to_string())
         })
     },
-    debug: |this, f| {
-        this.parent.fmt(f)
-    }
 );
 
 define_condition_type!(
@@ -3270,9 +3234,6 @@ define_condition_type!(
             parent: IoFilenameError::new(filename.to_string())
         })
     },
-    debug: |this, f| {
-        this.parent.fmt(f)
-    }
 );
 
 impl IoFileAlreadyExistsError {
@@ -3293,9 +3254,6 @@ define_condition_type!(
             parent: IoFilenameError::new(filename.to_string())
         })
     },
-    debug: |this, f| {
-        this.parent.fmt(f)
-    }
 );
 
 impl IoFileDoesNotExistError {
@@ -3376,20 +3334,9 @@ impl IoEncodingError {
     }
 }
 
-#[derive(Copy, Clone, Trace)]
+#[derive(Copy, Clone, Trace, Embeddable)]
+#[scheme(name = "!eof", sealed = true, opaque = true)]
 pub struct EofObject;
-
-unsafe impl Embeddable for EofObject {
-    fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(ty: EofObject, name: "!eof", opaque: true, sealed: true)
-    }
-}
-
-impl fmt::Debug for EofObject {
-    fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        Ok(())
-    }
-}
 
 static EOF_OBJECT: LazyLock<Value> = LazyLock::new(|| Value::from(EofObject));
 

@@ -11,6 +11,7 @@ pub mod env;
 pub mod eval;
 pub mod exceptions;
 pub(crate) mod expand;
+pub mod fmt;
 pub mod gc;
 pub mod hashtables;
 pub mod keywords;
@@ -35,6 +36,8 @@ pub mod vectors;
 use std::hash::Hasher;
 
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+
+pub type Result<T> = std::result::Result<T, exceptions::Exception>;
 
 /// Internal `Either` type
 #[derive(Debug, Clone)]
@@ -70,3 +73,7 @@ compile_error!("async features requires the tokio feature to be enabled");
 
 #[cfg(target_pointer_width = "32")]
 compile_error!("32 bit architectures are currently not supported");
+
+// Re-exports for macros:
+pub use by_address;
+pub use indexmap;

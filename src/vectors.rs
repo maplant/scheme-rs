@@ -5,13 +5,14 @@ use crate::symbols::Symbol;
 use crate::{
     DynHasher,
     exceptions::Exception,
+    fmt::Formatter,
     gc::Trace,
     lists::{List, iter_list, slice_to_list},
     records::{Embeddable, Embedded, Record},
     registry::bridge,
-    value::{Value, write_value},
+    value::Value,
 };
-use indexmap::{IndexMap, IndexSet};
+use indexmap::IndexSet;
 use parking_lot::{
     MappedRwLockReadGuard, MappedRwLockWriteGuard, RwLock, RwLockReadGuard, RwLockWriteGuard,
 };
@@ -35,20 +36,8 @@ unsafe impl Embeddable for VectorInner<Value> {
         rtd!(ty: VectorInner<Value>, name: "vector", sealed: true, opaque: true)
     }
 
-    fn display_fmt(
-        &self,
-        circular_values: &mut IndexMap<Value, bool>,
-        fmt: &mut fmt::Formatter<'_>,
-    ) -> fmt::Result {
-        write_vec(self, Value::display_fmt, circular_values, fmt)
-    }
-
-    fn debug_fmt(
-        &self,
-        circular_values: &mut IndexMap<Value, bool>,
-        fmt: &mut fmt::Formatter<'_>,
-    ) -> fmt::Result {
-        write_vec(self, Value::debug_fmt, circular_values, fmt)
+    fn fmt(&self, _record: &Record, fmt: &mut crate::fmt::Formatter<'_>) -> fmt::Result {
+        write_vec(self, fmt)
     }
 
     fn equal(&self, rhs: &Record) -> bool
@@ -177,11 +166,7 @@ unsafe impl Embeddable for VectorInner<u8> {
         rtd!(ty: VectorInner<u8>, name: "bytevector", sealed: true, opaque: true)
     }
 
-    fn debug_fmt(
-        &self,
-        _circular_values: &mut IndexMap<Value, bool>,
-        fmt: &mut fmt::Formatter<'_>,
-    ) -> fmt::Result {
+    fn fmt(&self, _record: &Record, fmt: &mut crate::fmt::Formatter<'_>) -> fmt::Result {
         write_bytevec(self, fmt)
     }
 
@@ -324,12 +309,7 @@ impl From<ByteVector> for Value {
     }
 }
 
-pub(crate) fn write_vec(
-    v: &VectorInner<Value>,
-    fmt: fn(&Value, &mut IndexMap<Value, bool>, &mut fmt::Formatter<'_>) -> fmt::Result,
-    circular_values: &mut IndexMap<Value, bool>,
-    f: &mut fmt::Formatter<'_>,
-) -> Result<(), fmt::Error> {
+pub(crate) fn write_vec(v: &VectorInner<Value>, f: &mut Formatter<'_>) -> Result<(), fmt::Error> {
     write!(f, "#(")?;
 
     let values = v.vec.read();
@@ -337,16 +317,13 @@ pub(crate) fn write_vec(
         if i > 0 {
             write!(f, " ")?;
         }
-        write_value(value, fmt, circular_values, f)?;
+        f.fmt_value(value)?;
     }
 
     write!(f, ")")
 }
 
-pub(crate) fn write_bytevec(
-    v: &VectorInner<u8>,
-    f: &mut fmt::Formatter<'_>,
-) -> Result<(), fmt::Error> {
+pub(crate) fn write_bytevec(v: &VectorInner<u8>, f: &mut Formatter<'_>) -> Result<(), fmt::Error> {
     write!(f, "#vu8(")?;
 
     let bytes = v.vec.read();

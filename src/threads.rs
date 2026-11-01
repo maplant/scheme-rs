@@ -1,8 +1,6 @@
 //! Threading primitives
 
 use std::{
-    fmt,
-    sync::Arc,
     thread::{self, ThreadId},
     time::Duration,
 };
@@ -14,27 +12,16 @@ use crate::{
     exceptions::Exception,
     gc::{Gc, Trace},
     proc::{Application, Args, ContBarrier, Procedure},
-    records::{Embeddable, Embedded, RecordTypeDescriptor, rtd},
+    records::{Embeddable, Embedded},
     value::Value,
 };
 
-#[derive(Trace)]
+#[derive(Trace, Embeddable)]
+#[scheme(name = "%join-handle", sealed = true, opaque = true)]
 pub struct JoinHandle {
     #[trace(skip)]
     id: ThreadId,
     result: Gc<Mutex<Result<Vec<Value>, Exception>>>,
-}
-
-impl fmt::Debug for JoinHandle {
-    fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        Ok(())
-    }
-}
-
-unsafe impl Embeddable for JoinHandle {
-    fn rtd() -> Arc<RecordTypeDescriptor> {
-        rtd!(ty: JoinHandle, name: "join-handle", sealed: true, opaque: true)
-    }
 }
 
 #[bridge(name = "spawn", lib = "(threads (1))")]
