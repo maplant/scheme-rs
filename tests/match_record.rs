@@ -1,6 +1,6 @@
 mod common;
 
-use scheme_rs::{gc::Trace, records::Embeddable, Result, value::Value};
+use scheme_rs::{Result, gc::Trace, records::Embeddable, value::Value};
 
 #[derive(Embeddable, Trace)]
 #[scheme(lib = "(test)", constructor = |x, y| Vec2::new(x, y))]
@@ -8,7 +8,7 @@ pub struct Vec2 {
     #[immutable]
     x: f64,
     #[immutable]
-    y: f64
+    y: f64,
 }
 
 impl Vec2 {
@@ -26,7 +26,7 @@ pub struct Vec3 {
     #[parent]
     xy: Vec2,
     #[immutable]
-    z: f64
+    z: f64,
 }
 
 impl Vec3 {
