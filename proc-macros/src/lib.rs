@@ -934,14 +934,14 @@ fn derive_embeddable_inner(input: DeriveInput) -> Result<proc_macro2::TokenStrea
                     this_rtd()
                 }
 
-                fn get_field(&self, k: usize) -> Result<::scheme_rs::value::Value, ::scheme_rs::exceptions::Exception> {
+                fn get_field(&self, k: usize) -> ::scheme_rs::Result<::scheme_rs::value::Value> {
                     match k {
                         #( #field_getters, )*
                         _ => Err(::scheme_rs::exceptions::Exception::error(format!("invalid record field: {k}")))
                     }
                 }
 
-                fn set_field(&self, k: usize, new_value: ::scheme_rs::value::Value) -> Result<(), ::scheme_rs::exceptions::Exception> {
+                fn set_field(&self, k: usize, new_value: ::scheme_rs::value::Value) -> ::scheme_rs::Result<()> {
                     match k {
                         #( #field_setters, )*
                         _ => return Err(::scheme_rs::exceptions::Exception::error(format!("invalid record field: {k}")))
@@ -1756,7 +1756,7 @@ pub fn rtd(tokens: TokenStream) -> TokenStream {
                     if vals.len() != #num_inputs {
                         return Err(::scheme_rs::exceptions::Exception::wrong_num_of_args(#num_inputs, vals.len()));
                     }
-                    let constructor: fn(#(#types,)*) -> Result<_, ::scheme_rs::exceptions::Exception> = #constructor;
+                    let constructor: fn(#(#types,)*) -> ::scheme_rs::Result<_> = #constructor;
                     let value = (constructor)(#(vals[#inputs].clone(),)*)?;
                     Ok(Box::new(move |dst: *mut ()| {
                         unsafe {

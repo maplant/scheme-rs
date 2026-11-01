@@ -805,7 +805,7 @@ impl EmbeddableVTable {
         rtd: &Arc<RecordTypeDescriptor>,
     ) -> Option<&dyn Embeddable> {
         let embedded_rtd = (self.rtd)();
-        if !embedded_rtd.is_subtype_of(&rtd) {
+        if !embedded_rtd.is_subtype_of(rtd) {
             return None;
         }
         let mut embedded = self.ptr_to_parent(embedded_ptr)?;
