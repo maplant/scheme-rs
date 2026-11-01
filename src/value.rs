@@ -82,7 +82,7 @@
 //! Any type that is not one of these can be stored in a Value, but they are
 //! considered to be [`Records`](records::Record).
 
-use indexmap::{IndexMap, IndexSet};
+use indexmap::IndexSet;
 use malachite::Integer;
 use parking_lot::RwLock;
 
@@ -102,7 +102,6 @@ use crate::{
 use std::{
     collections::HashMap,
     convert::Infallible,
-    fmt,
     hash::{Hash, Hasher},
     marker::PhantomData,
     mem::ManuallyDrop,
@@ -386,7 +385,6 @@ impl Value {
         }
     }
 
-
     /// The eq? predicate as defined by the R6RS specification.
     #[allow(clippy::should_implement_trait)]
     pub fn eq(&self, rhs: &Self) -> bool {
@@ -482,6 +480,11 @@ impl Value {
             UnpackedValue::Cell(c) => c.0.read().eqv_hash(state),
         }
     }
+
+    pub fn read(&self) -> Self {
+        self.cast::<Cell>()
+            .map_or_else(|| self.clone(), |cell| cell.get())
+    }
 }
 
 impl Clone for Value {
@@ -549,7 +552,6 @@ impl Eq for Value {}
 
 unsafe impl Send for Value {}
 unsafe impl Sync for Value {}
-
 
 unsafe impl Trace for Value {
     unsafe fn visit_children(&self, visitor: &mut dyn FnMut(HeapObject)) {
@@ -1309,7 +1311,6 @@ where
         val.try_into().map_err(Exception::from)
     }
 }
-
 
 #[bridge(name = "not", lib = "(rnrs base builtins (6))")]
 pub fn not(a: Value, _: &mut ContBarrier) -> bool {

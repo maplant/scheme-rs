@@ -823,70 +823,43 @@ fn derive_embeddable_inner(input: DeriveInput) -> Result<proc_macro2::TokenStrea
         let ty = &parent.ty;
         quote!(parent: #ty,)
     });
-    let parent_record = parent.as_ref().map(|parent| {
-        let ty = &parent.ty;
+    let parent = parent.as_ref().map(|parent| {
         let field = &parent.ident;
         quote! {
-            fn parent_record(
+            fn parent(
                 &self,
-                rtd: &::std::sync::Arc<::scheme_rs::records::RecordTypeDescriptor>
             ) -> Option<&dyn ::scheme_rs::records::Embeddable> {
-                <#ty as ::scheme_rs::records::Embeddable>::rtd().is_subtype_of(rtd).then(|| &self.#field as &dyn ::scheme_rs::records::Embeddable)
+                Some(&self.#field as &dyn ::scheme_rs::records::Embeddable)
             }
         }
     });
 
-    let debug = match options.debug {
-        Some(debug) => quote! {
-            fn debug_fmt(
+    let fmt = match options.fmt {
+        Some(fmt) => quote! {
+            fn fmt(
                 &self,
-                circular_values: &mut ::scheme_rs::indexmap::IndexMap<::scheme_rs::value::Value, bool>,
-                f: &mut ::std::fmt::Formatter<'_>
+                record: &::scheme_rs::records::Record,
+                f: &mut ::scheme_rs::fmt::Formatter<'_>
             ) -> ::std::fmt::Result {
-                (#debug)(self, circular_values, f)
+                (#fmt)(self, record, f)
             }
         },
         None => quote! {
-            fn debug_fmt(
+            fn fmt(
                 &self,
-                circular_values: &mut ::scheme_rs::indexmap::IndexMap<::scheme_rs::value::Value, bool>,
-                fmt: &mut ::std::fmt::Formatter<'_>
+                record: &::scheme_rs::records::Record,
+                f: &mut ::scheme_rs::fmt::Formatter<'_>
             ) -> ::std::fmt::Result {
-                let rtd = this_rtd();
+                let mut fmt_record = f.fmt_record(record.rtd().name);
 
-                // Inherited fields:
-                for parent_rtd in &rtd.inherits {
-                    let parent_record = self.parent_record(&parent_rtd.0).unwrap();
-                    for (i, name) in parent_rtd.fields.keys().enumerate() {
-                        write!(fmt, " {name}: ")?;
-                        parent_record
-                            .get_field(i)
-                            .unwrap()
-                            .debug_fmt(circular_values, fmt)?;
-                    }
+                for (name, field) in record.iter_all_fields() {
+                    fmt_record.entry(name, &field)?;
                 }
 
-                for (i, name) in rtd.fields.keys().enumerate() {
-                    write!(fmt, " {name}: ")?;
-                    self.get_field(i).unwrap().debug_fmt(circular_values, fmt)?;
-                }
-
-                Ok(())
+                fmt_record.finish()
             }
         },
     };
-
-    let display = options.display.map(|display| {
-        quote! {
-            fn display_fmt(
-                &self,
-                circular_values: &mut ::scheme_rs::indexmap::IndexMap<::scheme_rs::value::Value, bool>,
-                f: &mut ::std::fmt::Formatter<'_>
-            ) -> ::std::fmt::Result {
-                (#display)(self, circular_values, f)
-            }
-        }
-    });
 
     let eq = options.eq.map(|eq| {
         quote! {
@@ -938,6 +911,7 @@ fn derive_embeddable_inner(input: DeriveInput) -> Result<proc_macro2::TokenStrea
 
     Ok(quote! {
         const _: () = {
+            #[inline(always)]
             fn this_rtd() -> ::std::sync::Arc<::scheme_rs::records::RecordTypeDescriptor> {
                 ::scheme_rs::records::rtd!(
                     ty: #ty,
@@ -976,10 +950,9 @@ fn derive_embeddable_inner(input: DeriveInput) -> Result<proc_macro2::TokenStrea
                 }
 
 
-                #parent_record
+                #parent
 
-                #debug
-                #display
+                #fmt
 
                 #eq
                 #eqv
@@ -1001,8 +974,8 @@ struct EmbeddableOptions {
     uid: Option<LitStr>,
     constructor: Option<Expr>,
     lib: Option<LitStr>,
-    debug: Option<Expr>,
-    display: Option<Expr>,
+    fmt: Option<Expr>,
+    fmt_fields: Option<Expr>,
     eq: Option<Expr>,
     eqv: Option<Expr>,
     equal: Option<Expr>,
@@ -1039,8 +1012,8 @@ impl EmbeddableOptions {
                     attribute!(uid);
                     attribute!(constructor);
                     attribute!(lib);
-                    attribute!(debug);
-                    attribute!(display);
+                    attribute!(fmt);
+                    attribute!(fmt_fields);
                     attribute!(eq);
                     attribute!(eqv);
                     attribute!(equal);
@@ -1612,10 +1585,10 @@ impl RtdField {
     fn into_token_stream(self) -> proc_macro2::TokenStream {
         match self {
             Self::Immutable(name) => quote! {
-                (::scheme_rs::symbols::Symbol::intern(#name), ::scheme_rs::records::Mutability::Immutable)
+                ::scheme_rs::records::Field::Immutable(::scheme_rs::symbols::Symbol::intern(#name))
             },
             Self::Mutable(name) => quote! {
-                (::scheme_rs::symbols::Symbol::intern(#name), ::scheme_rs::records::Mutability::Mutable)
+                ::scheme_rs::records::Field::Mutable(::scheme_rs::symbols::Symbol::intern(#name))
             },
         }
     }
@@ -1855,7 +1828,7 @@ struct DefineConditionType {
     parent: Type,
     constructor: Option<ExprClosure>,
     fields: Option<Vec<DctField>>,
-    dbg: Option<ExprClosure>,
+    // dbg: Option<ExprClosure>,
 }
 
 impl Parse for DefineConditionType {
@@ -1865,7 +1838,7 @@ impl Parse for DefineConditionType {
         let mut parent = None;
         let mut constructor = None;
         let mut fields = None;
-        let mut dbg = None;
+        // let mut dbg = None;
         let mut lib = None;
 
         while !input.is_empty() {
@@ -1909,12 +1882,12 @@ impl Parse for DefineConditionType {
                 }
                 let _: Token![:] = input.parse()?;
                 constructor = Some(input.parse()?);
-            } else if keyword == "debug" {
-                if dbg.is_some() {
-                    return Err(Error::new(keyword.span(), "duplicate definition of debug"));
-                }
-                let _: Token![:] = input.parse()?;
-                dbg = Some(input.parse()?);
+            // } else if keyword == "debug" {
+            //     if dbg.is_some() {
+            //         return Err(Error::new(keyword.span(), "duplicate definition of debug"));
+            //     }
+            //     let _: Token![:] = input.parse()?;
+            //     dbg = Some(input.parse()?);
             } else if keyword == "fields" {
                 if fields.is_some() {
                     return Err(Error::new(keyword.span(), "duplicate definition of fields"));
@@ -1951,7 +1924,6 @@ impl Parse for DefineConditionType {
             parent,
             constructor,
             fields,
-            dbg,
             lib,
         })
     }
@@ -1965,7 +1937,6 @@ pub fn define_condition_type(tokens: TokenStream) -> TokenStream {
         parent,
         constructor,
         fields,
-        dbg,
         lib,
     } = parse_macro_input!(tokens as DefineConditionType);
 
@@ -1975,91 +1946,32 @@ pub fn define_condition_type(tokens: TokenStream) -> TokenStream {
         .map(|field| (field.name, field.ty))
         .unzip();
 
-    let field_name_strs = field_names
-        .clone()
-        .into_iter()
-        .map(|field_name| LitStr::new(&field_name.to_string(), field_name.span()));
-
-    let field_idxs = 0..field_names.len();
-
-    let lib = lib.map(|lib| quote!(lib: #lib,));
+    let lib = lib.map(|lib| quote!(lib = #lib,));
 
     let constructor = constructor.map_or_else(
         || {
             quote! {
-                constructor: || Ok(#rust_name::default()),
+                constructor = || Ok(#rust_name::default()),
             }
         },
         |constructor| {
             quote!(
-                constructor: #constructor,
+                constructor = #constructor,
             )
         },
     );
 
-    let dbg = dbg.map(|dbg| {
-        quote!(
-            let dbg: fn(&Self, &mut std::fmt::Formatter<'_>) -> std::fmt::Result = #dbg;
-            (dbg)(self, f)?;
-        )
-    });
-
     quote! {
-        #[derive(Clone, ::scheme_rs::gc::Trace)]
+        #[derive(Clone, ::scheme_rs::gc::Trace, ::scheme_rs::records::Embeddable)]
+        #[scheme(#lib #constructor name = #scheme_name)]
         pub struct #rust_name {
+            #[parent]
             pub parent: #parent,
-            #( pub #field_names: #field_tys, )*
-
+            #(
+                #[immutable]
+                pub #field_names: #field_tys,
+            )*
         }
-
-        #[automatically_derived]
-        unsafe impl ::scheme_rs::records::Embeddable for #rust_name {
-            fn rtd() -> ::std::sync::Arc<::scheme_rs::records::RecordTypeDescriptor> {
-                ::scheme_rs::records::rtd!(
-                    ty: #rust_name,
-                    name: #scheme_name,
-                    parent: #parent,
-                    #lib
-                    fields: [#(#field_name_strs,)*],
-                    #constructor
-                )
-            }
-
-            fn parent_record(
-                &self,
-                rtd: &::std::sync::Arc<::scheme_rs::records::RecordTypeDescriptor>
-            ) -> Option<&dyn ::scheme_rs::records::Embeddable> {
-                #parent::rtd()
-                    .is_subtype_of(rtd)
-                    .then(|| &self.parent as &dyn ::scheme_rs::records::Embeddable)
-            }
-
-            fn get_field(&self, k: usize) -> Result<::scheme_rs::value::Value, ::scheme_rs::exceptions::Exception> {
-                match k {
-                    #(#field_idxs => Ok(::scheme_rs::value::Value::from(self.#field_names.clone())),)*
-                    _ => Err(Exception::error(format!("invalid record field: {k}"))),
-                }
-            }
-
-            fn debug_fmt(
-                &self,
-                _circular_values: &mut ::scheme_rs::indexmap::IndexMap<::scheme_rs::value::Value, bool>,
-                f: &mut ::std::fmt::Formatter<'_>
-            ) -> ::std::fmt::Result {
-                use std::fmt::Debug;
-                write!(f, "#<{}", #scheme_name)?;
-                #dbg
-                write!(f, ">")?;
-                Ok(())
-            }
-        }
-
-        impl std::fmt::Debug for #rust_name {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                self.debug_fmt(&mut indexmap::IndexMap::default(), f)
-            }
-        }
-
     }
     .into()
 }

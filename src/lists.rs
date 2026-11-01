@@ -1,7 +1,6 @@
 //! Scheme pairs and lists.
 
 use hashbrown::HashSet;
-use indexmap::IndexMap;
 use parking_lot::RwLock;
 
 use crate::{
@@ -10,9 +9,8 @@ use crate::{
     proc::{Application, Args, ContBarrier, Procedure},
     registry::bridge,
     strings::WideString,
-    value::{UnpackedValue, Value, ValueType, write_value},
+    value::{UnpackedValue, Value, ValueType},
 };
-use std::fmt;
 
 #[derive(Trace)]
 #[repr(align(16))]
@@ -94,66 +92,6 @@ impl From<Pair> for (Value, Value) {
     fn from(value: Pair) -> Self {
         (value.car(), value.cdr())
     }
-}
-
-pub(crate) fn write_list(
-    car: &Value,
-    cdr: &Value,
-    fmt: fn(&Value, &mut IndexMap<Value, bool>, &mut fmt::Formatter<'_>) -> fmt::Result,
-    circular_values: &mut IndexMap<Value, bool>,
-    f: &mut fmt::Formatter<'_>,
-) -> fmt::Result {
-    match cdr.type_of() {
-        ValueType::Pair | ValueType::Null => (),
-        _ => {
-            // This is not a proper list
-            write!(f, "(")?;
-            write_value(car, fmt, circular_values, f)?;
-            write!(f, " . ")?;
-            write_value(cdr, fmt, circular_values, f)?;
-            write!(f, ")")?;
-            return Ok(());
-        }
-    }
-
-    write!(f, "(")?;
-    write_value(car, fmt, circular_values, f)?;
-    let mut stack = vec![cdr.clone()];
-
-    while let Some(head) = stack.pop() {
-        if let Some((idx, _, seen)) = circular_values.get_full_mut(&head) {
-            if *seen {
-                write!(f, " . #{idx}#")?;
-                continue;
-            } else {
-                write!(f, " #{idx}=")?;
-                *seen = true;
-            }
-        }
-        match &*head.unpacked_ref() {
-            UnpackedValue::Null => {
-                if !stack.is_empty() {
-                    write!(f, " ()")?;
-                }
-            }
-            UnpackedValue::Pair(pair) => {
-                let (car, cdr) = pair.clone().into();
-                write!(f, " ")?;
-                write_value(&car, fmt, circular_values, f)?;
-                stack.push(cdr);
-            }
-            x => {
-                let val = x.clone().into_value();
-                write!(f, " ")?;
-                if stack.is_empty() {
-                    write!(f, ". ")?;
-                }
-                write_value(&val, fmt, circular_values, f)?;
-            }
-        }
-    }
-
-    write!(f, ")")
 }
 
 /// A proper list.

@@ -658,7 +658,7 @@ impl LexicalContour {
 
 /// A lexical contour
 #[derive(Clone, Trace, Debug, Embeddable)]
-#[scheme(name = "%embeddable", sealed = true, opaque = true)]
+#[scheme(sealed = true, opaque = true)]
 pub(crate) enum Environment {
     Top(TopLevelEnvironment),
     LexicalContour(Gc<LexicalContour>),

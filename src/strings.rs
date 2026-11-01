@@ -14,6 +14,7 @@ use crate::{
     Either,
     character::{char_switch_case, to_foldcase},
     exceptions::Exception,
+    fmt::{Formatter, Mode},
     gc::Trace,
     lists::iter_list,
     records::{Embeddable, Embedded, Record},
@@ -27,14 +28,22 @@ use crate::{
     name = "string",
     sealed = true,
     opaque = true,
-    display = |this, _, fmt: &mut fmt::Formatter<'_>| write!(fmt, "{this}"),
-    debug = |this, _, fmt: &mut fmt::Formatter<'_>| write!(fmt, "{this:?}"),
+    fmt = Self::fmt,
     equal = str_equal,
     equal_hash = str_equal_hash
 )]
 pub(crate) struct WideStringInner {
     pub(crate) chars: RwLock<Vec<char>>,
     mutable: bool,
+}
+
+impl WideStringInner {
+    fn fmt(&self, _: &Record, fmt: &mut Formatter<'_>) -> fmt::Result {
+        match fmt.mode() {
+            Mode::Display => write!(fmt, "{self}"),
+            Mode::Write => write!(fmt, "{self:?}"),
+        }
+    }
 }
 
 impl fmt::Display for WideStringInner {
@@ -170,16 +179,13 @@ impl PartialEq<str> for WideString {
 
 impl fmt::Display for WideString {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for char in &*self.0.chars.read() {
-            write!(f, "{char}")?;
-        }
-        Ok(())
+        <WideStringInner as fmt::Display>::fmt(&self.0, f)
     }
 }
 
 impl fmt::Debug for WideString {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
+        <WideStringInner as fmt::Debug>::fmt(&self.0, f)
     }
 }
 

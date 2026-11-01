@@ -7,10 +7,11 @@ use scheme_rs_macros::bridge;
 
 use crate::{
     exceptions::Exception,
+    fmt::Formatter,
     gc::Trace,
     lists::List,
     proc::{Application, Args, ContBarrier, FuncPtr, Procedure},
-    records::{Embeddable, Embedded},
+    records::{Embeddable, Embedded, Record},
     symbols::Symbol,
     value::Value,
 };
@@ -30,18 +31,19 @@ impl EnumerationType {
 }
 
 #[derive(Trace, Embeddable)]
-#[scheme(name = "enum-set", sealed = true, opaque = true, debug = Self::debug_fmt)]
+#[scheme(name = "enum-set", sealed = true, opaque = true, fmt = Self::fmt)]
 pub struct EnumerationSet {
     enum_type: Embedded<EnumerationType>,
     set: IndexSet<Symbol>,
 }
 
 impl EnumerationSet {
-    fn debug_fmt<T>(&self, _: &mut T, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, _record: &Record, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "#<enum-set")?;
         for sym in &self.set {
             write!(f, " {sym}")?;
         }
-        Ok(())
+        write!(f, ">")
     }
 }
 

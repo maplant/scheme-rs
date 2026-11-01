@@ -112,7 +112,7 @@
 //!
 //! It is possible to express the classic child/parent relationship in structs
 //! by embedding the parent in the child by value and implementing the
-//! [`parent_record`](Embeddable::parent_record) function:
+//! [`parent`](Embeddable::parent) function:
 //!
 //! ```rust
 //! # use std::sync::Arc;
@@ -160,13 +160,8 @@
 //!         Ok(Value::from(self.special))
 //!     }
 //!
-//!     fn parent_record(
-//!         &self,
-//!         rtd: &Arc<RecordTypeDescriptor>
-//!     ) -> Option<&dyn Embeddable> {
-//!         Enemy::rtd()
-//!             .is_subtype_of(rtd)
-//!             .then(|| &self.parent as &dyn Embeddable)
+//!     fn parent(&self) -> Option<&dyn Embeddable> {
+//!         Some(&self.parent as &dyn Embeddable)
 //!     }
 //! }
 //! ```
@@ -224,10 +219,11 @@ use std::{
 };
 
 use by_address::ByAddress;
-use indexmap::{IndexMap, IndexSet};
+use indexmap::IndexSet;
 
 use crate::{
     exceptions::Exception,
+    fmt::{Formatter, Mode},
     gc::{Gc, HeapObject, Trace, unroot},
     lists::{append_list, iter_list, split_list},
     proc::{Application, Args, ContBarrier, FuncPtr, Procedure},
@@ -313,7 +309,6 @@ impl fmt::Debug for RecordTypeDescriptor {
     }
 }
 
-
 /// Description of a Record field.
 #[derive(Trace, Clone)]
 pub enum Field {
@@ -341,13 +336,13 @@ impl Field {
         fields.0.vec.read().iter().map(Self::parse).collect()
     }
 
-    fn name(&self) -> Symbol {
+    pub fn name(&self) -> Symbol {
         match self {
             Self::Immutable(sym) | Self::Mutable(sym) => *sym,
         }
     }
 
-    fn is_mutable(&self) -> bool {
+    pub fn is_mutable(&self) -> bool {
         matches!(self, Self::Mutable(_))
     }
 }
@@ -360,7 +355,6 @@ impl fmt::Debug for Field {
         }
     }
 }
-
 
 /// A Scheme record type. Effectively a tuple of a fixed size array and some type
 /// information.
@@ -412,11 +406,7 @@ impl Record {
         }
 
         let rtd = E::rtd();
-        let mut embedded = embedded_vtable.ptr_to_parent(embedded_ptr, &rtd)?;
-        while let Some(parent) = embedded.parent_record(&rtd) {
-            embedded = parent;
-        }
-
+        let embedded = embedded_vtable.ancestor(embedded_ptr, &rtd)?;
         let downcast_embedded = (embedded as &dyn Any).downcast_ref::<E>()?;
 
         Some(Embedded {
@@ -425,103 +415,78 @@ impl Record {
         })
     }
 
-    pub fn iter_fields(&self) -> impl Iterator<Item = &Value> {
-        vec![ todo!() ].into_iter()
-    }
-
-    /*
-
-    /// Get the kth field of the Record
-    pub fn get_field(&self, k: usize) -> Result<Value, Exception> {
-        self.get_parent_field(&self.rtd(), k)
-    }
-
-    /// Get the kth field of a parent Record
-    pub fn get_parent_field(
-        &self,
-        rtd: &Arc<RecordTypeDescriptor>,
-        k: usize,
-    ) -> Result<Value, Exception> {
-        /*
-        if !self.0.rtd.is_subtype_of(rtd) {
-            Err(Exception::error(format!("not a subtype of {}", rtd.name)))
-        } else if let Some(mut t) = self.0.rust_parent.clone() {
-            while let Some(embedded) = { t.extract_embedded_record(rtd) } {
-                t = embedded;
-            }
-            t.get_field(rtd.field_index_offset + k)
-        } else {
-            Ok(self.0.fields[rtd.field_index_offset + k].read().clone())
-        }
-         */
-        todo!()
-    }
-
-    /// Set the kth field of the Record
-    pub fn set_field(&self, k: usize, new_value: Value) -> Result<(), Exception> {
-        self.set_parent_field(&self.rtd(), k, new_value)
-    }
-
-    /// Set the kth field of a parent Record
-    pub fn set_parent_field(
-        &self,
-        rtd: &Arc<RecordTypeDescriptor>,
-        k: usize,
-        new_value: Value,
-    ) -> Result<(), Exception> {
-        /*
-        if !self.0.rtd.is_subtype_of(rtd) {
-            Err(Exception::error(format!("not a subtype of {}", rtd.name)))
-        } else if let Some(mut t) = self.0.rust_parent.clone() {
-            while let Some(embedded) = { t.extract_embedded_record(rtd) } {
-                t = embedded;
-            }
-            t.set_field(rtd.field_index_offset + k, new_value)
-        } else {
-            *self.0.fields[rtd.field_index_offset + k].write() = new_value;
-            Ok(())
-        }
-         */
-        todo!()
-    }
-     */
-
-    pub fn display_fmt(
-        &self,
-        circular_values: &mut IndexMap<Value, bool>,
-        fmt: &mut fmt::Formatter<'_>,
-    ) -> fmt::Result {
-        if let Some(vtable) = self.0.rtd.embedded_vtable {
-            (vtable.display_fmt)(self.0.embedded_ptr().unwrap(), circular_values, fmt)
-        } else {
-            Ok(())
-        }
-    }
-
-    pub fn debug_fmt(
-        &self,
-        circular_values: &mut IndexMap<Value, bool>,
-        fmt: &mut fmt::Formatter<'_>,
-    ) -> fmt::Result {
-        write!(fmt, "#<{}", self.0.rtd.name)?;
-        if let Some(vtable) = self.0.rtd.embedded_vtable {
-            (vtable.debug_fmt)(self.0.embedded_ptr().unwrap(), circular_values, fmt)?;
-        }
-        for (Field::Mutable(name) | Field::Immutable(name), field) in self
-            .0
+    fn rtds(&self) -> impl DoubleEndedIterator<Item = &Arc<RecordTypeDescriptor>> {
+        self.0
             .rtd
             .inherits
             .iter()
-            .map(|parent| parent.as_ref())
-            .chain([self.0.rtd.as_ref()])
-            .flat_map(|rtd| rtd.fields.iter())
-            .zip(self.0.fields())
+            .map(|parent| &parent.0)
+            .chain([&self.0.rtd])
+    }
+
+    fn fields(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = (&Arc<RecordTypeDescriptor>, usize, &Field)> {
+        self.rtds().flat_map(|rtd| {
+            rtd.fields
+                .iter()
+                .enumerate()
+                .map(move |(local_idx, field)| (rtd, local_idx, field))
+        })
+    }
+
+    pub fn iter_all_fields(&self) -> impl Iterator<Item = (Symbol, Value)> {
+        let embedded = if let Some(vtable) = self.0.rtd.embedded_vtable.as_ref() {
+            let embedded_ptr = self.0.embedded_ptr().unwrap();
+            let first_rtd = (vtable.rtd)();
+            first_rtd
+                .fields
+                .iter()
+                .enumerate()
+                .rev()
+                .map(|(k, field)| (field.name(), (vtable.get_field)(embedded_ptr, k).unwrap()))
+                .chain(
+                    first_rtd
+                        .inherits
+                        .iter()
+                        .rev()
+                        .scan(
+                            vtable.ptr_to_parent(embedded_ptr),
+                            |parent: &mut Option<&'_ dyn Embeddable>, rtd| {
+                                let curr = (*parent)?;
+                                *parent = curr.parent();
+                                Some(rtd.fields.iter().enumerate().rev().map(move |(k, field)| {
+                                    (field.name(), curr.get_field(k).unwrap())
+                                }))
+                            },
+                        )
+                        .flatten(),
+                )
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+
+        embedded.into_iter().rev().chain(self.iter_scheme_fields())
+    }
+
+    pub fn iter_scheme_fields(&self) -> impl Iterator<Item = (Symbol, Value)> {
+        self.fields()
             .skip(self.0.num_embedded_fields())
-        {
-            write!(fmt, " {name}: ")?;
-            field.write(circular_values, fmt)?;
+            .map(|(_, _, field)| field.name())
+            .zip(self.0.fields().iter().map(Value::read))
+    }
+
+    pub fn fmt(&self, fmt: &mut Formatter<'_>) -> fmt::Result {
+        if let Some(vtable) = self.0.rtd.embedded_vtable {
+            (vtable.fmt)(self.0.embedded_ptr().unwrap(), self, fmt)
+        } else {
+            let mut record = fmt.fmt_record(self.0.rtd.name);
+            for (field_name, field_value) in self.iter_scheme_fields() {
+                record.entry(field_name, &field_value)?;
+            }
+            record.finish()
         }
-        write!(fmt, ">")
     }
 
     #[allow(clippy::should_implement_trait)]
@@ -576,13 +541,17 @@ impl Record {
 
 impl fmt::Display for Record {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.display_fmt(&mut IndexMap::default(), f)
+        let value = Value::from(self.clone());
+        let mut fmt = Formatter::new(&value, Mode::Display, f);
+        fmt.fmt_value(&value)
     }
 }
 
 impl fmt::Debug for Record {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.debug_fmt(&mut IndexMap::default(), f)
+        let value = Value::from(self.clone());
+        let mut fmt = Formatter::new(&value, Mode::Write, f);
+        fmt.fmt_value(&value)
     }
 }
 
@@ -700,8 +669,7 @@ pub unsafe trait Embeddable: Trace + Any + Send + Sync {
     where
         Self: Sized;
 
-    /// Returns any parent records embedded in the Rust type.
-    fn parent_record(&self, _rtd: &Arc<RecordTypeDescriptor>) -> Option<&dyn Embeddable> {
+    fn parent(&self) -> Option<&dyn Embeddable> {
         None
     }
 
@@ -715,20 +683,8 @@ pub unsafe trait Embeddable: Trace + Any + Send + Sync {
         Err(Exception::error(format!("invalid record field: {k}")))
     }
 
-    fn debug_fmt(
-        &self,
-        _circular_values: &mut IndexMap<Value, bool>,
-        _fmt: &mut fmt::Formatter<'_>,
-    ) -> fmt::Result {
+    fn fmt(&self, _record: &Record, _fmt: &mut Formatter<'_>) -> fmt::Result {
         Ok(())
-    }
-
-    fn display_fmt(
-        &self,
-        circular_values: &mut IndexMap<Value, bool>,
-        fmt: &mut fmt::Formatter<'_>,
-    ) -> fmt::Result {
-        self.debug_fmt(circular_values, fmt)
     }
 
     fn eq(&self, rhs: &Record) -> bool
@@ -781,41 +737,29 @@ pub unsafe trait Embeddable: Trace + Any + Send + Sync {
 }
 
 // TODO: add trace(skip_all) attribute
-#[derive(Copy, Clone, Trace)]
+#[derive(Copy, Clone)]
 pub struct EmbeddableVTable {
-    #[trace(skip)]
     pub type_id: TypeId,
-    #[trace(skip)]
-    layout: Layout,
+    pub layout: Layout,
     pub embedded_fields: usize,
-    #[trace(skip)]
     pub visit_children: unsafe fn(*const (), &mut dyn FnMut(HeapObject)),
-    #[trace(skip)]
     pub finalize: unsafe fn(*mut ()),
-    #[trace(skip)]
-    pub parent_record: fn(*const (), &Arc<RecordTypeDescriptor>) -> Option<*const dyn Embeddable>,
-    #[trace(skip)]
+    pub rtd: fn() -> Arc<RecordTypeDescriptor>,
+    pub parent: fn(*const ()) -> Option<*const dyn Embeddable>,
     pub get_field: fn(*const (), usize) -> Result<Value, Exception>,
-    #[trace(skip)]
     pub set_field: fn(*const (), usize, Value) -> Result<(), Exception>,
-    #[trace(skip)]
-    pub display_fmt:
-        fn(*const (), &mut IndexMap<Value, bool>, &mut fmt::Formatter<'_>) -> fmt::Result,
-    #[trace(skip)]
-    pub debug_fmt:
-        fn(*const (), &mut IndexMap<Value, bool>, &mut fmt::Formatter<'_>) -> fmt::Result,
-    #[trace(skip)]
+    pub fmt: fn(*const (), &Record, &mut Formatter<'_>) -> fmt::Result,
     pub eq: for<'a> fn(*const (), &'a Record) -> bool,
-    #[trace(skip)]
     pub eqv: for<'a> fn(*const (), &'a Record) -> bool,
-    #[trace(skip)]
     pub equal: for<'a> fn(*const (), &'a Record) -> bool,
-    #[trace(skip)]
     pub eq_hash: for<'a> fn(*const (), &'a mut dyn Hasher),
-    #[trace(skip)]
     pub eqv_hash: for<'a> fn(*const (), &'a mut dyn Hasher),
-    #[trace(skip)]
     pub equal_hash: for<'a> fn(*const (), &'a mut IndexSet<Value>, &'a mut dyn Hasher),
+}
+
+unsafe impl Trace for EmbeddableVTable {
+    unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(HeapObject)) {}
+    unsafe fn finalize(&mut self) {}
 }
 
 impl EmbeddableVTable {
@@ -830,20 +774,16 @@ impl EmbeddableVTable {
             finalize: |this| unsafe {
                 E::finalize(this.cast::<E>().as_mut().unwrap());
             },
-            parent_record: |this, rtd| {
-                E::parent_record(unsafe { this.cast::<E>().as_ref().unwrap() }, rtd)
+            rtd: || E::rtd(),
+            parent: |this| {
+                E::parent(unsafe { this.cast::<E>().as_ref().unwrap() })
                     .map(|r| r as *const dyn Embeddable)
             },
             get_field: |this, k| E::get_field(unsafe { this.cast::<E>().as_ref().unwrap() }, k),
             set_field: |this, k, val| {
                 E::set_field(unsafe { this.cast::<E>().as_ref().unwrap() }, k, val)
             },
-            display_fmt: |this, circ, fmt| {
-                E::display_fmt(unsafe { this.cast::<E>().as_ref().unwrap() }, circ, fmt)
-            },
-            debug_fmt: |this, circ, fmt| {
-                E::debug_fmt(unsafe { this.cast::<E>().as_ref().unwrap() }, circ, fmt)
-            },
+            fmt: |this, rec, fmt| E::fmt(unsafe { this.cast::<E>().as_ref().unwrap() }, rec, fmt),
             eq: |lhs, rhs| E::eq(unsafe { lhs.cast::<E>().as_ref().unwrap() }, rhs),
             eqv: |lhs, rhs| E::eqv(unsafe { lhs.cast::<E>().as_ref().unwrap() }, rhs),
             equal: |lhs, rhs| E::equal(unsafe { lhs.cast::<E>().as_ref().unwrap() }, rhs),
@@ -859,12 +799,25 @@ impl EmbeddableVTable {
         }
     }
 
-    fn ptr_to_parent(
+    fn ancestor(
         &self,
-        ptr: *const (),
+        embedded_ptr: *const (),
         rtd: &Arc<RecordTypeDescriptor>,
     ) -> Option<&dyn Embeddable> {
-        (self.parent_record)(ptr, rtd).and_then(|ptr| unsafe { ptr.as_ref() })
+        let embedded_rtd = (self.rtd)();
+        if !embedded_rtd.is_subtype_of(&rtd) {
+            return None;
+        }
+        let mut embedded = self.ptr_to_parent(embedded_ptr)?;
+        let steps = embedded_rtd.inherits.len() - rtd.inherits.len();
+        for _ in 1..steps {
+            embedded = embedded.parent()?;
+        }
+        Some(embedded)
+    }
+
+    fn ptr_to_parent(&self, ptr: *const ()) -> Option<&dyn Embeddable> {
+        (self.parent)(ptr).and_then(|ptr| unsafe { ptr.as_ref() })
     }
 }
 
@@ -927,7 +880,9 @@ where
     T: Embeddable,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.as_ref().debug_fmt(&mut IndexMap::default(), f)
+        let value = Value::from(self.clone());
+        let mut fmt = Formatter::new(&value, Mode::Write, f);
+        fmt.fmt_value(&value)
     }
 }
 
@@ -1423,19 +1378,12 @@ fn record_accessor_fn(
         if rtd.embedded_vtable.unwrap().type_id == embedded_vtable.type_id {
             (embedded_vtable.get_field)(embedded_ptr, local_idx)?
         } else {
-            let mut embedded = embedded_vtable.ptr_to_parent(embedded_ptr, &rtd).unwrap();
-            while let Some(parent) = embedded.parent_record(&rtd) {
-                embedded = parent;
-            }
+            let embedded = embedded_vtable.ancestor(embedded_ptr, &rtd).unwrap();
             embedded.get_field(local_idx)?
         }
     } else {
         let k = abs_idx - record.0.num_embedded_fields();
-        if let Some(cell) = record.0.fields()[k].cast::<Cell>() {
-            cell.get()
-        } else {
-            record.0.fields()[k].clone()
-        }
+        record.0.fields()[k].read()
     };
     if val.is_undefined() {
         return Err(Exception::error(format!(
@@ -1524,10 +1472,7 @@ fn record_mutator_fn(
         if rtd.embedded_vtable.unwrap().type_id == embedded_vtable.type_id {
             (embedded_vtable.set_field)(embedded_ptr, local_idx, new_val.clone())?;
         } else {
-            let mut embedded = embedded_vtable.ptr_to_parent(embedded_ptr, &rtd).unwrap();
-            while let Some(parent) = embedded.parent_record(&rtd) {
-                embedded = parent;
-            }
+            let embedded = embedded_vtable.ancestor(embedded_ptr, &rtd).unwrap();
             embedded.set_field(local_idx, new_val.clone())?;
         }
     } else {
@@ -1595,7 +1540,7 @@ pub fn record_mutator_absolute(
     }
     if matches!(
         rtd.fields[idx - rtd.num_inherited_fields],
-        Mutability::Immutable(_)
+        Field::Immutable(_)
     ) {
         return Err(Exception::error(format!("{idx} is immutable")));
     }
@@ -1623,9 +1568,9 @@ pub fn record_field_absolute_index(
         .rev()
         .find_map(|rtd| {
             rtd.fields
-                .keys()
+                .iter()
                 .enumerate()
-                .find_map(|(i, field)| (*field == name).then(|| i + rtd.num_inherited_fields))
+                .find_map(|(i, field)| (field.name() == name).then(|| i + rtd.num_inherited_fields))
         })
         .ok_or_else(|| Exception::error(format!("no such field {name}")))
 }
@@ -1696,7 +1641,7 @@ pub fn record_type_field_names(rtd: Arc<RecordTypeDescriptor>) -> Value {
     let fields = rtd
         .fields
         .iter()
-        .map(|(name, _)| Value::from(*name))
+        .map(|field| Value::from(field.name()))
         .collect::<Vec<_>>();
     Value::from(fields)
 }
@@ -1711,7 +1656,7 @@ pub fn record_type_all_field_names(rtd: Arc<RecordTypeDescriptor>) -> Value {
         .iter()
         .flat_map(|rtd| rtd.fields.iter())
         .chain(rtd.fields.iter())
-        .map(|(name, _)| Value::from(*name))
+        .map(|field| Value::from(field.name()))
         .collect::<Vec<_>>();
     Value::from(fields)
 }

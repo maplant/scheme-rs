@@ -23,9 +23,10 @@ use crate::{
     Either,
     enumerations::{EnumerationSet, EnumerationType},
     exceptions::{Assertion, Error, Exception},
+    fmt::Formatter,
     gc::Trace,
     proc::{Application, Args, ContBarrier, DynStackElem, FuncPtr, Procedure, Rest, pop_dyn_stack},
-    records::{Embeddable, Embedded},
+    records::{Embeddable, Embedded, Record},
     strings::WideString,
     symbols::Symbol,
     syntax::{
@@ -265,7 +266,7 @@ impl BufferMode {
 }
 
 #[derive(Copy, Clone, Trace, Embeddable)]
-#[scheme(name = "transcoder", opaque = true, sealed = true, debug = Self::debug_fmt)]
+#[scheme(opaque = true, sealed = true, fmt = Self::fmt)]
 pub struct Transcoder {
     codec: Codec,
     eol_type: EolStyle,
@@ -281,10 +282,10 @@ impl Transcoder {
         }
     }
 
-    fn debug_fmt<T>(transcoder: &Transcoder, _: &mut T, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(transcoder: &Transcoder, _: &Record, f: &mut Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "{:?} {:?} {:?}",
+            "#<transcoder {:?} {:?} {:?}>",
             transcoder.codec, transcoder.eol_type, transcoder.error_handling_mode
         )
     }
@@ -3164,9 +3165,6 @@ define_condition_type!(
             position: position.try_into()?,
         })
     },
-    debug: |this, f| {
-        write!(f, " position: {}", this.position)
-    }
 );
 
 define_condition_type!(
@@ -3183,9 +3181,6 @@ define_condition_type!(
             filename: filename.to_string(),
         })
     },
-    debug: |this, f| {
-        write!(f, " filename: {}", this.filename)
-    }
 );
 
 impl IoFilenameError {
@@ -3207,9 +3202,6 @@ define_condition_type!(
             parent: IoFilenameError::new(filename.to_string())
         })
     },
-    debug: |this, f| {
-        this.parent.fmt(f)
-    }
 );
 
 impl IoFileProtectionError {
@@ -3230,9 +3222,6 @@ define_condition_type!(
             parent: IoFileProtectionError::new(filename.to_string())
         })
     },
-    debug: |this, f| {
-        this.parent.fmt(f)
-    }
 );
 
 define_condition_type!(
@@ -3245,9 +3234,6 @@ define_condition_type!(
             parent: IoFilenameError::new(filename.to_string())
         })
     },
-    debug: |this, f| {
-        this.parent.fmt(f)
-    }
 );
 
 impl IoFileAlreadyExistsError {
@@ -3268,9 +3254,6 @@ define_condition_type!(
             parent: IoFilenameError::new(filename.to_string())
         })
     },
-    debug: |this, f| {
-        this.parent.fmt(f)
-    }
 );
 
 impl IoFileDoesNotExistError {

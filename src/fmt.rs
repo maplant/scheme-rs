@@ -3,10 +3,12 @@ use std::fmt::{self, Write};
 use indexmap::{IndexMap, IndexSet};
 
 use crate::{
-    value::{UnpackedValue, Value},
+    symbols::Symbol,
+    value::{UnpackedValue, Value, ValueType},
     vectors::VectorInner,
 };
 
+#[derive(Copy, Clone, Debug)]
 pub enum Mode {
     Display,
     Write,
@@ -20,11 +22,79 @@ pub struct Formatter<'a> {
 }
 
 impl<'a> Formatter<'a> {
-    fn new<'b>(f: &'a mut Formatter<'b>, mode: Mode, root: &Value) -> Self {
-        todo!()
+    pub fn new(root: &Value, mode: Mode, f: &'a mut std::fmt::Formatter<'_>) -> Self {
+        let mut circular_values = IndexSet::default();
+        determine_circularity(root, &mut IndexSet::default(), &mut circular_values);
+        let labels = circular_values.into_iter().map(|k| (k, false)).collect();
+        Self { mode, labels, f }
     }
 
-    pub fn value(&mut self, value: &Value) -> fmt::Result {
+    pub fn mode(&self) -> Mode {
+        self.mode
+    }
+
+    pub fn fmt_list(&mut self, car: &Value, cdr: &Value) -> fmt::Result {
+        match cdr.type_of() {
+            ValueType::Pair | ValueType::Null => (),
+            _ => {
+                // This is not a proper list
+                write!(self.f, "(")?;
+                self.fmt_value(car)?;
+                write!(self.f, " . ")?;
+                self.fmt_value(cdr)?;
+                write!(self.f, ")")?;
+                return Ok(());
+            }
+        }
+
+        write!(self.f, "(")?;
+        self.fmt_value(car)?;
+        let mut stack = vec![cdr.clone()];
+
+        while let Some(head) = stack.pop() {
+            if let Some((idx, _, seen)) = self.labels.get_full_mut(&head) {
+                if *seen {
+                    write!(self.f, " . #{idx}#")?;
+                    continue;
+                } else {
+                    write!(self.f, " #{idx}=")?;
+                    *seen = true;
+                }
+            }
+            match &*head.unpacked_ref() {
+                UnpackedValue::Null => {
+                    if !stack.is_empty() {
+                        write!(self.f, " ()")?;
+                    }
+                }
+                UnpackedValue::Pair(pair) => {
+                    let (car, cdr) = pair.clone().into();
+                    write!(self.f, " ")?;
+                    self.fmt_value(&car)?;
+                    stack.push(cdr);
+                }
+                x => {
+                    let val = x.clone().into_value();
+                    write!(self.f, " ")?;
+                    if stack.is_empty() {
+                        write!(self.f, ". ")?;
+                    }
+                    self.fmt_value(&val)?;
+                }
+            }
+        }
+
+        write!(self.f, ")")
+    }
+
+    pub fn fmt_record<'b>(&'b mut self, name: Symbol) -> FmtRecord<'b, 'a> {
+        FmtRecord {
+            name: Some(name),
+            f: self,
+        }
+    }
+
+    pub fn fmt_value(&mut self, value: &Value) -> fmt::Result {
         if let Some((idx, _, seen)) = self.labels.get_full_mut(value) {
             if *seen {
                 write!(self.f, "#{idx}#")?;
@@ -36,66 +106,93 @@ impl<'a> Formatter<'a> {
         }
 
         match self.mode {
-            Mode::Display => display_value(value, &mut self.labels, self.f),
-            Mode::Write => write_value(value, &mut self.labels, self.f),
+            Mode::Display => self.display_value(value),
+            Mode::Write => self.write_value(value),
         }
     }
-}
 
-fn display_value(
-    value: &Value,
-    labels: &mut IndexMap<Value, bool>,
-    f: &mut dyn Write,
-) -> fmt::Result {
-    match &*value.unpacked_ref() {
-        UnpackedValue::Undefined => write!(f, "<undefined>"),
-        UnpackedValue::Null => write!(f, "()"),
-        UnpackedValue::Boolean(true) => write!(f, "#t"),
-        UnpackedValue::Boolean(false) => write!(f, "#f"),
-        UnpackedValue::Number(number) => write!(f, "{number}"),
-        UnpackedValue::Character(c) => write!(f, "#\\{c}"),
-        UnpackedValue::Symbol(symbol) => write!(f, "{symbol}"),
-        // UnpackedValue::Pair(pair) => {
-        //     let (car, cdr) = pair.into();
-        //     lists::write_list(&car, &cdr, Value::display, circular_values, f)
-        // }
-        UnpackedValue::Procedure(_) => write!(f, "<procedure>"),
-        // UnpackedValue::Record(record) => record.display_fmt(circular_values, f),
-        UnpackedValue::RecordTypeDescriptor(rtd) => write!(f, "{rtd:?}"),
-        // UnpackedValue::Cell(cell) => cell.0.read().display(circular_values, f),
-        UnpackedValue::ReturnAddress(_) => write!(f, "%return-address"),
-        _ => todo!(),
+    fn display_value(&mut self, value: &Value) -> fmt::Result {
+        match &*value.unpacked_ref() {
+            UnpackedValue::Undefined => write!(self.f, "<undefined>"),
+            UnpackedValue::Null => write!(self.f, "()"),
+            UnpackedValue::Boolean(true) => write!(self.f, "#t"),
+            UnpackedValue::Boolean(false) => write!(self.f, "#f"),
+            UnpackedValue::Number(number) => write!(self.f, "{number}"),
+            UnpackedValue::Character(c) => write!(self.f, "#\\{c}"),
+            UnpackedValue::Symbol(symbol) => write!(self.f, "{symbol}"),
+            UnpackedValue::Pair(pair) => {
+                let (car, cdr) = pair.clone().into();
+                self.fmt_list(&car, &cdr)
+            }
+            UnpackedValue::Procedure(_) => write!(self.f, "<procedure>"),
+            UnpackedValue::Record(record) => record.fmt(self),
+            UnpackedValue::RecordTypeDescriptor(rtd) => write!(self.f, "{rtd:?}"),
+            UnpackedValue::Cell(cell) => self.fmt_value(&cell.0.read()),
+            UnpackedValue::ReturnAddress(_) => write!(self.f, "%return-address"),
+        }
+    }
+
+    fn write_value(&mut self, value: &Value) -> fmt::Result {
+        match &*value.unpacked_ref() {
+            UnpackedValue::Undefined => write!(self.f, "<undefined>"),
+            UnpackedValue::Null => write!(self.f, "()"),
+            UnpackedValue::Boolean(true) => write!(self.f, "#t"),
+            UnpackedValue::Boolean(false) => write!(self.f, "#f"),
+            UnpackedValue::Number(number) => write!(self.f, "{number}"),
+            UnpackedValue::Character(c) => write!(self.f, "#\\{c}"),
+            UnpackedValue::Symbol(symbol) => write!(self.f, "{symbol}"),
+            UnpackedValue::Pair(pair) => {
+                let (car, cdr) = pair.clone().into();
+                self.fmt_list(&car, &cdr)
+            }
+            UnpackedValue::Procedure(proc) => write!(self.f, "#<procedure {proc:?}>"),
+            UnpackedValue::Record(record) => record.fmt(self),
+            UnpackedValue::RecordTypeDescriptor(rtd) => write!(self.f, "{rtd:?}"),
+            UnpackedValue::Cell(cell) => self.fmt_value(&cell.0.read()),
+            UnpackedValue::ReturnAddress(_) => write!(self.f, "%return-address"),
+        }
+    }
+
+    pub fn write_fmt(&mut self, args: fmt::Arguments<'_>) -> fmt::Result {
+        self.f.write_fmt(args)
     }
 }
 
-fn write_value(
-    value: &Value,
-    labels: &mut IndexMap<Value, bool>,
-    f: &mut dyn Write,
-) -> fmt::Result {
-    match &*value.unpacked_ref() {
-        UnpackedValue::Undefined => write!(f, "<undefined>"),
-        UnpackedValue::Null => write!(f, "()"),
-        UnpackedValue::Boolean(true) => write!(f, "#t"),
-        UnpackedValue::Boolean(false) => write!(f, "#f"),
-        UnpackedValue::Number(number) => write!(f, "{number}"),
-        UnpackedValue::Character(c) => write!(f, "#\\{c}"),
-        UnpackedValue::Symbol(symbol) => write!(f, "{symbol}"),
-        // UnpackedValue::Pair(pair) => {
-        //     let (car, cdr) = pair.into();
-        //     lists::write_list(&car, &cdr, Value::write, circular_values, f)
-        // }
-        UnpackedValue::Procedure(proc) => write!(f, "#<procedure {proc:?}>"),
-        // UnpackedValue::Record(record) => record.debug_fmt(circular_values, f),
-        UnpackedValue::RecordTypeDescriptor(rtd) => write!(f, "{rtd:?}"),
-        // UnpackedValue::Cell(cell) => cell.0.read().write(circular_values, f),
-        UnpackedValue::ReturnAddress(_) => write!(f, "%return-address"),
-        _ => todo!(),
+impl Write for Formatter<'_> {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        self.f.write_str(s)
+    }
+
+    fn write_char(&mut self, c: char) -> fmt::Result {
+        self.f.write_char(c)
+    }
+
+    fn write_fmt(&mut self, args: fmt::Arguments<'_>) -> fmt::Result {
+        self.f.write_fmt(args)
     }
 }
 
-pub struct DisplayRecord<'a, 'b> {
+pub struct FmtRecord<'a, 'b> {
+    name: Option<Symbol>,
     f: &'a mut Formatter<'b>,
+}
+
+impl FmtRecord<'_, '_> {
+    pub fn entry(&mut self, name: Symbol, value: &Value) -> fmt::Result {
+        if let Some(record_name) = self.name.take() {
+            write!(self.f, "#<{record_name}")?;
+        }
+        write!(self.f, " {name}: ")?;
+        self.f.fmt_value(value)
+    }
+
+    pub fn finish(&mut self) -> fmt::Result {
+        if let Some(record_name) = self.name.take() {
+            write!(self.f, "#{record_name}")
+        } else {
+            write!(self.f, ">")
+        }
+    }
 }
 
 /// Determines which children of the given list are circular, i.e. have children
@@ -125,8 +222,8 @@ fn determine_circularity(
             }
         }
         UnpackedValue::Record(rec) => {
-            for value in rec.iter_fields() {
-                determine_circularity(value, visited, circular);
+            for (_, value) in rec.iter_all_fields() {
+                determine_circularity(&value, visited, circular);
             }
         }
         _ => (),
@@ -135,41 +232,16 @@ fn determine_circularity(
     visited.swap_remove(curr);
 }
 
-/*
-pub(crate) fn write_value(
-    val: &Value,
-    fmt: fn(&Value, &mut IndexMap<Value, bool>, &mut fmt::Formatter<'_>) -> fmt::Result,
-    circular_values: &mut IndexMap<Value, bool>,
-    f: &mut fmt::Formatter<'_>,
-) -> fmt::Result {
-    if let Some((idx, _, seen)) = circular_values.get_full_mut(val) {
-        if *seen {
-            write!(f, "#{idx}#")?;
-            return Ok(());
-        } else {
-            write!(f, "#{idx}=")?;
-            *seen = true;
-        }
-    }
-
-    fmt(val, circular_values, f)
-}
-*/
-
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut circular_values = IndexSet::default();
-        determine_circularity(self, &mut IndexSet::default(), &mut circular_values);
-        let mut circular_values = circular_values.into_iter().map(|k| (k, false)).collect();
-        write_value(self, Value::display_fmt, &mut circular_values, f)
+        let mut fmt = Formatter::new(self, Mode::Display, f);
+        fmt.fmt_value(self)
     }
 }
 
 impl fmt::Debug for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut circular_values = IndexSet::default();
-        determine_circularity(self, &mut IndexSet::default(), &mut circular_values);
-        let mut circular_values = circular_values.into_iter().map(|k| (k, false)).collect();
-        write_value(self, Value::debug_fmt, &mut circular_values, f)
+        let mut fmt = Formatter::new(self, Mode::Write, f);
+        fmt.fmt_value(self)
     }
 }

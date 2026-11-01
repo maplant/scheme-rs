@@ -4,10 +4,11 @@ use crate::{
     ast::Primitive,
     env::{Binding, Environment, Scope, add_binding, resolve},
     exceptions::{CompoundCondition, Exception, Message, SyntaxViolation, Who},
+    fmt::Formatter,
     gc::Trace,
     ports::Port,
     proc::{ContBarrier, Procedure},
-    records::{Embeddable, Embedded},
+    records::{Embeddable, Embedded, Record},
     registry::bridge,
     symbols::Symbol,
     syntax::parse::ParseSyntaxError,
@@ -68,7 +69,7 @@ impl Default for Span {
 
 /// Representation of a Scheme syntax object, or s-expression.
 #[derive(Clone, Trace, Embeddable)]
-#[scheme(name = "syntax", sealed = true, opaque = true, debug = Self::debug_fmt)]
+#[scheme(name = "syntax", sealed = true, opaque = true, fmt = Self::fmt)]
 pub enum Syntax {
     /// A wrapped value.
     Wrapped {
@@ -93,11 +94,7 @@ pub enum Syntax {
 }
 
 impl Syntax {
-    fn debug_fmt(
-        &self,
-        _: &mut indexmap::IndexMap<Value, bool>,
-        fmt: &mut fmt::Formatter<'_>,
-    ) -> fmt::Result {
+    fn fmt(&self, _: &Record, fmt: &mut Formatter<'_>) -> fmt::Result {
         write!(fmt, "#<syntax:{} {:#?}>", self.span(), self)
     }
 }

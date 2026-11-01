@@ -451,10 +451,6 @@ define_condition_type!(
     constructor: |message| {
         Ok(Message { parent: SimpleCondition::new(), message: message.to_string() })
     },
-    debug: |this, f| {
-        write!(f, " ")?;
-        this.message.fmt(f)
-    }
 );
 
 impl Message {
@@ -522,12 +518,6 @@ define_condition_type!(
             trace: trace.clone().try_into()?,
         })
     },
-    debug: |this, f| {
-        for trace in &*this.trace.0.vec.read() {
-            write!(f, " {trace}")?;
-        }
-        Ok(())
-    }
 );
 
 impl PrettyCondition for StackTrace {
@@ -601,9 +591,6 @@ define_condition_type!(
     constructor: |lib| {
         Ok(ImportError {  parent: Error::new(), library: lib.to_string() })
     },
-    debug: |this, f| {
-        write!(f, " library: {}", this.library)
-    }
 );
 
 impl ImportError {
@@ -668,9 +655,6 @@ define_condition_type!(
     constructor: |irritants| {
         Ok(Irritants { parent: SimpleCondition::new(), irritants })
     },
-    debug: |this, f| {
-        write!(f, " irritants: {:?}", this.irritants)
-    }
 );
 
 impl Irritants {
@@ -693,9 +677,6 @@ define_condition_type!(
     constructor: |who| {
         Ok(Who { parent: SimpleCondition::new(), who, })
     },
-    debug: |this, f| {
-        write!(f, " who: {:?}", this.who)
-    }
 );
 
 impl Who {

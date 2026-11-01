@@ -11,6 +11,7 @@ pub mod env;
 pub mod eval;
 pub mod exceptions;
 pub(crate) mod expand;
+pub mod fmt;
 pub mod gc;
 pub mod hashtables;
 pub mod keywords;
@@ -31,7 +32,6 @@ pub mod threads;
 pub mod time;
 pub mod value;
 pub mod vectors;
-pub mod fmt;
 
 use std::hash::Hasher;
 
