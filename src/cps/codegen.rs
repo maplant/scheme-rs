@@ -10,6 +10,7 @@ use cranelift::{
 use cranelift_jit::JITModule;
 use cranelift_module::{FuncId, Linkage, Module};
 use indexmap::IndexMap;
+use scheme_rs_gc::safepoint_flag;
 use std::{mem::MaybeUninit, ptr::NonNull, sync::Arc};
 
 use crate::{
@@ -100,6 +101,7 @@ pub(crate) struct RuntimeFunctions {
     patch_env_slot: FuncId,
     unroot_proc: FuncId,
     alloc_cell: FuncId,
+    safepoint_park: FuncId,
     read_cell: FuncId,
     store: FuncId,
     error_unbound_variable: FuncId,
@@ -568,6 +570,33 @@ impl CompilationUnit<'_, '_> {
         // both predecessors of merge are emitted above, so it can be sealed here
         self.builder.switch_to_block(merge_block);
         self.builder.seal_block(merge_block);
+    }
+
+    fn gc_poll_codegen(&mut self) {
+        let flag = self
+            .builder
+            .ins()
+            .iconst(types::I64, safepoint_flag() as i64);
+        let stop = self
+            .builder
+            .ins()
+            .load(types::I8, MemFlagsData::trusted(), flag, 0);
+
+        let park_block = self.builder.create_block();
+        let cont = self.builder.create_block();
+        self.builder.set_cold_block(park_block);
+        self.builder.ins().brif(stop, park_block, &[], cont, &[]);
+
+        self.builder.switch_to_block(park_block);
+        self.builder.seal_block(park_block);
+        let park = self
+            .module
+            .declare_func_in_func(self.runtime_funcs.safepoint_park, self.builder.func);
+        self.builder.ins().call(park, &[]);
+        self.builder.ins().jump(cont, &[]);
+
+        self.builder.switch_to_block(cont);
+        self.builder.seal_block(cont);
     }
 
     fn matches_codegen(
@@ -1417,7 +1446,12 @@ impl CompilationUnit<'_, '_> {
             .collect::<Vec<_>>();
 
         // Drop the values that do not survive the jump.
+
         self.drop_dead_codegen(live_after);
+
+        // Check if GC wants us to stop.
+        self.gc_poll_codegen();
+
         self.builder.ins().jump(to, &block_args);
     }
 
@@ -2196,6 +2230,7 @@ impl ProcedureBundle {
         };
 
         let mut deferred_local_conts = Vec::new();
+        cu.gc_poll_codegen();
         cu.cps_codegen(self.body, deferred_procs, &mut deferred_local_conts);
 
         while let Some(local_cont) = deferred_local_conts.pop() {
