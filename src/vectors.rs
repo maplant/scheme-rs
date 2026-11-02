@@ -6,8 +6,8 @@ use crate::{
     DynHasher,
     exceptions::Exception,
     fmt::Formatter,
-    gc::Trace,
-    lists::{List, iter_list, slice_to_list},
+    gc::{HeapValue, Trace},
+    lists::{List, heap_values_to_list, iter_list},
     records::{Embeddable, Embedded, Record},
     registry::bridge,
     value::Value,
@@ -28,12 +28,20 @@ pub(crate) struct VectorInner<T: Trace> {
     pub(crate) mutable: bool,
 }
 
-unsafe impl Embeddable for VectorInner<Value> {
+/// TEMPORARY, later we will add a HeapArray, an immix allocated heap array.
+/// And convert the vector types to it.
+#[derive(Trace)]
+pub(crate) struct TmpVecInner {
+    pub(crate) vec: Box<[HeapValue]>,
+    pub(crate) mutable: bool,
+}
+
+unsafe impl Embeddable for TmpVecInner {
     fn rtd() -> Arc<crate::records::RecordTypeDescriptor>
     where
         Self: Sized,
     {
-        rtd!(ty: VectorInner<Value>, name: "vector", sealed: true, opaque: true)
+        rtd!(ty: TmpVecInner, name: "vector", sealed: true, opaque: true)
     }
 
     fn fmt(&self, _record: &Record, fmt: &mut crate::fmt::Formatter<'_>) -> fmt::Result {
@@ -47,24 +55,28 @@ unsafe impl Embeddable for VectorInner<Value> {
         let Some(rhs) = rhs.cast::<Self>() else {
             return false;
         };
-        *self.vec.read() == *rhs.vec.read()
+        self.vec.len() == rhs.vec.len()
+            && self
+                .vec
+                .iter()
+                .zip(rhs.vec.iter())
+                .all(|(a, b)| a.get() == b.get())
     }
 
     fn equal_hash(&self, recursive: &mut IndexSet<Value>, hasher: &mut dyn std::hash::Hasher)
     where
         Self: Sized,
     {
-        let v_read = self.vec.read();
-        hasher.write_usize(v_read.len());
-        for val in v_read.iter() {
-            val.equal_hash(recursive, &mut DynHasher(hasher));
+        hasher.write_usize(self.vec.len());
+        for val in self.vec.iter() {
+            val.get().equal_hash(recursive, &mut DynHasher(hasher));
         }
     }
 }
 
 /// A vector of values
 #[derive(Clone, Trace)]
-pub struct Vector(pub(crate) Embedded<VectorInner<Value>>);
+pub struct Vector(pub(crate) Embedded<TmpVecInner>);
 
 impl Vector {
     pub fn immutable(vec: Vec<Value>) -> Self {
@@ -72,43 +84,43 @@ impl Vector {
     }
 
     pub fn mutable(vec: Vec<Value>) -> Self {
-        Self(Embedded::new(VectorInner {
-            vec: RwLock::new(vec),
+        Self(Embedded::new(TmpVecInner {
+            vec: vec.into_iter().map(HeapValue::new).collect(),
             mutable: true,
         }))
     }
 
     pub fn get(&self, index: usize) -> Option<Value> {
-        let handle = self.0.vec.read();
-        handle.get(index).cloned()
+        self.0.vec.get(index).map(HeapValue::get)
     }
 
     pub fn first(&self) -> Option<Value> {
-        let handle = self.0.vec.read();
-        handle.first().cloned()
+        self.get(0)
     }
 
     pub fn last(&self) -> Option<Value> {
-        let handle = self.0.vec.read();
-        handle.last().cloned()
+        self.0.vec.last().map(HeapValue::get)
     }
 
     // TODO: Add more convenience functions here
-
     pub fn to_list(&self) -> Value {
-        slice_to_list(&self.0.vec.read())
+        heap_values_to_list(&self.0.vec)
     }
 
     pub fn clone_inner_vec(&self) -> Vec<Value> {
-        self.0.vec.read().clone()
+        self.0.vec.iter().map(HeapValue::get).collect()
     }
 
     pub fn iter(&self) -> impl Iterator<Item = Value> {
-        self.0.vec.read().clone().into_iter()
+        self.0.vec.iter().map(HeapValue::get)
     }
 
     pub fn is_empty(&self) -> bool {
-        self.0.vec.read().is_empty()
+        self.0.vec.is_empty()
+    }
+
+    pub(crate) fn from_slots(vec: Box<[HeapValue]>) -> Self {
+        Self(Embedded::new(TmpVecInner { vec, mutable: true }))
     }
 }
 
@@ -136,8 +148,8 @@ impl TryFrom<&Value> for Vector {
 
 impl From<Vec<Value>> for Vector {
     fn from(vec: Vec<Value>) -> Self {
-        Self(Embedded::new(VectorInner {
-            vec: RwLock::new(vec),
+        Self(Embedded::new(TmpVecInner {
+            vec: vec.into_iter().map(HeapValue::new).collect(),
             mutable: false,
         }))
     }
@@ -145,10 +157,7 @@ impl From<Vec<Value>> for Vector {
 
 impl From<Vec<Value>> for Value {
     fn from(vec: Vec<Value>) -> Self {
-        Value::from(VectorInner {
-            vec: RwLock::new(vec),
-            mutable: false,
-        })
+        Value::from(Vector::from(vec))
     }
 }
 
@@ -309,15 +318,14 @@ impl From<ByteVector> for Value {
     }
 }
 
-pub(crate) fn write_vec(v: &VectorInner<Value>, f: &mut Formatter<'_>) -> Result<(), fmt::Error> {
+pub(crate) fn write_vec(v: &TmpVecInner, f: &mut Formatter<'_>) -> Result<(), fmt::Error> {
     write!(f, "#(")?;
 
-    let values = v.vec.read();
-    for (i, value) in values.iter().enumerate() {
+    for (i, value) in v.vec.iter().enumerate() {
         if i > 0 {
             write!(f, " ")?;
         }
-        f.fmt_value(value)?;
+        f.fmt_value(&value.get())?;
     }
 
     write!(f, ")")
@@ -381,21 +389,12 @@ impl Indexer for VectorIndexer {
     type Collection = Vector;
 
     fn get_len(vec: &Self::Collection) -> usize {
-        vec.0.vec.read().len()
+        vec.0.vec.len()
     }
 
     fn get_range(vec: &Self::Collection, range: Range<usize>) -> Self::Collection {
-        let subvec: Vec<Value> = vec
-            .0
-            .vec
-            .read()
-            .iter()
-            .skip(range.start)
-            .take(range.end - range.start)
-            .cloned()
-            .collect();
-        Vector(Embedded::new(VectorInner {
-            vec: RwLock::new(subvec),
+        Vector(Embedded::new(TmpVecInner {
+            vec: vec.0.vec[range].iter().cloned().collect(),
             mutable: true,
         }))
     }
@@ -421,17 +420,16 @@ pub fn vector(#[rest_args] args: Value) -> Vector {
 
 #[bridge(name = "vector-ref", lib = "(rnrs base builtins (6))")]
 pub fn vector_ref(vec: Vector, index: usize) -> Result<Value, Exception> {
-    let vec_read = vec.0.vec.read();
-
-    Ok(vec_read
+    vec.0
+        .vec
         .get(index)
-        .ok_or_else(|| Exception::invalid_index(index, vec_read.len()))?
-        .clone())
+        .map(HeapValue::get)
+        .ok_or(Exception::invalid_index(index, vec.0.vec.len()))
 }
 
 #[bridge(name = "vector-length", lib = "(rnrs base builtins (6))")]
 pub fn vector_length(vec: Vector) -> usize {
-    vec.0.vec.read().len()
+    vec.0.vec.len()
 }
 
 #[bridge(name = "bytevector-length", lib = "(rnrs base builtins (6))")]
@@ -445,12 +443,11 @@ pub fn vector_set_bang(vec: Vector, index: usize, with: Value) -> Result<(), Exc
         return Err(Exception::error("vector is immutable"));
     }
 
-    let mut vec_write = vec.0.vec.write();
-    let vec_len = vec_write.len();
-
-    *vec_write
-        .get_mut(index)
-        .ok_or_else(|| Exception::invalid_index(index, vec_len))? = with.clone();
+    vec.0
+        .vec
+        .get(index)
+        .ok_or_else(|| Exception::invalid_index(index, vec.0.vec.len()))?
+        .set(with);
 
     Ok(())
 }
@@ -462,8 +459,8 @@ pub fn vector_to_list(
     end: Option<usize>,
 ) -> Result<Value, Exception> {
     let vec = VectorIndexer::index(&from, start, end)?;
-    let vec_read = vec.0.vec.read();
-    Ok(slice_to_list(&vec_read))
+    let vec_read = &vec.0.vec;
+    Ok(heap_values_to_list(vec_read))
 }
 
 #[bridge(name = "vector->string", lib = "(rnrs base builtins (6))")]
@@ -473,10 +470,10 @@ pub fn vector_to_string(
     end: Option<usize>,
 ) -> Result<String, Exception> {
     let vec = VectorIndexer::index(&from, start, end)?;
-    let vec_read = vec.0.vec.read();
-    vec_read
+    vec.0
+        .vec
         .iter()
-        .cloned()
+        .map(HeapValue::get)
         .map(<Value as TryInto<char>>::try_into)
         .collect::<Result<String, _>>()
 }
@@ -498,27 +495,21 @@ pub fn vector_copy_to(
     start: Option<usize>,
     end: Option<usize>,
 ) -> Result<(), Exception> {
-    let mut to = to.0.vec.write();
+    let to = &to.0.vec;
 
     if at >= to.len() {
         return Err(Exception::invalid_index(at, to.len()));
     }
 
     let copies = VectorIndexer::index(&from, start, end)?;
-    let copies = copies.0.vec.read();
-    if copies.len() + at >= to.len() {
+    let copies = &copies.0.vec;
+    if copies.len() + at > to.len() {
         return Err(Exception::invalid_range(at..at + copies.len(), to.len()));
     }
 
-    copies
-        .iter()
-        .enumerate()
-        .map(|(i, copy)| (i + at, copy))
-        .for_each(|(i, copy)| {
-            if let Some(i) = to.get_mut(i) {
-                *i = copy.clone();
-            }
-        });
+    for (dst, src) in to[at..].iter().zip(copies.iter()) {
+        dst.set(src.get());
+    }
 
     Ok(())
 }
@@ -532,9 +523,9 @@ pub fn vector_append(#[rest_args] args: Value) -> Result<Value, Exception> {
     let mut appended = Vec::new();
     for arg in iter_list(&args) {
         let vec: Vector = arg.try_into()?;
-        appended.extend(vec.0.vec.read().iter().cloned());
+        appended.extend(vec.0.vec.iter().cloned());
     }
-    Ok(Value::from(appended))
+    Ok(Value::from(Vector::from_slots(appended.into_boxed_slice())))
 }
 
 #[bridge(name = "vector-fill!", lib = "(rnrs base builtins (6))")]
@@ -544,7 +535,7 @@ pub fn vector_fill(
     start: Value,
     end: Option<usize>,
 ) -> Result<(), Exception> {
-    let mut vector = vector.0.vec.write();
+    let vector = &vector.0.vec;
 
     let start: usize = start.clone().try_into()?;
     let end = match end {
@@ -557,11 +548,9 @@ pub fn vector_fill(
         return Err(Exception::invalid_range(range, vector.len()));
     }
 
-    range.for_each(|i| {
-        if let Some(slot) = vector.get_mut(i) {
-            *slot = with.clone()
-        }
-    });
+    for slot in &vector[range] {
+        slot.set(with.clone())
+    }
 
     Ok(())
 }
@@ -627,6 +616,7 @@ pub fn u8_list_to_bytevector(list: List) -> Result<ByteVector, Exception> {
 
 #[bridge(name = "bytevector-push!", lib = "(rnrs bytevectors (6))")]
 pub fn bytevector_push(bytevector: ByteVector, byte: u8) -> Result<(), Exception> {
+    // Temporary, gets its own gc'd array later
     bytevector.as_mut_vec()?.push(byte);
     Ok(())
 }
@@ -647,4 +637,41 @@ pub fn bytevector_take(bytevector: ByteVector) -> Result<ByteVector, Exception> 
     Ok(ByteVector::mutable(std::mem::take(
         &mut *bytevector.as_mut_vec()?,
     )))
+}
+
+#[cfg(all(test, feature = "barrier_count", not(feature = "async")))]
+mod vector_tests {
+    use crate::{ast::ImportPolicy, env::TopLevelEnvironment};
+    use scheme_rs_gc::barrier_count;
+
+    /// Runs `setup`, then counts the barriers while `code` runs.
+    fn barriers_during(setup: &str, code: &str) -> usize {
+        let env = TopLevelEnvironment::new_repl();
+        env.eval(ImportPolicy::Allow, "(import (rnrs))").unwrap();
+        env.eval(ImportPolicy::Allow, setup).unwrap();
+        let before = barrier_count();
+        env.eval(ImportPolicy::Allow, code).unwrap();
+        barrier_count() - before
+    }
+
+    #[test]
+    pub fn vector_set_triggers_barrier() {
+        let setup = "(define x (make-vector 2 0))";
+        let code = "(vector-set! x 0 1)";
+        assert_eq!(barriers_during(setup, code), 1);
+    }
+
+    #[test]
+    pub fn vector_fill_triggers_barrier() {
+        let setup = "(define x (make-vector 2 0))";
+        let code = "(vector-fill! x 2 0 1)";
+        assert_eq!(barriers_during(setup, code), 1);
+    }
+
+    #[test]
+    pub fn vector_copy_triggers_barrier() {
+        let setup = "(define x (make-vector 2 0)) (define y (make-vector 2 1))";
+        let code = "(vector-copy! x 0 y)";
+        assert_eq!(barriers_during(setup, code), 2);
+    }
 }

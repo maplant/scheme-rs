@@ -93,7 +93,7 @@ pub(crate) struct RuntimeFunctions {
     make_user: FuncId,
     raise_wrong_num_args: FuncId,
     tail_callable: FuncId,
-    proc_env: FuncId,
+    proc_env_slot: FuncId,
     pop_env: FuncId,
     push_continuation: FuncId,
     call_continuation: FuncId,
@@ -1919,16 +1919,14 @@ impl ProcedureBundle {
             let proc_local = Local::gensym();
             live.bind(proc_local, IrValue::Owned(proc));
             if !self.env.is_empty() {
-                let proc_env = module.declare_func_in_func(runtime_funcs.proc_env, builder.func);
-                let call = builder.ins().call(proc_env, &[proc]);
-                let env_ptr = builder.inst_results(call)[0];
+                // One call per slot while HeapValue is a lock; a direct load
+                // once it is an atomic word.
+                let proc_env_slot =
+                    module.declare_func_in_func(runtime_funcs.proc_env_slot, builder.func);
                 for (i, env_var) in self.env.iter().enumerate() {
-                    let var = builder.ins().load(
-                        types::I64,
-                        MemFlagsData::new(),
-                        env_ptr,
-                        (i * 8) as i32,
-                    );
+                    let idx = builder.ins().iconst(types::I32, i as i64);
+                    let call = builder.ins().call(proc_env_slot, &[proc, idx]);
+                    let var = builder.inst_results(call)[0];
                     let var = if cells.contains(env_var) {
                         // We cannot kill the cell
                         IrValue::CellRef(var)
