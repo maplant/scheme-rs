@@ -8,7 +8,6 @@ use crate::{
     gc::{Gc, Trace},
     proc::{Application, Args, ContBarrier, Procedure},
     registry::bridge,
-    strings::WideString,
     value::{UnpackedValue, Value, ValueType},
 };
 
@@ -360,12 +359,8 @@ pub fn list_to_vector(List { items, .. }: List) -> Value {
 }
 
 #[bridge(name = "list->string", lib = "(rnrs base builtins (6))")]
-pub fn list_to_string(List { items, .. }: List) -> Result<WideString, Exception> {
-    let chars = items
-        .into_iter()
-        .map(char::try_from)
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(WideString::mutable(chars))
+pub fn list_to_string(List { items, .. }: List) -> Result<String, Exception> {
+    items.into_iter().map(char::try_from).collect()
 }
 
 pub(crate) fn append_list(list: &Value, tail: Value) -> Result<Value, Exception> {

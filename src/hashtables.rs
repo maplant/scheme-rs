@@ -14,7 +14,6 @@ use crate::{
     proc::{ContBarrier, Procedure},
     records::{Embeddable, Embedded},
     registry::bridge,
-    strings::WideString,
     symbols::Symbol,
     value::{Expect1, Value},
 };
@@ -527,18 +526,18 @@ pub fn equal_hash(obj: Value) -> u64 {
 }
 
 #[bridge(name = "string-hash", lib = "(rnrs hashtables builtins (6))")]
-pub fn string_hash(string: WideString) -> u64 {
+pub fn string_hash(string: Embedded<String>) -> u64 {
     let mut hasher = DefaultHasher::new();
     string.hash(&mut hasher);
     hasher.finish()
 }
 
 #[bridge(name = "string-ci-hash", lib = "(rnrs hashtables builtins (6))")]
-pub fn string_ci_hash(string: WideString) -> u64 {
+pub fn string_ci_hash(string: Embedded<String>) -> u64 {
     let mut hasher = DefaultHasher::new();
-    let chars = string.0.chars.read();
-    hasher.write_usize(chars.len());
-    for lowercase in chars.iter().copied().flat_map(char::to_lowercase) {
+    // I hope this is okay, otherwise we have to collect the chars to a vec
+    hasher.write_usize(string.len());
+    for lowercase in string.chars().flat_map(char::to_lowercase) {
         lowercase.hash(&mut hasher);
     }
     hasher.finish()

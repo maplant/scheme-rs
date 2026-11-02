@@ -17,7 +17,6 @@ use crate::{
     ports::{BufferMode, Port},
     proc::{Application, Args, ContBarrier, Procedure},
     records::{Embeddable, Embedded, RecordTypeDescriptor, rtd},
-    strings::WideString,
     value::Value,
 };
 
@@ -67,8 +66,8 @@ unsafe impl Embeddable for Arc<TcpListener> {
 }
 
 #[bridge(name = "bind-tcp", lib = "(async)")]
-pub async fn bind_tcp(addr: WideString) -> Result<Arc<TcpListener>, Exception> {
-    let listener = TcpListener::bind(&addr.to_string())
+pub async fn bind_tcp(addr: Embedded<String>) -> Result<Arc<TcpListener>, Exception> {
+    let listener = TcpListener::bind(&*addr)
         .await
         .map_err(|e| Exception::error(format!("failed to bind to address: {e}")))?;
     Ok(Arc::new(listener))

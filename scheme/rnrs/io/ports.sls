@@ -1,6 +1,5 @@
 (library (rnrs io ports (6))
-  (export open-string-input-port buffer-mode buffer-mode? file-options
-          open-bytevector-output-port string->bytevector bytevector->string
+  (export buffer-mode buffer-mode? file-options open-bytevector-output-port string->bytevector bytevector->string
           (import (rnrs io builtins))
           (import (rnrs io conditions)))
   (import (rnrs base)
@@ -116,32 +115,5 @@
        #f))
     (if (null? maybe-transcoder)
         output-port
-        (transcoded-port output-port (car maybe-transcoder))))
-
-  (define (read-string input-string input-start output-string output-start count)
-    (if (> count 0)
-        (let ([offset (- count 1)])
-          (string-set! output-string
-                       (+ output-start offset)
-                       (string-ref input-string (+ input-start offset)))
-          (read-string input-string input-start output-string output-start offset))))
-
-
-
-  (define (open-string-input-port input-string)
-    (define curr-pos 0)
-    (define length (string-length input-string))
-    (make-custom-textual-input-port
-     input-string
-     ;; read!
-     (lambda (output-string start count)
-       (let ([adjusted-count (min count (- length curr-pos))])
-         (read-string input-string curr-pos output-string start adjusted-count)
-         (set! curr-pos (+ curr-pos adjusted-count))
-         adjusted-count))
-     ;; get-position
-     (lambda () curr-pos)
-     ;; set-position
-     (lambda (pos) (set! curr-pos pos))
-     ;; close
-     #f)))
+        (transcoded-port output-port (car maybe-transcoder)))) 
+)

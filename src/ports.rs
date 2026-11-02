@@ -27,13 +27,12 @@ use crate::{
     gc::Trace,
     proc::{Application, Args, ContBarrier, DynStackElem, FuncPtr, Procedure, Rest, pop_dyn_stack},
     records::{Embeddable, Embedded, Record},
-    strings::WideString,
     symbols::Symbol,
     syntax::{
         Span, Syntax,
         parse::{ParseSyntaxError, Parser},
     },
-    value::{Expect1, Value},
+    value::Value,
     vectors::ByteVector,
 };
 
@@ -146,15 +145,15 @@ trait Decode {
 }
 
 struct Decoder<'a, D> {
-    data: &'a mut BinaryPortData,
-    info: &'a BinaryPortInfo,
+    data: &'a mut PortData,
+    info: &'a PortInfo,
     decode: D,
     char_idx: usize,
     pos: Either<usize, Exception>,
 }
 
 impl<'a, D> Decoder<'a, D> {
-    fn new(data: &'a mut BinaryPortData, info: &'a BinaryPortInfo, decode: D) -> Self {
+    fn new(data: &'a mut PortData, info: &'a PortInfo, decode: D) -> Self {
         Self {
             data,
             info,
@@ -217,16 +216,6 @@ impl BufferMode {
         }
     }
 
-    fn new_input_char_buffer(&self, is_input_port: bool) -> WideString {
-        if !is_input_port {
-            return WideString::from(Vec::new());
-        }
-        match self {
-            Self::None => WideString::mutable(vec!['\0']),
-            Self::Line | Self::Block => WideString::mutable(vec!['\0'; BUFFER_SIZE]),
-        }
-    }
-
     fn new_output_byte_buffer(&self, is_output_port: bool) -> ByteVector {
         if !is_output_port {
             return ByteVector::mutable(Vec::new());
@@ -234,16 +223,6 @@ impl BufferMode {
         match self {
             Self::None => ByteVector::mutable(Vec::new()),
             Self::Line | Self::Block => ByteVector::mutable(Vec::with_capacity(BUFFER_SIZE)),
-        }
-    }
-
-    fn new_output_char_buffer(&self, is_output_port: bool) -> WideString {
-        if !is_output_port {
-            return WideString::from(Vec::new());
-        }
-        match self {
-            Self::None => WideString::mutable(Vec::new()),
-            Self::Line | Self::Block => WideString::mutable(Vec::with_capacity(BUFFER_SIZE)),
         }
     }
 
@@ -1197,7 +1176,7 @@ impl PortInner {
         let close = P::close_fn().filter(|_| can_close);
 
         Self {
-            info: PortInfo::BinaryPort(BinaryPortInfo {
+            info: PortInfo {
                 id: id.to_string(),
                 can_read,
                 can_write,
@@ -1205,8 +1184,8 @@ impl PortInner {
                 can_set_pos,
                 buffer_mode,
                 transcoder,
-            }),
-            data: Mutex::new(PortData::BinaryPort(BinaryPortData {
+            },
+            data: Mutex::new(PortData {
                 inner_port: Some(port.into_port()),
                 input_pos: 0,
                 bytes_read: 0,
@@ -1222,7 +1201,7 @@ impl PortInner {
                 raw_fd: P::raw_fd_fn(),
                 poll_read_ready: P::poll_read_ready_fn(),
                 poll_write_ready: P::poll_write_ready_fn(),
-            })),
+            }),
         }
     }
 
@@ -1247,7 +1226,7 @@ impl PortInner {
         let close = close.map(proc_to_close_fn);
 
         Self {
-            info: PortInfo::BinaryPort(BinaryPortInfo {
+            info: PortInfo {
                 id: id.to_string(),
                 can_read: read.is_some(),
                 can_write: write.is_some(),
@@ -1255,8 +1234,8 @@ impl PortInner {
                 can_get_pos: get_pos.is_some(),
                 buffer_mode,
                 transcoder,
-            }),
-            data: Mutex::new(PortData::BinaryPort(BinaryPortData {
+            },
+            data: Mutex::new(PortData {
                 inner_port: Some(Box::new(())),
                 input_pos: 0,
                 bytes_read: 0,
@@ -1272,40 +1251,7 @@ impl PortInner {
                 raw_fd: None,
                 poll_read_ready: None,
                 poll_write_ready: None,
-            })),
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn new_custom_textual(
-        id: impl fmt::Display,
-        read: Option<Procedure>,
-        write: Option<Procedure>,
-        get_pos: Option<Procedure>,
-        set_pos: Option<Procedure>,
-        close: Option<Procedure>,
-        buffer_mode: BufferMode,
-    ) -> Self {
-        let is_read = read.is_some();
-        let is_write = write.is_some();
-
-        Self {
-            info: PortInfo::CustomTextualPort(CustomTextualPortInfo {
-                id: id.to_string(),
-                read,
-                write,
-                get_pos,
-                set_pos,
-                close,
-                buffer_mode,
             }),
-            data: Mutex::new(PortData::CustomTextualPort(CustomTextualPortData {
-                open: true,
-                input_pos: 0,
-                chars_read: 0,
-                input_buffer: buffer_mode.new_input_char_buffer(is_read),
-                output_buffer: buffer_mode.new_output_char_buffer(is_write),
-            })),
         }
     }
 }
@@ -1318,7 +1264,7 @@ type PortBox = Box<dyn Any + Send + Sync + 'static>;
 
 /// Immutable data describing the binary port.
 #[derive(Clone)]
-pub(crate) struct BinaryPortInfo {
+pub(crate) struct PortInfo {
     id: String,
     can_read: bool,
     can_write: bool,
@@ -1329,7 +1275,7 @@ pub(crate) struct BinaryPortInfo {
 }
 
 /// Mutable data contained in the binary port.
-pub(crate) struct BinaryPortData {
+pub(crate) struct PortData {
     inner_port: Option<PortBox>,
     input_pos: usize,
     bytes_read: usize,
@@ -1350,16 +1296,9 @@ pub(crate) struct BinaryPortData {
 
 pub const BUFFER_SIZE: usize = 8192;
 
-impl BinaryPortData {
+impl PortData {
     #[maybe_async]
-    fn read_byte(&mut self, port_info: &BinaryPortInfo) -> Result<Option<u8>, Exception> {
-        let next_byte = maybe_await!(self.peekn_bytes(port_info, 0))?;
-        maybe_await!(self.consume_bytes(port_info, 1))?;
-        Ok(next_byte)
-    }
-
-    #[maybe_async]
-    fn read_char(&mut self, port_info: &BinaryPortInfo) -> Result<Option<char>, Exception> {
+    pub(crate) fn read_char(&mut self, port_info: &PortInfo) -> Result<Option<char>, Exception> {
         let Some(next_char) = maybe_await!(self.peekn_chars(port_info, 0))? else {
             return Ok(None);
         };
@@ -1370,11 +1309,7 @@ impl BinaryPortData {
     }
 
     #[maybe_async]
-    fn peekn_bytes(
-        &mut self,
-        port_info: &BinaryPortInfo,
-        n: usize,
-    ) -> Result<Option<u8>, Exception> {
+    fn peekn_bytes(&mut self, port_info: &PortInfo, n: usize) -> Result<Option<u8>, Exception> {
         let Some(read) = self.read.as_ref() else {
             return Err(Exception::io_read_error("not an input port"));
         };
@@ -1461,7 +1396,7 @@ impl BinaryPortData {
     #[cfg(not(feature = "async"))]
     fn transcode<'a>(
         &'a mut self,
-        port_info: &'a BinaryPortInfo,
+        port_info: &'a PortInfo,
         transcoder: Transcoder,
     ) -> impl Iterator<Item = Result<(usize, char), Exception>> + use<'a> {
         let eol_type = transcoder.eol_type;
@@ -1500,7 +1435,7 @@ impl BinaryPortData {
     #[cfg(feature = "async")]
     fn transcode<'a>(
         &'a mut self,
-        port_info: &'a BinaryPortInfo,
+        port_info: &'a PortInfo,
         transcoder: Transcoder,
     ) -> impl futures::stream::Stream<Item = Result<(usize, char), Exception>> + use<'a> {
         let eol_type = transcoder.eol_type;
@@ -1552,7 +1487,7 @@ impl BinaryPortData {
     #[maybe_async]
     pub(crate) fn peekn_chars(
         &mut self,
-        port_info: &BinaryPortInfo,
+        port_info: &PortInfo,
         n: usize,
     ) -> Result<Option<char>, Exception> {
         let Some(transcoder) = port_info.transcoder else {
@@ -1583,7 +1518,7 @@ impl BinaryPortData {
     }
 
     #[maybe_async]
-    fn consume_bytes(&mut self, port_info: &BinaryPortInfo, n: usize) -> Result<(), Exception> {
+    fn consume_bytes(&mut self, port_info: &PortInfo, n: usize) -> Result<(), Exception> {
         if self.bytes_read < self.input_pos + n {
             let _ =
                 maybe_await!(self.peekn_bytes(port_info, self.input_pos + n - self.bytes_read))?;
@@ -1602,7 +1537,7 @@ impl BinaryPortData {
     #[maybe_async]
     pub(crate) fn consume_chars(
         &mut self,
-        port_info: &BinaryPortInfo,
+        port_info: &PortInfo,
         n: usize,
     ) -> Result<(), Exception> {
         let Some(transcoder) = port_info.transcoder else {
@@ -1632,7 +1567,7 @@ impl BinaryPortData {
     }
 
     #[maybe_async]
-    fn put_bytes(&mut self, port_info: &BinaryPortInfo, mut bytes: &[u8]) -> Result<(), Exception> {
+    fn put_bytes(&mut self, port_info: &PortInfo, mut bytes: &[u8]) -> Result<(), Exception> {
         let Some(write) = self.write.as_ref() else {
             return Err(Exception::io_write_error("not an output port"));
         };
@@ -1713,7 +1648,7 @@ impl BinaryPortData {
     }
 
     #[maybe_async]
-    fn put_str(&mut self, port_info: &BinaryPortInfo, s: &str) -> Result<(), Exception> {
+    fn put_str(&mut self, port_info: &PortInfo, s: &str) -> Result<(), Exception> {
         let Some(transcoder) = port_info.transcoder else {
             return Err(Exception::io_write_error("not a text port"));
         };
@@ -1831,466 +1766,6 @@ impl BinaryPortData {
         }
 
         Ok(())
-    }
-}
-
-/// Immutable data describing a CustomStringPort
-pub(crate) struct CustomTextualPortInfo {
-    id: String,
-    read: Option<Procedure>,
-    write: Option<Procedure>,
-    get_pos: Option<Procedure>,
-    set_pos: Option<Procedure>,
-    close: Option<Procedure>,
-    buffer_mode: BufferMode,
-}
-
-/// Mutable data contained in a CustomStringPort
-pub(crate) struct CustomTextualPortData {
-    open: bool,
-    input_pos: usize,
-    chars_read: usize,
-    input_buffer: WideString,
-    output_buffer: WideString,
-}
-
-impl CustomTextualPortData {
-    #[maybe_async]
-    fn peekn_chars(
-        &mut self,
-        port_info: &CustomTextualPortInfo,
-        n: usize,
-    ) -> Result<Option<char>, Exception> {
-        let Some(read) = port_info.read.as_ref() else {
-            return Err(Exception::io_read_error("not an input port"));
-        };
-
-        if !self.open {
-            return Err(Exception::io_error("port is closed"));
-        }
-
-        if let Some(write) = port_info.write.as_ref()
-            && let len = self.output_buffer.len()
-            && len != 0
-        {
-            maybe_await!(write.call(
-                &[
-                    Value::from(self.output_buffer.clone()),
-                    Value::from(0usize),
-                    Value::from(len)
-                ],
-                &mut ContBarrier::new()
-            ))?;
-            self.output_buffer.clear();
-        }
-
-        if n + self.input_pos > self.input_buffer.len() {
-            panic!("attempt to lookahead further than the buffer allows")
-        }
-
-        while self.chars_read <= n + self.input_pos {
-            let (start, count) = match port_info.buffer_mode {
-                BufferMode::None => (0, 1),
-                BufferMode::Line | BufferMode::Block => {
-                    (self.chars_read, self.input_buffer.len() - self.chars_read)
-                }
-            };
-            let read: usize = maybe_await!(read.call(
-                &[
-                    Value::from(self.input_buffer.clone()),
-                    Value::from(start),
-                    Value::from(count)
-                ],
-                &mut ContBarrier::new()
-            ))?
-            .expect1()?;
-
-            if read == 0 {
-                return Ok(None);
-            }
-            self.chars_read += read;
-        }
-
-        Ok(self.input_buffer.get(n + self.input_pos))
-    }
-
-    #[maybe_async]
-    fn read_char(&mut self, port_info: &CustomTextualPortInfo) -> Result<Option<char>, Exception> {
-        let next_chr = maybe_await!(self.peekn_chars(port_info, 0))?;
-        maybe_await!(self.consume_chars(port_info, 1))?;
-        Ok(next_chr)
-    }
-
-    #[maybe_async]
-    fn consume_chars(
-        &mut self,
-        port_info: &CustomTextualPortInfo,
-        n: usize,
-    ) -> Result<(), Exception> {
-        if self.chars_read < self.input_pos + n {
-            let _ =
-                maybe_await!(self.peekn_chars(port_info, self.input_pos + n - self.chars_read))?;
-        }
-
-        self.input_pos += n;
-
-        if self.input_pos >= self.input_buffer.len() {
-            self.input_pos -= self.input_buffer.len();
-            self.chars_read = 0;
-        }
-
-        Ok(())
-    }
-
-    #[maybe_async]
-    fn put_str(&mut self, port_info: &CustomTextualPortInfo, s: &str) -> Result<(), Exception> {
-        let Some(write) = port_info.write.as_ref() else {
-            return Err(Exception::io_write_error("not an output port"));
-        };
-
-        if !self.open {
-            return Err(Exception::io_error("port is closed"));
-        }
-
-        // If we can, seek back
-        if let Some(get_pos) = port_info.get_pos.as_ref()
-            && let Some(set_pos) = port_info.set_pos.as_ref()
-            && self.chars_read > 0
-        {
-            let curr_pos: u64 = maybe_await!(get_pos.call(&[], &mut ContBarrier::new()))?
-                .expect1()
-                .map_err(|err: Exception| err.add_condition(IoWriteError::new()))?;
-            let seek_to = curr_pos - (self.chars_read as u64 - self.input_pos as u64);
-            maybe_await!(set_pos.call(&[Value::from(seek_to)], &mut ContBarrier::new()))?;
-            self.chars_read = 0;
-            self.input_pos = 0;
-        }
-
-        match port_info.buffer_mode {
-            BufferMode::None => {
-                for chr in s.chars() {
-                    {
-                        self.output_buffer.0.chars.write()[0] = chr;
-                    }
-                    maybe_await!(write.call(
-                        &[
-                            Value::from(self.output_buffer.clone()),
-                            Value::from(0usize),
-                            Value::from(1usize)
-                        ],
-                        &mut ContBarrier::new()
-                    ))?;
-                }
-            }
-            BufferMode::Line => {
-                let mut lines = s.lines().peekable();
-                while let Some(line) = lines.next() {
-                    {
-                        let mut output_buffer = self.output_buffer.0.chars.write();
-                        output_buffer.extend(line.chars());
-                        if lines.peek().is_some() {
-                            output_buffer.push('\n');
-                        }
-                        if !output_buffer.ends_with(&['\n']) {
-                            break;
-                        }
-                    }
-                    let len = self.output_buffer.len();
-                    maybe_await!(write.call(
-                        &[
-                            Value::from(self.output_buffer.clone()),
-                            Value::from(0usize),
-                            Value::from(len)
-                        ],
-                        &mut ContBarrier::new()
-                    ))?;
-                    self.output_buffer.clear();
-                }
-            }
-            BufferMode::Block => {
-                for chr in s.chars() {
-                    let len = self.output_buffer.len();
-                    if len >= BUFFER_SIZE {
-                        maybe_await!(write.call(
-                            &[
-                                Value::from(self.output_buffer.clone()),
-                                Value::from(0usize),
-                                Value::from(len)
-                            ],
-                            &mut ContBarrier::new()
-                        ))?;
-                        self.output_buffer.clear();
-                    }
-                    self.output_buffer.0.chars.write().push(chr);
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    #[maybe_async]
-    fn flush(&mut self, port_info: &CustomTextualPortInfo) -> Result<(), Exception> {
-        let Some(write) = port_info.write.as_ref() else {
-            return Err(Exception::io_write_error("not an output port"));
-        };
-
-        if !self.open {
-            return Err(Exception::io_error("port is closed"));
-        }
-
-        maybe_await!(write.call(
-            &[
-                Value::from(self.output_buffer.clone()),
-                Value::from(0usize),
-                Value::from(self.output_buffer.len()),
-            ],
-            &mut ContBarrier::new()
-        ))?;
-        self.output_buffer.clear();
-
-        Ok(())
-    }
-
-    #[maybe_async]
-    fn get_pos(&mut self, port_info: &CustomTextualPortInfo) -> Result<u64, Exception> {
-        let Some(get_pos) = port_info.get_pos.as_ref() else {
-            return Err(Exception::io_error("port does not support port-position"));
-        };
-
-        if !self.open {
-            return Err(Exception::io_error("port is closed"));
-        }
-
-        maybe_await!(get_pos.call(&[], &mut ContBarrier::new()))?.expect1()
-    }
-
-    #[maybe_async]
-    fn set_pos(&mut self, port_info: &CustomTextualPortInfo, pos: u64) -> Result<(), Exception> {
-        let Some(set_pos) = port_info.set_pos.as_ref() else {
-            return Err(Exception::io_error(
-                "port does not support set-port-position!",
-            ));
-        };
-
-        if !self.open {
-            return Err(Exception::io_error("port is closed"));
-        }
-
-        // Reset the buffers
-        if let Some(write) = port_info.write.as_ref() {
-            maybe_await!(write.call(
-                &[
-                    Value::from(self.output_buffer.clone()),
-                    Value::from(0usize),
-                    Value::from(self.output_buffer.len()),
-                ],
-                &mut ContBarrier::new()
-            ))?;
-            self.output_buffer.clear();
-        }
-
-        self.chars_read = 0;
-        self.input_pos = 0;
-
-        maybe_await!(set_pos.call(&[Value::from(pos)], &mut ContBarrier::new()))?;
-
-        Ok(())
-    }
-
-    #[maybe_async]
-    fn close(&mut self, port_info: &CustomTextualPortInfo) -> Result<(), Exception> {
-        if !self.open {
-            // TODO: Do we return an error here?
-            return Ok(());
-        }
-
-        self.open = false;
-
-        maybe_await!(self.flush(port_info))?;
-
-        if let Some(close) = port_info.close.as_ref() {
-            maybe_await!(close.call(&[], &mut ContBarrier::new()))?;
-        }
-
-        Ok(())
-    }
-}
-
-pub(crate) enum PortInfo {
-    BinaryPort(BinaryPortInfo),
-    CustomTextualPort(CustomTextualPortInfo),
-}
-
-pub(crate) enum PortData {
-    BinaryPort(BinaryPortData),
-    CustomTextualPort(CustomTextualPortData),
-}
-
-impl PortData {
-    #[allow(dead_code)]
-    #[maybe_async]
-    fn read_byte(&mut self, port_info: &PortInfo) -> Result<Option<u8>, Exception> {
-        match (self, port_info) {
-            (Self::BinaryPort(port_data), PortInfo::BinaryPort(port_info)) => {
-                maybe_await!(port_data.read_byte(port_info))
-            }
-            (Self::CustomTextualPort(_), PortInfo::CustomTextualPort(_)) => {
-                Err(Exception::io_read_error("not a binary port"))
-            }
-            _ => unreachable!(),
-        }
-    }
-
-    #[maybe_async]
-    pub(crate) fn read_char(&mut self, port_info: &PortInfo) -> Result<Option<char>, Exception> {
-        match (self, port_info) {
-            (Self::BinaryPort(port_data), PortInfo::BinaryPort(port_info)) => {
-                maybe_await!(port_data.read_char(port_info))
-            }
-            (Self::CustomTextualPort(port_data), PortInfo::CustomTextualPort(port_info)) => {
-                maybe_await!(port_data.read_char(port_info))
-            }
-            _ => unreachable!(),
-        }
-    }
-
-    #[maybe_async]
-    fn peekn_bytes(&mut self, port_info: &PortInfo, n: usize) -> Result<Option<u8>, Exception> {
-        match (self, port_info) {
-            (Self::BinaryPort(port_data), PortInfo::BinaryPort(port_info)) => {
-                maybe_await!(port_data.peekn_bytes(port_info, n))
-            }
-            (Self::CustomTextualPort(_), PortInfo::CustomTextualPort(_)) => {
-                Err(Exception::io_read_error("not a binary port"))
-            }
-            _ => unreachable!(),
-        }
-    }
-
-    #[maybe_async]
-    pub(crate) fn peekn_chars(
-        &mut self,
-        port_info: &PortInfo,
-        n: usize,
-    ) -> Result<Option<char>, Exception> {
-        match (self, port_info) {
-            (Self::BinaryPort(port_data), PortInfo::BinaryPort(port_info)) => {
-                maybe_await!(port_data.peekn_chars(port_info, n))
-            }
-            (Self::CustomTextualPort(port_data), PortInfo::CustomTextualPort(port_info)) => {
-                maybe_await!(port_data.peekn_chars(port_info, n))
-            }
-            _ => unreachable!(),
-        }
-    }
-
-    #[maybe_async]
-    fn consume_bytes(&mut self, port_info: &PortInfo, n: usize) -> Result<(), Exception> {
-        match (self, port_info) {
-            (Self::BinaryPort(port_data), PortInfo::BinaryPort(port_info)) => {
-                maybe_await!(port_data.consume_bytes(port_info, n))
-            }
-            (Self::CustomTextualPort(_), PortInfo::CustomTextualPort(_)) => {
-                Err(Exception::io_read_error("not a binary port"))
-            }
-            _ => unreachable!(),
-        }
-    }
-
-    #[maybe_async]
-    pub(crate) fn consume_chars(
-        &mut self,
-        port_info: &PortInfo,
-        n: usize,
-    ) -> Result<(), Exception> {
-        match (self, port_info) {
-            (Self::BinaryPort(port_data), PortInfo::BinaryPort(port_info)) => {
-                maybe_await!(port_data.consume_chars(port_info, n))
-            }
-            (Self::CustomTextualPort(port_data), PortInfo::CustomTextualPort(port_info)) => {
-                maybe_await!(port_data.consume_chars(port_info, n))
-            }
-            _ => unreachable!(),
-        }
-    }
-
-    #[maybe_async]
-    fn put_bytes(&mut self, port_info: &PortInfo, bytes: &[u8]) -> Result<(), Exception> {
-        match (self, port_info) {
-            (Self::BinaryPort(port_data), PortInfo::BinaryPort(port_info)) => {
-                maybe_await!(port_data.put_bytes(port_info, bytes))
-            }
-            (Self::CustomTextualPort(_), PortInfo::CustomTextualPort(_)) => {
-                Err(Exception::io_read_error("not a binary port"))
-            }
-            _ => unreachable!(),
-        }
-    }
-
-    #[maybe_async]
-    fn put_str(&mut self, port_info: &PortInfo, s: &str) -> Result<(), Exception> {
-        match (self, port_info) {
-            (Self::BinaryPort(port_data), PortInfo::BinaryPort(port_info)) => {
-                maybe_await!(port_data.put_str(port_info, s))
-            }
-            (Self::CustomTextualPort(port_data), PortInfo::CustomTextualPort(port_info)) => {
-                maybe_await!(port_data.put_str(port_info, s))
-            }
-            _ => unreachable!(),
-        }
-    }
-
-    #[maybe_async]
-    fn flush(&mut self, port_info: &PortInfo) -> Result<(), Exception> {
-        match (self, port_info) {
-            (Self::BinaryPort(port_data), _) => {
-                maybe_await!(port_data.flush())
-            }
-            (Self::CustomTextualPort(port_data), PortInfo::CustomTextualPort(port_info)) => {
-                maybe_await!(port_data.flush(port_info))
-            }
-            _ => unreachable!(),
-        }
-    }
-
-    #[maybe_async]
-    fn get_pos(&mut self, port_info: &PortInfo) -> Result<u64, Exception> {
-        match (self, port_info) {
-            (Self::BinaryPort(port_data), _) => {
-                maybe_await!(port_data.get_pos())
-            }
-            (Self::CustomTextualPort(port_data), PortInfo::CustomTextualPort(port_info)) => {
-                maybe_await!(port_data.get_pos(port_info))
-            }
-            _ => unreachable!(),
-        }
-    }
-
-    #[maybe_async]
-    fn set_pos(&mut self, port_info: &PortInfo, pos: u64) -> Result<(), Exception> {
-        match (self, port_info) {
-            (Self::BinaryPort(port_data), _) => {
-                maybe_await!(port_data.set_pos(pos))
-            }
-            (Self::CustomTextualPort(port_data), PortInfo::CustomTextualPort(port_info)) => {
-                maybe_await!(port_data.set_pos(port_info, pos))
-            }
-            _ => unreachable!(),
-        }
-    }
-
-    #[maybe_async]
-    fn close(&mut self, port_info: &PortInfo) -> Result<(), Exception> {
-        match (self, port_info) {
-            (Self::BinaryPort(port_data), _) => {
-                maybe_await!(port_data.close())
-            }
-            (Self::CustomTextualPort(port_data), PortInfo::CustomTextualPort(port_info)) => {
-                maybe_await!(port_data.close(port_info))
-            }
-            _ => unreachable!(),
-        }
     }
 }
 
@@ -2447,29 +1922,6 @@ impl Port {
         )))
     }
 
-    /// Create a new custom textual port from a set of procedures and a
-    /// [buffer mode](BufferMode).
-    #[allow(clippy::too_many_arguments)]
-    pub fn new_custom_textual(
-        id: impl fmt::Display,
-        read: Option<Procedure>,
-        write: Option<Procedure>,
-        get_pos: Option<Procedure>,
-        set_pos: Option<Procedure>,
-        close: Option<Procedure>,
-        buffer_mode: BufferMode,
-    ) -> Self {
-        Self(Embedded::new(PortInner::new_custom_textual(
-            id,
-            read,
-            write,
-            get_pos,
-            set_pos,
-            close,
-            buffer_mode,
-        )))
-    }
-
     #[cfg(unix)]
     #[maybe_async]
     pub fn raw_fd(&self) -> Option<std::os::fd::RawFd> {
@@ -2478,13 +1930,9 @@ impl Port {
         #[cfg(feature = "async")]
         let data = self.0.data.lock().await;
 
-        match &*data {
-            PortData::BinaryPort(bp) => bp
-                .raw_fd
-                .as_ref()
-                .and_then(|f| bp.inner_port.as_deref().map(|port| f(port))),
-            PortData::CustomTextualPort(_) => None,
-        }
+        data.raw_fd
+            .as_ref()
+            .and_then(|f| data.inner_port.as_deref().map(|port| f(port)))
     }
 
     #[maybe_async]
@@ -2494,14 +1942,10 @@ impl Port {
         #[cfg(feature = "async")]
         let data = self.0.data.lock().await;
 
-        match &*data {
-            PortData::BinaryPort(bp) => bp
-                .poll_read_ready
-                .as_ref()
-                .and_then(|f| bp.inner_port.as_deref().map(|port| f(port)))
-                .unwrap_or(false),
-            PortData::CustomTextualPort(_) => false,
-        }
+        data.poll_read_ready
+            .as_ref()
+            .and_then(|f| data.inner_port.as_deref().map(|port| f(port)))
+            .unwrap_or(false)
     }
 
     #[maybe_async]
@@ -2511,86 +1955,51 @@ impl Port {
         #[cfg(feature = "async")]
         let data = self.0.data.lock().await;
 
-        match &*data {
-            PortData::BinaryPort(bp) => bp
-                .poll_write_ready
-                .as_ref()
-                .and_then(|f| bp.inner_port.as_deref().map(|port| f(port)))
-                .unwrap_or(false),
-            PortData::CustomTextualPort(_) => false,
-        }
+        data.poll_write_ready
+            .as_ref()
+            .and_then(|f| data.inner_port.as_deref().map(|port| f(port)))
+            .unwrap_or(false)
     }
 
     /// Return the Id of the port.
     pub fn id(&self) -> &str {
-        match &self.0.info {
-            PortInfo::BinaryPort(BinaryPortInfo { id, .. }) => id.as_str(),
-            PortInfo::CustomTextualPort(CustomTextualPortInfo { id, .. }) => id.as_str(),
-        }
+        self.0.info.id.as_str()
     }
 
     /// Returns the transcoder of the port.
     pub fn transcoder(&self) -> Option<Transcoder> {
-        match self.0.info {
-            PortInfo::BinaryPort(BinaryPortInfo { transcoder, .. }) => transcoder,
-            PortInfo::CustomTextualPort(_) => None,
-        }
+        self.0.info.transcoder
     }
 
     /// Returns the buffer mode of the port.
     pub fn buffer_mode(&self) -> BufferMode {
-        match self.0.info {
-            PortInfo::BinaryPort(BinaryPortInfo { buffer_mode, .. }) => buffer_mode,
-            PortInfo::CustomTextualPort(CustomTextualPortInfo { buffer_mode, .. }) => buffer_mode,
-        }
+        self.0.info.buffer_mode
     }
 
     /// Returns whether or not this port supports the `port-position` procedure.
     pub fn has_port_position(&self) -> bool {
-        match &self.0.info {
-            PortInfo::BinaryPort(BinaryPortInfo { can_get_pos, .. }) => *can_get_pos,
-            PortInfo::CustomTextualPort(CustomTextualPortInfo { get_pos, .. }) => get_pos.is_some(),
-        }
+        self.0.info.can_get_pos
     }
 
     /// Returns whether or not this port supports the `set-port-position!`
     /// procedure.
     pub fn has_set_port_position(&self) -> bool {
-        match &self.0.info {
-            PortInfo::BinaryPort(BinaryPortInfo { can_set_pos, .. }) => *can_set_pos,
-            PortInfo::CustomTextualPort(CustomTextualPortInfo { set_pos, .. }) => set_pos.is_some(),
-        }
+        self.0.info.can_set_pos
     }
 
     /// Returns whether or not this port is a textual port.
     pub fn is_textual_port(&self) -> bool {
-        matches!(
-            self.0.info,
-            PortInfo::BinaryPort(BinaryPortInfo {
-                transcoder: Some(_),
-                ..
-            }) | PortInfo::CustomTextualPort(_)
-        )
+        self.0.info.transcoder.is_some()
     }
 
     /// Returns whether or not this port supports receiving input.
     pub fn is_input_port(&self) -> bool {
-        matches!(
-            self.0.info,
-            PortInfo::BinaryPort(BinaryPortInfo { can_read: true, .. })
-                | PortInfo::CustomTextualPort(CustomTextualPortInfo { read: Some(_), .. })
-        )
+        self.0.info.can_read
     }
 
     /// Returns whether or not this port supports sending output.
     pub fn is_output_port(&self) -> bool {
-        matches!(
-            self.0.info,
-            PortInfo::BinaryPort(BinaryPortInfo {
-                can_write: true,
-                ..
-            }) | PortInfo::CustomTextualPort(CustomTextualPortInfo { write: Some(_), .. })
-        )
+        self.0.info.can_write
     }
 
     /// Read a single byte from the port. Returns an exception if the port is
@@ -2810,7 +2219,7 @@ impl Port {
         #[cfg(feature = "async")]
         let mut data = self.0.data.lock().await;
 
-        maybe_await!(data.flush(&self.0.info))
+        maybe_await!(data.flush())
     }
 
     /// Return the position of the port, erroring if the operation is not
@@ -2823,7 +2232,7 @@ impl Port {
         #[cfg(feature = "async")]
         let mut data = self.0.data.lock().await;
 
-        maybe_await!(data.get_pos(&self.0.info))
+        maybe_await!(data.get_pos())
     }
 
     /// Sets the position of the port, erroring if the operation is not
@@ -2836,7 +2245,7 @@ impl Port {
         #[cfg(feature = "async")]
         let mut data = self.0.data.lock().await;
 
-        maybe_await!(data.set_pos(&self.0.info, pos))
+        maybe_await!(data.set_pos(pos))
     }
 }
 
@@ -3493,19 +2902,14 @@ pub fn transcoded_port(port: Port, transcoder: Embedded<Transcoder>) -> Result<P
     }
 
     #[cfg(not(feature = "async"))]
-    let mut data = port.0.data.lock().unwrap();
+    let mut port_data = port.0.data.lock().unwrap();
 
     #[cfg(feature = "tokio")]
-    let mut data = port.0.data.lock().await;
+    let mut port_data = port.0.data.lock().await;
 
-    let PortData::BinaryPort(port_data) = &mut *data else {
-        unreachable!()
-    };
-    let PortInfo::BinaryPort(ref port_info) = port.0.info else {
-        unreachable!()
-    };
+    let port_info = &port.0.info;
 
-    let new_data = BinaryPortData {
+    let data = PortData {
         inner_port: port_data.inner_port.take(),
         input_pos: port_data.input_pos,
         bytes_read: port_data.bytes_read,
@@ -3523,14 +2927,14 @@ pub fn transcoded_port(port: Port, transcoder: Embedded<Transcoder>) -> Result<P
         poll_write_ready: port_data.poll_write_ready.take(),
     };
 
-    let new_info = BinaryPortInfo {
+    let info = PortInfo {
         transcoder: Some(*transcoder),
         ..port_info.clone()
     };
 
     Ok(Port(Embedded::new(PortInner {
-        info: PortInfo::BinaryPort(new_info),
-        data: Mutex::new(PortData::BinaryPort(new_data)),
+        info,
+        data: Mutex::new(data),
     })))
 }
 
@@ -3566,7 +2970,7 @@ pub fn close_port(port: Port, _barrier: &mut ContBarrier<'_>) -> Result<(), Exce
     #[cfg(feature = "tokio")]
     let mut data = port.0.data.lock().await;
 
-    maybe_await!(data.close(&port.0.info))?;
+    maybe_await!(data.close())?;
 
     Ok(())
 }
@@ -3645,49 +3049,6 @@ pub fn make_custom_binary_input_port(
         close,
         BufferMode::Block,
         None,
-    ))
-}
-
-#[bridge(
-    name = "make-custom-textual-input-port",
-    lib = "(rnrs io builtins (6))"
-)]
-pub fn make_custom_textual_input_port(
-    id: Value,
-    read: Procedure,
-    get_position: Value,
-    set_position: Value,
-    close: Value,
-) -> Result<Port, Exception> {
-    let get_pos = if get_position.is_true() {
-        let get_pos: Procedure = get_position.clone().try_into()?;
-        Some(get_pos)
-    } else {
-        None
-    };
-
-    let set_pos = if set_position.is_true() {
-        let set_pos: Procedure = set_position.clone().try_into()?;
-        Some(set_pos)
-    } else {
-        None
-    };
-
-    let close = if close.is_true() {
-        let close: Procedure = close.clone().try_into()?;
-        Some(close)
-    } else {
-        None
-    };
-
-    Ok(Port::new_custom_textual(
-        id.to_string(),
-        Some(read),
-        None,
-        get_pos,
-        set_pos,
-        close,
-        BufferMode::Block,
     ))
 }
 
@@ -3906,49 +3267,6 @@ pub fn make_custom_binary_output_port(
     ))
 }
 
-#[bridge(
-    name = "make-custom-textual-output-port",
-    lib = "(rnrs io builtins (6))"
-)]
-pub fn make_custom_textual_output_port(
-    id: Value,
-    write: Procedure,
-    get_position: Value,
-    set_position: Value,
-    close: Value,
-) -> Result<Port, Exception> {
-    let get_pos = if get_position.is_true() {
-        let get_pos: Procedure = get_position.clone().try_into()?;
-        Some(get_pos)
-    } else {
-        None
-    };
-
-    let set_pos = if set_position.is_true() {
-        let set_pos: Procedure = set_position.clone().try_into()?;
-        Some(set_pos)
-    } else {
-        None
-    };
-
-    let close = if close.is_true() {
-        let close: Procedure = close.clone().try_into()?;
-        Some(close)
-    } else {
-        None
-    };
-
-    Ok(Port::new_custom_textual(
-        id.to_string(),
-        None,
-        Some(write),
-        get_pos,
-        set_pos,
-        close,
-        BufferMode::Block,
-    ))
-}
-
 // 8.2.11. Binary output
 
 #[maybe_async]
@@ -4030,11 +3348,11 @@ pub fn put_char(port: Port, chr: char) -> Result<(), Exception> {
 #[bridge(name = "put-string", lib = "(rnrs io builtins (6))")]
 pub fn put_string(
     port: Port,
-    string: WideString,
+    string: Embedded<String>,
     start: Option<usize>,
     count: Option<usize>,
 ) -> Result<(), Exception> {
-    let string = string.as_slice();
+    let string = string.chars().collect::<Vec<_>>();
     let slice = match (start, count) {
         (None, _) => &string[..],
         (Some(start), None) => {
@@ -4058,12 +3376,12 @@ pub fn put_string(
 #[bridge(name = "put-string", lib = "(rnrs io builtins (6))")]
 pub async fn put_string(
     port: Port,
-    string: WideString,
+    string: Embedded<String>,
     start: Option<usize>,
     count: Option<usize>,
 ) -> Result<(), Exception> {
     let slice = {
-        let string = string.as_slice();
+        let string = string.chars().collect::<Vec<_>>();
         match (start, count) {
             (None, _) => string[..].to_vec(),
             (Some(start), None) => {
@@ -4153,50 +3471,6 @@ pub fn make_custom_binary_input_output_port(
         close,
         BufferMode::Block,
         None,
-    ))
-}
-
-#[bridge(
-    name = "make-custom-textual-input/output-port",
-    lib = "(rnrs io builtins (6))"
-)]
-pub fn make_custom_textual_input_output_port(
-    id: Value,
-    read: Procedure,
-    write: Procedure,
-    get_position: Value,
-    set_position: Value,
-    close: Value,
-) -> Result<Port, Exception> {
-    let get_pos = if get_position.is_true() {
-        let get_pos: Procedure = get_position.clone().try_into()?;
-        Some(get_pos)
-    } else {
-        None
-    };
-
-    let set_pos = if set_position.is_true() {
-        let set_pos: Procedure = set_position.clone().try_into()?;
-        Some(set_pos)
-    } else {
-        None
-    };
-
-    let close = if close.is_true() {
-        let close: Procedure = close.clone().try_into()?;
-        Some(close)
-    } else {
-        None
-    };
-
-    Ok(Port::new_custom_textual(
-        id.to_string(),
-        Some(read),
-        Some(write),
-        get_pos,
-        set_pos,
-        close,
-        BufferMode::Block,
     ))
 }
 

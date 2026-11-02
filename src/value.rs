@@ -94,7 +94,6 @@ use crate::{
     proc::{ContBarrier, Procedure, ProcedureInner, ReturnAddress},
     records::{Embeddable, Embedded, Record, RecordInner, RecordTypeDescriptor},
     registry::bridge,
-    strings::WideString,
     symbols::Symbol,
     syntax::Syntax,
     vectors::VectorInner,
@@ -1256,15 +1255,6 @@ impl TryFrom<&Value> for (Value, Value) {
 
     fn try_from(val: &Value) -> Result<Self, Self::Error> {
         Self::try_from(val.clone().unpack())
-    }
-}
-
-impl TryFrom<Value> for String {
-    type Error = Exception;
-
-    fn try_from(value: Value) -> Result<Self, Self::Error> {
-        let string: WideString = value.try_into()?;
-        Ok(string.into())
     }
 }
 

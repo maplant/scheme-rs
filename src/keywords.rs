@@ -4,7 +4,7 @@ use std::sync::{LazyLock, Mutex};
 use scheme_rs_macros::{Trace, bridge};
 
 use crate::records::Embedded;
-use crate::{records::Embeddable, strings::WideString, symbols::Symbol, value::Value};
+use crate::{records::Embeddable, symbols::Symbol, value::Value};
 
 #[derive(Debug, Clone, Trace, Embeddable)]
 #[scheme(name = "keyword", sealed = true, opaque = true)]
@@ -35,6 +35,6 @@ pub fn keyword_to_string(kw: Embedded<Keyword>) -> String {
 }
 
 #[bridge(name = "string->keyword", lib = "(srfi :88)")]
-pub fn string_to_keyword(s: WideString) -> Value {
-    Keyword::intern(&s.to_string())
+pub fn string_to_keyword(s: Embedded<String>) -> Value {
+    Keyword::intern(&s)
 }
