@@ -5,9 +5,9 @@ use std::sync::TryLockError;
 use allocator_api2::alloc::{Allocator, Global};
 
 use crate::{
-    Heap, ObjectModel,
-    large::PAGE,
-    large::Run,
+    Heap,
+    heap::ObjectHeader,
+    large::{PAGE, Run},
     region::{
         ALL_LINES, BLOCK_SIZE, BlockId, GRANULE, OwnedBlock, ReclaimerToken, Region, State,
         is_large,
@@ -53,13 +53,13 @@ impl ReclaimerState {
 
 /// The heap's one handle for freeing objects and sweeping. `!Send`: it holds
 /// the reclaimer lock.
-pub struct Reclaimer<'h, M: ObjectModel, A: Allocator = Global> {
-    heap: &'h Heap<M, A>,
+pub struct Reclaimer<'h, H: ObjectHeader, A: Allocator = Global> {
+    heap: &'h Heap<H, A>,
     state: MutexGuard<'h, ReclaimerState>,
 }
 
-impl<'h, M: ObjectModel, A: Allocator> Reclaimer<'h, M, A> {
-    pub(crate) fn new(heap: &'h Heap<M, A>) -> Self {
+impl<'h, H: ObjectHeader, A: Allocator> Reclaimer<'h, H, A> {
+    pub(crate) fn new(heap: &'h Heap<H, A>) -> Self {
         let state = match heap.reclaimer.try_lock() {
             Ok(state) => state,
             Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
@@ -73,13 +73,13 @@ impl<'h, M: ObjectModel, A: Allocator> Reclaimer<'h, M, A> {
     /// # Safety
     ///
     /// `obj` was allocated by this heap, is dead, is freed at most once, and
-    /// its `M::Header` is still intact.
+    /// its `H::Header` is still intact.
     ///
     /// # Panics
     ///
     /// If an object's pointer is not in this heap.
     pub unsafe fn free(&mut self, obj: NonNull<u8>) {
-        let layout = M::layout(unsafe { obj.cast::<M::Header>().as_ref() });
+        let layout = unsafe { obj.cast::<H>().as_ref().layout() };
         if is_large(layout) {
             self.free_large(layout, obj);
             return;

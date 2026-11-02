@@ -267,7 +267,7 @@ fn compilation_buffer() -> (CompilationBufferTx, CompilationBufferRx) {
 impl RuntimeInner {
     fn new() -> Self {
         // Ensure the GC is initialized:
-        init_gc();
+        let _ = init_gc();
 
         // Obtain the JIT entry functions:
         let mut module = make_jit_module();

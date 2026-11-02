@@ -86,7 +86,7 @@ fn a_full_heap_fails_and_recovers_after_a_free() {
 #[test]
 fn mutator_is_send() {
     fn assert_send<T: Send>() {}
-    assert_send::<Mutator<'_, TestModel>>();
+    assert_send::<Mutator<'_, TestHeader>>();
 }
 
 #[test]

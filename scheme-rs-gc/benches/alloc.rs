@@ -1,15 +1,16 @@
 use core::alloc::Layout;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use scheme_rs_gc::{Heap, ObjectModel};
+use scheme_rs_gc::{Heap, ObjectHeader};
 
-struct Model;
+struct Model {
+    layout: Layout,
+}
 
-unsafe impl ObjectModel for Model {
-    type Header = Layout;
-
-    fn layout(header: &Layout) -> Layout {
-        *header
+unsafe impl ObjectHeader for Model {
+    type HeapState = ();
+    fn layout(&self) -> Layout {
+        self.layout
     }
 }
 
