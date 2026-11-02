@@ -3,9 +3,8 @@ use core::{alloc::Layout, marker::PhantomData, ptr::NonNull};
 use allocator_api2::alloc::{AllocError, Allocator, Global};
 
 use crate::{
-    Mutator, ObjectModel, Reclaimer,
-    large::PAGE,
-    large::Run,
+    GRANULE, Mutator, ObjectModel, Reclaimer,
+    large::{PAGE, Run},
     reclaimer::ReclaimerState,
     region::{ALL_LINES, BLOCK_SIZE, OwnedBlock, Region, State},
     sync::{AtomicUsize, Mutex, Ordering, lock},
@@ -147,6 +146,25 @@ impl<M: ObjectModel, A: Allocator> Heap<M, A> {
             })
             .map(drop)
             .map_err(|_| AllocError)
+    }
+
+    /// The object containing `addr`, if any: an exact or interior pointer into
+    /// a live small or large object.
+    ///
+    /// # Safety
+    ///
+    /// No object is freed concurrently: call it from the thread that frees,
+    /// or while that thread is stopped.
+    pub unsafe fn find_object_of_addr(&self, addr: usize) -> Option<NonNull<u8>> {
+        let obj = self
+            .region
+            .object_at_or_before(addr)
+            .or(self.region.large.object_at_or_before(addr))?;
+
+        let layout = M::layout(unsafe { obj.cast::<M::Header>().as_ref() });
+        let size = layout.size().max(GRANULE);
+
+        (addr - obj.addr().get() < size).then_some(obj)
     }
 
     pub(crate) fn return_space(&self, bytes: usize) {
