@@ -39,7 +39,7 @@ impl Compiler {
         let cps = Cps::new(Inst::Fix(
             vec![LambdaBinding {
                 args: LambdaArgs::new(vec![result], true, None),
-                body: Box::new(Cps::new(Inst::Halt(Value::from(result)))),
+                body: Cps::new(Inst::Halt(Value::from(result))),
                 val: k,
                 span: None,
             }],
@@ -109,17 +109,17 @@ fn compile_lambda(
     Cps::new(Inst::Fix(
         vec![LambdaBinding {
             args: LambdaArgs::new(vec![k2], false, None),
-            body: Box::new(Cps::new(Inst::Fix(
+            body: Cps::new(Inst::Fix(
                 vec![LambdaBinding {
                     args: LambdaArgs::new(args, is_variadic, Some(k3)),
-                    body: Box::new(body.compile(ctxt, &mut |result| {
+                    body: body.compile(ctxt, &mut |result| {
                         Cps::new(Inst::App(result, vec![Value::from(k3)]))
-                    })),
+                    }),
                     val: k4,
                     span: Some(span.clone()),
                 }],
                 Box::new(Cps::new(Inst::App(Value::from(k2), vec![Value::from(k4)]))),
-            ))),
+            )),
             val: k1,
             span: Some(span),
         }],
@@ -146,19 +146,19 @@ fn compile_let(
         Cps::new(Inst::Fix(
             vec![LambdaBinding {
                 args: LambdaArgs::new(vec![k2], false, None),
-                body: Box::new(Cps::new(Inst::Fix(
+                body: Cps::new(Inst::Fix(
                     vec![LambdaBinding {
                         args: LambdaArgs::new(vec![*curr_bind], false, None),
-                        body: Box::new(compile_let(ctxt, tail, body, &mut move |result| {
+                        body: compile_let(ctxt, tail, body, &mut move |result| {
                             Cps::new(Inst::App(result, vec![Value::from(k2)]))
-                        })),
+                        }),
                         val: k3,
                         span: None,
                     }],
                     Box::new(curr_expr.compile(ctxt, &mut move |result| {
                         Cps::new(Inst::App(result, vec![Value::from(k3)]))
                     })),
-                ))),
+                )),
                 val: k1,
                 span: None,
             }],
@@ -214,9 +214,9 @@ impl Compile for LetRec {
                             lambda.args.is_variadic(),
                             Some(k3),
                         ),
-                        body: Box::new(lambda.body.compile(ctxt, &mut |result| {
+                        body: lambda.body.compile(ctxt, &mut |result| {
                             Cps::new(Inst::App(result, vec![Value::from(k3)]))
-                        })),
+                        }),
                         val: *local,
                         span: Some(lambda.span.clone()),
                     }
@@ -255,10 +255,10 @@ fn compile_letrec_complex_bindings(
         Cps::new(Inst::Fix(
             vec![LambdaBinding {
                 args: LambdaArgs::new(vec![k2], false, None),
-                body: Box::new(Cps::new(Inst::Fix(
+                body: Cps::new(Inst::Fix(
                     vec![LambdaBinding {
                         args: LambdaArgs::new(vec![expr_result], false, None),
-                        body: Box::new(Cps::new(Inst::PrimOp(
+                        body: Cps::new(Inst::PrimOp(
                             PrimOp::SetCell,
                             vec![Value::from(*curr_bind), Value::Var(Var::Local(expr_result))],
                             Box::new(compile_letrec_complex_bindings(
@@ -269,14 +269,14 @@ fn compile_letrec_complex_bindings(
                                     Cps::new(Inst::App(result, vec![Value::from(k2)]))
                                 },
                             )),
-                        ))),
+                        )),
                         val: k3,
                         span: None,
                     }],
                     Box::new(curr_expr.compile(ctxt, &mut move |result| {
                         Cps::new(Inst::App(result, vec![Value::from(k3)]))
                     })),
-                ))),
+                )),
                 val: k1,
                 span: None,
             }],
@@ -316,7 +316,7 @@ impl Compile for Var {
         let k2 = Local::gensym();
         let read_var = || {
             let read_value = Local::gensym();
-            Box::new(Cps::with_dest(
+            Cps::with_dest(
                 Inst::PrimOp(
                     PrimOp::ReadCell,
                     vec![Value::from(self.clone())],
@@ -326,7 +326,7 @@ impl Compile for Var {
                     ))),
                 ),
                 read_value,
-            ))
+            )
         };
         Cps::new(Inst::Fix(
             vec![LambdaBinding {
@@ -334,10 +334,9 @@ impl Compile for Var {
                 body: match self {
                     Var::Global(_) => read_var(),
                     Var::Local(local) if ctxt.needs_cell.contains(local) => read_var(),
-                    Var::Local(_) => Box::new(Cps::new(Inst::App(
-                        Value::from(k2),
-                        vec![Value::from(self.clone())],
-                    ))),
+                    Var::Local(_) => {
+                        Cps::new(Inst::App(Value::from(k2), vec![Value::from(self.clone())]))
+                    }
                 },
                 val: k1,
                 span: None,
@@ -356,7 +355,7 @@ impl Compile for [Expression] {
                 Cps::new(Inst::Fix(
                     vec![LambdaBinding {
                         args: LambdaArgs::new(vec![k2], false, None),
-                        body: Box::new(Cps::new(Inst::App(Value::from(k2), Vec::new()))),
+                        body: Cps::new(Inst::App(Value::from(k2), Vec::new())),
                         val: k1,
                         span: None,
                     }],
@@ -370,7 +369,7 @@ impl Compile for [Expression] {
                 Cps::new(Inst::Fix(
                     vec![LambdaBinding {
                         args: LambdaArgs::new(vec![k1], true, None),
-                        body: Box::new(tail.compile(ctxt, meta_cont)),
+                        body: tail.compile(ctxt, meta_cont),
                         val: k2,
                         span: None,
                     }],
@@ -389,10 +388,10 @@ fn compile_undefined(meta_cont: &mut dyn FnMut(Value) -> Cps) -> Cps {
     Cps::new(Inst::Fix(
         vec![LambdaBinding {
             args: LambdaArgs::new(vec![k2], false, None),
-            body: Box::new(Cps::new(Inst::App(
+            body: Cps::new(Inst::App(
                 Value::from(k2),
                 vec![Value::from(RuntimeValue::undefined())],
-            ))),
+            )),
             val: k1,
             span: None,
         }],
@@ -407,10 +406,7 @@ impl Compile for RuntimeValue {
         Cps::new(Inst::Fix(
             vec![LambdaBinding {
                 args: LambdaArgs::new(vec![k2], false, None),
-                body: Box::new(Cps::new(Inst::App(
-                    Value::from(k2),
-                    vec![Value::from(self.clone())],
-                ))),
+                body: Cps::new(Inst::App(Value::from(k2), vec![Value::from(self.clone())])),
                 val: k1,
                 span: None,
             }],
@@ -452,7 +448,7 @@ fn compile_apply(
     Cps::new(Inst::Fix(
         vec![LambdaBinding {
             args: LambdaArgs::new(vec![k2], false, None),
-            body: Box::new({
+            body: {
                 let maybe_proc = operator.to_immutable_proc();
                 if let Some(proc) = &maybe_proc
                     && let Some(primop) = proc.to_primop()
@@ -463,15 +459,10 @@ fn compile_apply(
                     && let Some(known) = proc.to_known()
                     && known.matches_args(args.len())
                 {
-                    let primop = if known.returns_value() {
-                        PrimOp::CallKnown1
-                    } else {
-                        PrimOp::CallKnown0
-                    };
                     compile_primop(
                         ctxt,
                         Value::from(k2),
-                        primop,
+                        PrimOp::CallKnown,
                         vec![Value::from(RuntimeValue::from(proc))],
                         args,
                     )
@@ -494,7 +485,7 @@ fn compile_apply(
                         Cps::new(Inst::Fix(
                             vec![LambdaBinding {
                                 args: LambdaArgs::new(vec![k3], false, None),
-                                body: Box::new(compile_apply_args(
+                                body: compile_apply_args(
                                     ctxt,
                                     Value::from(k3),
                                     vec![Value::from(k2)],
@@ -503,7 +494,7 @@ fn compile_apply(
                                     frame.clone(),
                                     #[cfg(feature = "continuation-marks")]
                                     span.clone(),
-                                )),
+                                ),
                                 val: k4,
                                 span: None,
                             }],
@@ -511,7 +502,7 @@ fn compile_apply(
                         ))
                     })
                 }
-            }),
+            },
             val: k1,
             span: None,
         }],
@@ -568,7 +559,7 @@ fn compile_apply_args(
     Cps::new(Inst::Fix(
         vec![LambdaBinding {
             args: LambdaArgs::new(vec![k2], false, None),
-            body: Box::new({
+            body: {
                 collected_args.push(Value::from(k2));
                 compile_apply_args(
                     ctxt,
@@ -580,7 +571,7 @@ fn compile_apply_args(
                     #[cfg(feature = "continuation-marks")]
                     span,
                 )
-            }),
+            },
             val: k1,
             span: None,
         }],
@@ -617,10 +608,10 @@ fn compile_primop(
     Cps::new(Inst::Fix(
         vec![LambdaBinding {
             args: LambdaArgs::new(vec![k2], false, None),
-            body: Box::new({
+            body: {
                 collected_args.push(Value::from(k2));
                 compile_primop(ctxt, cont, primop, collected_args, tail)
-            }),
+            },
             val: k1,
             span: None,
         }],
@@ -637,13 +628,13 @@ impl Compile for If {
         Cps::new(Inst::Fix(
             vec![LambdaBinding {
                 args: LambdaArgs::new(vec![k1], false, None),
-                body: Box::new(self.cond.compile(ctxt, &mut |cond_result| {
+                body: self.cond.compile(ctxt, &mut |cond_result| {
                     let k3 = Local::gensym();
                     let cond_arg = Local::gensym();
                     Cps::new(Inst::Fix(
                         vec![LambdaBinding {
                             args: LambdaArgs::new(vec![cond_arg], false, None),
-                            body: Box::new(Cps::new(Inst::If(
+                            body: Cps::new(Inst::If(
                                 Value::from(cond_arg),
                                 Box::new(self.success.compile(ctxt, &mut |success| {
                                     Cps::new(Inst::App(success, vec![Value::from(k1)]))
@@ -655,13 +646,13 @@ impl Compile for If {
                                 } else {
                                     Cps::new(Inst::App(Value::from(k1), Vec::new()))
                                 }),
-                            ))),
+                            )),
                             val: k3,
                             span: None,
                         }],
                         Box::new(Cps::new(Inst::App(cond_result, vec![Value::from(k3)]))),
                     ))
-                })),
+                }),
                 val: k2,
                 span: None,
             }],
@@ -678,10 +669,10 @@ impl Compile for And {
             Cps::new(Inst::Fix(
                 vec![LambdaBinding {
                     args: LambdaArgs::new(vec![k1], false, None),
-                    body: Box::new(Cps::new(Inst::App(
+                    body: Cps::new(Inst::App(
                         Value::from(k1),
                         vec![Value::from(RuntimeValue::from(true))],
-                    ))),
+                    )),
                     val: k2,
                     span: None,
                 }],
@@ -709,7 +700,7 @@ fn compile_and(
     Cps::new(Inst::Fix(
         vec![LambdaBinding {
             args: LambdaArgs::new(vec![k1], false, None),
-            body: Box::new(expr.compile(ctxt, &mut |expr_result| match tail {
+            body: expr.compile(ctxt, &mut |expr_result| match tail {
                 None => Cps::new(Inst::App(expr_result, vec![Value::from(k1)])),
                 Some(tail) => {
                     let k3 = Local::gensym();
@@ -717,7 +708,7 @@ fn compile_and(
                     Cps::new(Inst::Fix(
                         vec![LambdaBinding {
                             args: LambdaArgs::new(vec![cond_arg], false, None),
-                            body: Box::new(Cps::new(Inst::If(
+                            body: Cps::new(Inst::If(
                                 Value::from(cond_arg),
                                 Box::new(compile_and(ctxt, tail, &mut |expr| {
                                     Cps::new(Inst::App(expr, vec![Value::from(k1)]))
@@ -726,14 +717,14 @@ fn compile_and(
                                     Value::from(k1),
                                     vec![Value::from(RuntimeValue::from(false))],
                                 ))),
-                            ))),
+                            )),
                             val: k3,
                             span: None,
                         }],
                         Box::new(Cps::new(Inst::App(expr_result, vec![Value::from(k3)]))),
                     ))
                 }
-            })),
+            }),
             val: k2,
             span: None,
         }],
@@ -749,10 +740,10 @@ impl Compile for Or {
             Cps::new(Inst::Fix(
                 vec![LambdaBinding {
                     args: LambdaArgs::new(vec![k1], false, None),
-                    body: Box::new(Cps::new(Inst::App(
+                    body: Cps::new(Inst::App(
                         Value::from(k1),
                         vec![Value::from(RuntimeValue::from(false))],
-                    ))),
+                    )),
                     val: k2,
                     span: None,
                 }],
@@ -780,7 +771,7 @@ fn compile_or(
     Cps::new(Inst::Fix(
         vec![LambdaBinding {
             args: LambdaArgs::new(vec![k1], false, None),
-            body: Box::new(expr.compile(ctxt, &mut |expr_result| match tail {
+            body: expr.compile(ctxt, &mut |expr_result| match tail {
                 None => Cps::new(Inst::App(expr_result, vec![Value::from(k1)])),
                 Some(tail) => {
                     let k3 = Local::gensym();
@@ -788,7 +779,7 @@ fn compile_or(
                     Cps::new(Inst::Fix(
                         vec![LambdaBinding {
                             args: LambdaArgs::new(vec![cond_arg], false, None),
-                            body: Box::new(Cps::new(Inst::If(
+                            body: Cps::new(Inst::If(
                                 Value::from(cond_arg),
                                 Box::new(Cps::new(Inst::App(
                                     Value::from(k1),
@@ -797,14 +788,14 @@ fn compile_or(
                                 Box::new(compile_or(ctxt, tail, &mut |expr| {
                                     Cps::new(Inst::App(expr, vec![Value::from(k1)]))
                                 })),
-                            ))),
+                            )),
                             val: k3,
                             span: None,
                         }],
                         Box::new(Cps::new(Inst::App(expr_result, vec![Value::from(k3)]))),
                     ))
                 }
-            })),
+            }),
             val: k2,
             span: None,
         }],
@@ -830,24 +821,24 @@ impl Compile for Set {
         Cps::new(Inst::Fix(
             vec![LambdaBinding {
                 args: LambdaArgs::new(vec![k2], false, None),
-                body: Box::new(Cps::new(Inst::Fix(
+                body: Cps::new(Inst::Fix(
                     vec![LambdaBinding {
                         args: LambdaArgs::new(vec![expr_result], false, None),
-                        body: Box::new(Cps::new(Inst::PrimOp(
+                        body: Cps::new(Inst::PrimOp(
                             PrimOp::SetCell,
                             vec![
                                 Value::from(self.var.clone()),
                                 Value::Var(Var::Local(expr_result)),
                             ],
                             Box::new(Cps::new(Inst::App(Value::from(k2), Vec::new()))),
-                        ))),
+                        )),
                         val: k3,
                         span: None,
                     }],
                     Box::new(self.val.compile(ctxt, &mut move |result| {
                         Cps::new(Inst::App(result, vec![Value::from(k3)]))
                     })),
-                ))),
+                )),
                 val: k1,
                 span: None,
             }],
@@ -863,10 +854,10 @@ impl Compile for Quote {
         Cps::new(Inst::Fix(
             vec![LambdaBinding {
                 args: LambdaArgs::new(vec![k2], false, None),
-                body: Box::new(Cps::new(Inst::App(
+                body: Cps::new(Inst::App(
                     Value::from(k2),
                     vec![Value::from(self.val.clone())],
-                ))),
+                )),
                 val: k1,
                 span: None,
             }],
@@ -901,7 +892,7 @@ impl Compile for SyntaxQuote {
         Cps::new(Inst::Fix(
             vec![LambdaBinding {
                 args: LambdaArgs::new(vec![k2], false, None),
-                body: Box::new(Cps::with_dest(
+                body: Cps::with_dest(
                     Inst::PrimOp(
                         PrimOp::ExpandTemplate,
                         args,
@@ -911,7 +902,7 @@ impl Compile for SyntaxQuote {
                         ))),
                     ),
                     expanded,
-                )),
+                ),
                 val: k1,
                 span: None,
             }],
@@ -927,26 +918,21 @@ impl Compile for SyntaxCase {
         Cps::new(Inst::Fix(
             vec![LambdaBinding {
                 args: LambdaArgs::new(vec![k2], false, None),
-                body: Box::new(self.arg.compile(ctxt, &mut |expr_result| {
+                body: self.arg.compile(ctxt, &mut |expr_result| {
                     let k3 = Local::gensym();
                     let arg = Local::gensym();
                     Cps::new(Inst::Fix(
                         vec![LambdaBinding {
                             args: LambdaArgs::new(vec![arg], false, None),
-                            body: Box::new(compile_syntax_rules(
-                                ctxt,
-                                &self.rules,
-                                arg,
-                                &mut |expanded| {
-                                    Cps::new(Inst::App(expanded, vec![Value::from(k2)]))
-                                },
-                            )),
+                            body: compile_syntax_rules(ctxt, &self.rules, arg, &mut |expanded| {
+                                Cps::new(Inst::App(expanded, vec![Value::from(k2)]))
+                            }),
                             val: k3,
                             span: None,
                         }],
                         Box::new(Cps::new(Inst::App(expr_result, vec![Value::from(k3)]))),
                     ))
-                })),
+                }),
                 val: k1,
                 span: None,
             }],
@@ -967,13 +953,13 @@ fn compile_syntax_rules(
         vec![LambdaBinding {
             args: LambdaArgs::new(vec![k2], false, None),
             body: match rules {
-                [] => Box::new(Cps::new(Inst::PrimOp(
+                [] => Cps::new(Inst::PrimOp(
                     PrimOp::ErrorNoPatternsMatch,
                     Vec::new(),
                     Box::new(Cps::new(Inst::App(Value::from(k2), Vec::new()))),
-                ))),
+                )),
                 [rule, tail @ ..] => {
-                    Box::new(Cps::with_dest(
+                    Cps::with_dest(
                         Inst::PrimOp(
                             PrimOp::Matches,
                             vec![
@@ -986,7 +972,7 @@ fn compile_syntax_rules(
                                 } else {
                                     rule.binds
                                 };
-                                let inner = Box::new(Cps::new(Inst::If(
+                                let inner = Cps::new(Inst::If(
                                     Value::from(match_result),
                                     Box::new(rule.output_expression.compile(
                                         ctxt,
@@ -1002,7 +988,7 @@ fn compile_syntax_rules(
                                             Cps::new(Inst::App(next_pattern, vec![Value::from(k2)]))
                                         },
                                     )),
-                                )));
+                                ));
                                 if let Some(fender) = &rule.fender {
                                     let k3 = Local::gensym();
                                     Box::new(Cps::new(Inst::Fix(
@@ -1025,12 +1011,12 @@ fn compile_syntax_rules(
                                         ))),
                                     )))
                                 } else {
-                                    inner
+                                    Box::new(inner)
                                 }
                             },
                         ),
                         rule.binds,
-                    ))
+                    )
                 }
             },
             val: k1,
@@ -1048,10 +1034,10 @@ impl Compile for Vector {
         Cps::new(Inst::Fix(
             vec![LambdaBinding {
                 args: LambdaArgs::new(vec![k2], false, None),
-                body: Box::new(Cps::new(Inst::App(
+                body: Cps::new(Inst::App(
                     Value::from(k2),
                     vec![Value::from(RuntimeValue::from(self.vals.clone()))],
-                ))),
+                )),
                 val: k1,
                 span: None,
             }],
@@ -1067,10 +1053,10 @@ impl Compile for Vec<u8> {
         Cps::new(Inst::Fix(
             vec![LambdaBinding {
                 args: LambdaArgs::new(vec![k2], false, None),
-                body: Box::new(Cps::new(Inst::App(
+                body: Cps::new(Inst::App(
                     Value::from(k2),
                     vec![Value::from(RuntimeValue::from(self.clone()))],
-                ))),
+                )),
                 val: k1,
                 span: None,
             }],
@@ -1096,8 +1082,8 @@ impl Cps {
                 local,
             ),
             Inst::PrimOp(PrimOp::ReadCell, vals, cexpr) if mutable_vars.contains(&local) => {
-                let body = val_to_cell(&mut local, Box::new(cexpr.vals_to_cells(mutable_vars)));
-                Cps::with_dest(Inst::PrimOp(PrimOp::ReadCell, vals, body), local)
+                let body = val_to_cell(&mut local, cexpr.vals_to_cells(mutable_vars));
+                Cps::with_dest(Inst::PrimOp(PrimOp::ReadCell, vals, Box::new(body)), local)
             }
             Inst::PrimOp(op, vals, cexpr) => {
                 let cexpr = Box::new(cexpr.vals_to_cells(mutable_vars));
@@ -1115,7 +1101,7 @@ impl Cps {
                 let bindings = bindings
                     .into_iter()
                     .map(|mut binding| {
-                        let mut body = Box::new(binding.body.vals_to_cells(mutable_vars));
+                        let mut body = binding.body.vals_to_cells(mutable_vars);
 
                         for arg in binding.args.iter_mut() {
                             if mutable_vars.contains(arg) {
@@ -1141,20 +1127,20 @@ impl Cps {
     }
 }
 
-fn val_to_cell(arg: &mut Local, body: Box<Cps>) -> Box<Cps> {
+fn val_to_cell(arg: &mut Local, body: Cps) -> Cps {
     let mut val_arg = Local::gensym();
     val_arg.name = arg.name;
     let cell_arg = std::mem::replace(arg, val_arg);
-    Box::new(Cps::with_dest(
+    Cps::with_dest(
         Inst::PrimOp(
             PrimOp::AllocCell,
             Vec::new(),
             Box::new(Cps::new(Inst::PrimOp(
                 PrimOp::SetCell,
                 vec![Value::from(cell_arg), Value::from(val_arg)],
-                body,
+                Box::new(body),
             ))),
         ),
         cell_arg,
-    ))
+    )
 }

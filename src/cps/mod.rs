@@ -44,6 +44,22 @@ impl Value {
             None
         }
     }
+
+    fn to_global(&self) -> Option<Global> {
+        if let Self::Var(Var::Global(global)) = self {
+            Some(global.clone())
+        } else {
+            None
+        }
+    }
+
+    fn to_const(&self) -> Option<RuntimeValue> {
+        if let Self::Const(value) = self {
+            Some(value.clone())
+        } else {
+            None
+        }
+    }
 }
 
 impl From<RuntimeValue> for Value {
@@ -89,10 +105,8 @@ pub enum PrimOp {
     /// Allocate a cell:
     AllocCell,
 
-    /// Call a known function that returns no values:
-    CallKnown0,
-    /// Call a known function that returns one value:
-    CallKnown1,
+    /// Call a known function:
+    CallKnown,
 
     // List/pair operators:
     Car,
@@ -141,8 +155,7 @@ impl PrimOp {
             Self::SetCell => PrimOpInfo::new(2, false, false, false),
             Self::ReadCell => PrimOpInfo::new(1, false, false, true),
             Self::AllocCell => PrimOpInfo::new(0, false, false, true),
-            Self::CallKnown0 => PrimOpInfo::new(1, false, true, false),
-            Self::CallKnown1 => PrimOpInfo::new(0, false, true, true),
+            Self::CallKnown => PrimOpInfo::new(1, false, true, true),
             Self::Car => PrimOpInfo::new(1, false, true, true),
             Self::Cdr => PrimOpInfo::new(1, false, true, true),
             Self::Cons => PrimOpInfo::new(2, false, false, true),
@@ -219,14 +232,14 @@ pub enum Inst {
     /// Call to a primitive operator:
     PrimOp(PrimOp, Vec<Value>, Box<Cps>),
 
-    /// Function application:
-    App(Value, Vec<Value>),
-
     /// Branching:
     If(Value, Box<Cps>, Box<Cps>),
 
     /// Mutually-recursive function definitions:
     Fix(Vec<LambdaBinding>, Box<Cps>),
+
+    /// Function application:
+    App(Value, Vec<Value>),
 
     /// Halt execution and return the values:
     Halt(Value),
@@ -235,7 +248,7 @@ pub enum Inst {
 #[derive(Debug, Clone)]
 pub struct LambdaBinding {
     args: LambdaArgs,
-    body: Box<Cps>,
+    body: Cps,
     val: Local,
     span: Option<Span>,
 }
@@ -440,4 +453,24 @@ fn substitute_values(values: &mut [Value], substitutions: &HashMap<Local, Value>
     values
         .iter_mut()
         .for_each(|value| substitute_value(value, substitutions))
+}
+
+/// Tool for tracking items in scope
+#[derive(Default)]
+struct Scope<'a> {
+    up: Option<&'a Scope<'a>>,
+    curr: HashSet<Local>,
+}
+
+impl Scope<'_> {
+    fn contains(&self, local: &Local) -> bool {
+        self.curr.contains(local) || self.up.is_some_and(|up| up.contains(local))
+    }
+
+    fn new(&self, locals: impl IntoIterator<Item = Local>) -> Scope<'_> {
+        Scope {
+            up: Some(self),
+            curr: locals.into_iter().collect(),
+        }
+    }
 }

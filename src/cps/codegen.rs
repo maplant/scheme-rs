@@ -249,6 +249,7 @@ impl Cps {
                 "- Compiling: -------------------------------------------------------------------"
             );
             self.pretty_print(0);
+            eprintln!();
             eprintln!(
                 "--------------------------------------------------------------------------------"
             );
@@ -274,15 +275,6 @@ impl Cps {
         let entry_func = module
             .declare_function(&name, Linkage::Export, &ctx.func.signature)
             .unwrap();
-        /*
-        let native_entry = module
-            .declare_function(
-                &format!("{name}_entry"),
-                Linkage::Export,
-                &rust_entry_sig(module, &ctx.func.signature),
-            )
-            .unwrap();
-        */
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_context);
 
         let entry_block = builder.create_block();
@@ -508,16 +500,6 @@ impl CompilationUnit<'_, '_> {
             {
                 val
             }
-
-            CpsValue::Const(val)
-                if let Some(proc) = val.cast::<Procedure>()
-                    && let Some(known) = proc.to_known() =>
-            {
-                // Known functions get converted to i64 constants
-                self.builder
-                    .ins()
-                    .iconst(types::I64, known.cast_to_usize() as i64)
-            }
             CpsValue::Const(val) => {
                 let mut constants_pool = Runtime::handle().0.constants_pool.lock();
                 constants_pool.insert(val.clone());
@@ -709,6 +691,16 @@ impl CompilationUnit<'_, '_> {
         deferred_procs: &mut Vec<ProcedureBundle>,
         deferred_local_conts: &mut Vec<ProcedureBundle>,
     ) {
+        if matches!(primop, PrimOp::CallKnown) {
+            return self.known_func_call_codegen(
+                vals,
+                dest,
+                cexpr,
+                deferred_procs,
+                deferred_local_conts,
+            );
+        }
+
         let arg_vals: Vec<Value> = vals.iter().map(|val| self.value_codegen(val)).collect();
 
         // If we have two arguments and the operator is a numeric primop, we can
@@ -736,15 +728,6 @@ impl CompilationUnit<'_, '_> {
                 deferred_local_conts,
             );
         } else {
-            let arg_vals = if matches!(primop, PrimOp::CallKnown0 | PrimOp::CallKnown1) {
-                let liveness = self.liveness;
-                let live_after = liveness.live_in(cexpr.dest);
-                let mut owned = vec![arg_vals[0]];
-                owned.extend(self.take_args(&vals[1..], &arg_vals[1..], live_after));
-                owned
-            } else {
-                arg_vals
-            };
             let result = self.slow_value_primop_codegen(primop, &arg_vals);
 
             let bind = if primop.info().needs_drop {
@@ -758,14 +741,93 @@ impl CompilationUnit<'_, '_> {
         }
     }
 
+    fn known_func_call_codegen(
+        &mut self,
+        vals: &[CpsValue],
+        dest: Local,
+        cexpr: Cps,
+        deferred_procs: &mut Vec<ProcedureBundle>,
+        deferred_local_conts: &mut Vec<ProcedureBundle>,
+    ) {
+        let known = vals[0]
+            .to_const()
+            .and_then(|val| val.cast::<Procedure>())
+            .and_then(|proc| proc.to_known())
+            .expect("known function is not known");
+        let op = self
+            .builder
+            .ins()
+            .iconst(types::I64, known.cast_to_usize() as i64);
+
+        let live_after = self.liveness.live_in(cexpr.dest);
+        let args = vals[1..]
+            .iter()
+            .map(|val| self.value_codegen(val))
+            .collect::<Vec<_>>();
+        let mut args = self.take_args(&vals[1..], &args, live_after);
+
+        let error_slot = self.alloc_array(1);
+        let undefined = self
+            .builder
+            .ins()
+            .iconst(types::I64, UNDEFINED_VALUE as i64);
+        self.array_store(error_slot, 0, undefined);
+        let error_addr = self.builder.ins().stack_addr(types::I64, error_slot, 0);
+        args.push(error_addr);
+        let known_sig = {
+            let mut sig = self.module.make_signature();
+            for _ in 0..args.len() {
+                sig.params.push(AbiParam::new(types::I64));
+            }
+            sig.returns.push(AbiParam::new(types::I64));
+            self.builder.import_signature(sig)
+        };
+
+        let call = self.builder.ins().call_indirect(known_sig, op, &args);
+
+        let result = self.builder.inst_results(call)[0];
+
+        // Check if the result is undefined:
+        let cond = self
+            .builder
+            .ins()
+            .icmp_imm_s(IntCC::Equal, result, UNDEFINED_VALUE as i64);
+
+        let failure_block = self.builder.create_block();
+        let success_block = self.builder.create_block();
+
+        self.builder
+            .ins()
+            .brif(cond, failure_block, &[], success_block, &[]);
+
+        // Throw the error:
+        self.builder.switch_to_block(failure_block);
+        self.builder.seal_block(failure_block);
+
+        let error_val = self.array_load(error_slot, 0);
+        self.drop_all_codegen();
+        self.raise_codegen(error_val);
+
+        // Otherwise continue with the correct value
+        self.builder.switch_to_block(success_block);
+        self.builder.seal_block(success_block);
+
+        self.live.bind(
+            dest,
+            if known.returns_value() {
+                IrValue::Owned(result)
+            } else {
+                IrValue::Ref(result)
+            },
+        );
+
+        self.cps_codegen(cexpr, deferred_procs, deferred_local_conts);
+    }
+
     fn slow_value_primop_codegen(&mut self, primop: PrimOp, arg_vals: &[Value]) -> Value {
         let primop_info = primop.info();
 
-        let is_known = matches!(primop, PrimOp::CallKnown0 | PrimOp::CallKnown1);
-
-        let mut args = if is_known {
-            arg_vals[1..].to_vec()
-        } else if primop_info.variadic {
+        let mut args = if primop_info.variadic {
             // Put the values into an array:
             let array = self.alloc_array(arg_vals.len());
 
@@ -782,21 +844,20 @@ impl CompilationUnit<'_, '_> {
 
         // The runtime function to call, unless this is a known call:
         let runtime_func = match primop {
-            PrimOp::Add => Some(self.runtime_funcs.add),
-            PrimOp::Sub => Some(self.runtime_funcs.sub),
-            PrimOp::Mul => Some(self.runtime_funcs.mul),
-            PrimOp::Div => Some(self.runtime_funcs.div),
-            PrimOp::Equal => Some(self.runtime_funcs.equal),
-            PrimOp::Greater => Some(self.runtime_funcs.greater),
-            PrimOp::GreaterEqual => Some(self.runtime_funcs.greater_equal),
-            PrimOp::Lesser => Some(self.runtime_funcs.lesser),
-            PrimOp::LesserEqual => Some(self.runtime_funcs.lesser_equal),
-            PrimOp::Cons => Some(self.runtime_funcs.cons),
-            PrimOp::List => Some(self.runtime_funcs.list),
-            PrimOp::Append => Some(self.runtime_funcs.append),
-            PrimOp::Car => Some(self.runtime_funcs.car),
-            PrimOp::Cdr => Some(self.runtime_funcs.cdr),
-            PrimOp::CallKnown0 | PrimOp::CallKnown1 => None,
+            PrimOp::Add => self.runtime_funcs.add,
+            PrimOp::Sub => self.runtime_funcs.sub,
+            PrimOp::Mul => self.runtime_funcs.mul,
+            PrimOp::Div => self.runtime_funcs.div,
+            PrimOp::Equal => self.runtime_funcs.equal,
+            PrimOp::Greater => self.runtime_funcs.greater,
+            PrimOp::GreaterEqual => self.runtime_funcs.greater_equal,
+            PrimOp::Lesser => self.runtime_funcs.lesser,
+            PrimOp::LesserEqual => self.runtime_funcs.lesser_equal,
+            PrimOp::Cons => self.runtime_funcs.cons,
+            PrimOp::List => self.runtime_funcs.list,
+            PrimOp::Append => self.runtime_funcs.append,
+            PrimOp::Car => self.runtime_funcs.car,
+            PrimOp::Cdr => self.runtime_funcs.cdr,
             _ => unreachable!(),
         };
 
@@ -804,37 +865,16 @@ impl CompilationUnit<'_, '_> {
         // Add a slot for the error if this function can error:
         let error_slot = primop_info.can_error.then(|| {
             let error_slot = self.alloc_array(1);
-            if is_known {
-                let undefined = self
-                    .builder
-                    .ins()
-                    .iconst(types::I64, UNDEFINED_VALUE as i64);
-                self.array_store(error_slot, 0, undefined);
-            }
             let error_addr = self.builder.ins().stack_addr(types::I64, error_slot, 0);
             args.push(error_addr);
             error_slot
         });
 
         // Call the function:
-        let primop_call = if let Some(runtime_func) = runtime_func {
-            let runtime_func = self
-                .module
-                .declare_func_in_func(runtime_func, self.builder.func);
-            self.builder.ins().call(runtime_func, args.as_slice())
-        } else {
-            let known_sig = {
-                let mut sig = self.module.make_signature();
-                for _ in 0..args.len() {
-                    sig.params.push(AbiParam::new(types::I64));
-                }
-                sig.returns.push(AbiParam::new(types::I64));
-                self.builder.import_signature(sig)
-            };
-            self.builder
-                .ins()
-                .call_indirect(known_sig, arg_vals[0], &args)
-        };
+        let runtime_func = self
+            .module
+            .declare_func_in_func(runtime_func, self.builder.func);
+        let primop_call = self.builder.ins().call(runtime_func, args.as_slice());
         let result = self.builder.inst_results(primop_call)[0];
 
         // Check for error if we need to:
@@ -1547,7 +1587,7 @@ impl CompilationUnit<'_, '_> {
             let bundle = ProcedureBundle::new(
                 binding.val,
                 binding.args,
-                *binding.body,
+                binding.body,
                 binding.span,
                 self.continuations,
                 self.free_vars,

@@ -1,5 +1,5 @@
 //! Optimization passes that reduce the amount of CPS code, therefore reducing
-//! the amount of LLVM code that needs to be optimized.
+//! the amount of Cranelift code that needs to be generated and optimized.
 
 use crate::cps::analysis::Uses;
 
@@ -8,14 +8,25 @@ use super::*;
 impl Cps {
     pub(super) fn reduce(mut self) -> Self {
         let mut uses = Uses::default();
+        let mut constants = HashMap::default();
+        let mut global_aliases = HashMap::default();
 
-        // Perform beta and eta reduction until reaching a fixed point:
+        // Perform beta and eta reduction and propagate constants until reaching
+        // a fixed point:
         loop {
+            let mut reduced = false;
             let mut modified = false;
             self = self
-                .beta_reduction(&mut uses, &mut modified)
-                .eta_reduction(&mut uses, &mut modified);
-            if !modified {
+                .beta_reduction(&mut uses, &mut reduced)
+                .eta_reduction(&mut uses, &mut reduced)
+                .propagate_constants(
+                    &Scope::default(),
+                    &mut constants,
+                    &mut global_aliases,
+                    &mut uses,
+                    &mut modified,
+                );
+            if !reduced && !modified {
                 break;
             }
         }
@@ -74,9 +85,9 @@ impl Cps {
                     Inst::Fix(
                         vec![LambdaBinding {
                             args: binding.args,
-                            body: Box::new(body),
                             val: binding.val,
                             span: binding.span,
+                            body,
                         }],
                         Box::new(cexpr),
                     ),
@@ -84,12 +95,8 @@ impl Cps {
                 )
             }
             Inst::Fix(mut bindings, cexpr) => {
-                for binding in &mut bindings {
-                    let body = std::mem::replace(
-                        binding.body.as_mut(),
-                        Cps::new(Inst::Halt(Value::Const(RuntimeValue::undefined()))),
-                    );
-                    *binding.body = body.beta_reduction(uses, modified);
+                for LambdaBinding { body, .. } in &mut bindings {
+                    body.update_term(|body| body.beta_reduction(uses, modified));
                 }
                 Cps::with_dest(
                     Inst::Fix(bindings, Box::new(cexpr.beta_reduction(uses, modified))),
@@ -226,7 +233,7 @@ impl Cps {
                         Inst::Fix(
                             vec![LambdaBinding {
                                 args: binding.args,
-                                body: Box::new(body),
+                                body,
                                 val: binding.val,
                                 span: binding.span,
                             }],
@@ -237,12 +244,8 @@ impl Cps {
                 }
             }
             Inst::Fix(mut bindings, cexpr) => {
-                for binding in &mut bindings {
-                    let body = std::mem::replace(
-                        binding.body.as_mut(),
-                        Cps::new(Inst::Halt(Value::Const(RuntimeValue::undefined()))),
-                    );
-                    *binding.body = body.eta_reduction(uses, modified);
+                for LambdaBinding { body, .. } in &mut bindings {
+                    body.update_term(|body| body.eta_reduction(uses, modified));
                 }
                 Cps::with_dest(
                     Inst::Fix(bindings, Box::new(cexpr.eta_reduction(uses, modified))),
@@ -296,7 +299,7 @@ impl Cps {
                     .filter_map(|binding| {
                         live.contains(&binding.val).then(|| LambdaBinding {
                             args: binding.args,
-                            body: Box::new(binding.body.dead_code_elimination(uses)),
+                            body: binding.body.dead_code_elimination(uses),
                             val: binding.val,
                             span: binding.span,
                         })
@@ -311,6 +314,230 @@ impl Cps {
             }
             inst => Cps::with_dest(inst, local),
         }
+    }
+
+    /// Propagates constants and fold constant expressions.
+    ///
+    /// Globals also count as constants if the are immutable and already defined.
+    #[stacksafe::stacksafe]
+    fn propagate_constants(
+        self,
+        scope: &Scope<'_>,
+        constants: &mut HashMap<Local, Value>,
+        global_aliases: &mut HashMap<Global, Value>,
+        uses: &mut Uses,
+        modified: &mut bool,
+    ) -> Self {
+        let Cps { inst, dest } = self;
+
+        let scope = scope.new([dest]);
+
+        let result = match inst {
+            Inst::PrimOp(PrimOp::ReadCell, vals, cexpr)
+                if let [val] = &*vals
+                    && let Some(global) = val.to_global()
+                    && !global.is_mutable()
+                    && let read_val = global.read()
+                    && !read_val.is_undefined() =>
+            {
+                // Reading from a global immutable variable can be
+                // propagated if it has already been set. Remove the
+                // read.
+                *modified = true;
+                constants.insert(dest, Value::from(read_val));
+                cexpr.propagate_constants(&scope, constants, global_aliases, uses, modified)
+            }
+            Inst::PrimOp(PrimOp::ReadCell, vals, cexpr)
+                if let [val] = &*vals
+                    && let Some(global) = val.to_global()
+                    && !global.is_mutable()
+                    && let Some(alias) = global_aliases.get(&global)
+                    && alias
+                        .to_local()
+                        .map_or(true, |local| scope.contains(&local)) =>
+            {
+                let alias = if let Some(local) = alias.to_local()
+                    && let Some(constant) = constants.get(&local)
+                {
+                    Value::from(constant.clone())
+                } else {
+                    alias.clone()
+                };
+                *modified = true;
+                // An immutable global variable has an alias that is in scope,
+                // replace the read with the alias
+                constants.insert(dest, alias.clone());
+                cexpr.propagate_constants(&scope, constants, global_aliases, uses, modified)
+            }
+            Inst::PrimOp(PrimOp::SetCell, vals, cexpr)
+                if let [global, from] = vals.as_slice()
+                    && let Some(global) = global.to_global()
+                    && let from = from.clone()
+                    && !global.is_mutable()
+                    && !global_aliases.contains_key(&global) =>
+            {
+                if matches!(from, Value::Const(_))
+                    || from.to_local().is_some_and(|local| scope.contains(&local))
+                {
+                    // If we set a global immutable variable to a constant, that
+                    // constant can become an alias
+                    *modified = true;
+                    global_aliases.insert(global, from.clone());
+                }
+                // We still need the set cell
+                Cps::with_dest(
+                    Inst::PrimOp(
+                        PrimOp::SetCell,
+                        vals,
+                        Box::new(cexpr.propagate_constants(
+                            &scope,
+                            constants,
+                            global_aliases,
+                            uses,
+                            modified,
+                        )),
+                    ),
+                    dest,
+                )
+            }
+            Inst::PrimOp(prim_op, mut vals, cexpr) => {
+                substitute_values(&mut vals, constants);
+                // Attempt to fold the primitive operator
+                if let Some(folded) = prim_op.fold(&vals) {
+                    constants.insert(dest, folded);
+                    cexpr.propagate_constants(&scope, constants, global_aliases, uses, modified)
+                } else {
+                    let cexpr =
+                        cexpr.propagate_constants(&scope, constants, global_aliases, uses, modified);
+                    Cps::with_dest(Inst::PrimOp(prim_op, vals, Box::new(cexpr)), dest)
+                }
+            }
+            Inst::If(mut cond, succ, fail) => {
+                // Propagate constants across branches:
+                let mut modified_in_succ = false;
+                let succ = succ.propagate_constants(
+                    &scope,
+                    constants,
+                    global_aliases,
+                    uses,
+                    &mut modified_in_succ,
+                );
+                let mut modified_in_fail = false;
+                let fail = fail.propagate_constants(
+                    &scope,
+                    constants,
+                    global_aliases,
+                    uses,
+                    &mut modified_in_fail,
+                );
+                *modified |= modified_in_fail | modified_in_succ;
+
+                // Eliminate a branch if the conditional is known:
+                substitute_value(&mut cond, constants);
+                if let Value::Const(cond) = &cond
+                    && !cond.is_undefined()
+                {
+                    if cond.is_true() {
+                        *modified = true;
+                        return succ;
+                    } else {
+                        *modified = true;
+                        return fail;
+                    }
+                }
+
+                Cps::with_dest(Inst::If(cond, Box::new(succ), Box::new(fail)), dest)
+            }
+            Inst::Fix(mut bindings, cexpr) => {
+                let scope = scope.new(bindings.iter().map(|binding| binding.val));
+
+                for LambdaBinding { body, val, .. } in &mut bindings {
+                    let mut modified_body_branch = false;
+                    body.update_term(|body| {
+                        body.propagate_constants(
+                            &scope,
+                            constants,
+                            global_aliases,
+                            uses,
+                            &mut modified_body_branch,
+                        )
+                    });
+                    if modified_body_branch {
+                        uses.remove(&val);
+                    }
+                    *modified |= modified_body_branch;
+                }
+
+                let cexpr =
+                    cexpr.propagate_constants(&scope, constants, global_aliases, uses, modified);
+
+                Cps::with_dest(Inst::Fix(bindings, Box::new(cexpr)), dest)
+            }
+            Inst::App(mut op, mut args) => {
+                substitute_value(&mut op, constants);
+                substitute_values(&mut args, constants);
+                Cps::with_dest(Inst::App(op, args), dest)
+            }
+            Inst::Halt(mut val) => {
+                substitute_value(&mut val, constants);
+                Cps::with_dest(Inst::Halt(val), dest)
+            }
+        };
+
+        if *modified {
+            uses.remove(&dest);
+        }
+
+        result
+    }
+}
+
+impl PrimOp {
+    /// Attempt to fold a primitive operator into a constant value.
+    fn fold(self, vals: &[Value]) -> Option<Value> {
+        use crate::{
+            // lists::{car, cdr, list},
+            num::{add, div, equal, greater, greater_equal, lesser, lesser_equal, mul, sub},
+            proc::{ContBarrier, Procedure},
+            value::{not, null_pred, pair_pred},
+        };
+
+        let func_ptr = match self {
+            // TODO: Need to check if the pair is immutable first
+            // Self::Car => car,
+            // Self::Cdr => cdr,
+            // Self::List => list,
+            Self::IsNull => null_pred,
+            Self::IsPair => pair_pred,
+            Self::Add => add,
+            Self::Mul => mul,
+            Self::Sub => sub,
+            Self::Div => div,
+            Self::Equal => equal,
+            Self::Greater => greater,
+            Self::GreaterEqual => greater_equal,
+            Self::Lesser => lesser,
+            Self::LesserEqual => lesser_equal,
+            Self::Not => not,
+            _ => return None,
+        };
+
+        let args = vals
+            .iter()
+            .map(|val| val.to_const())
+            .collect::<Option<Vec<_>>>()?;
+
+        let proc = Procedure::new(Vec::new(), func_ptr, 0, true);
+
+        #[cfg(not(feature = "async"))]
+        let result = proc.call(&args, &mut ContBarrier::new());
+        #[cfg(feature = "async")]
+        let result = proc.call_sync(&args, &mut ContBarrier::new());
+
+        result.ok().and_then(|results| {
+            let [result] = results.try_into().ok()?;
+            Some(Value::Const(result))
+        })
     }
 }
 
@@ -342,7 +569,7 @@ mod tests {
         let cps = Cps::new(Inst::Fix(
             vec![LambdaBinding {
                 args: LambdaArgs::new(vec![a, b], false, None),
-                body: Box::new(Cps::new(Inst::App(Value::from(f), vec![Value::from(a)]))),
+                body: Cps::new(Inst::App(Value::from(f), vec![Value::from(a)])),
                 val: lambda_val,
                 span: None,
             }],
@@ -376,10 +603,10 @@ mod tests {
         let cps = Cps::new(Inst::Fix(
             vec![LambdaBinding {
                 args: LambdaArgs::new(vec![a, b], false, None),
-                body: Box::new(Cps::new(Inst::App(
+                body: Cps::new(Inst::App(
                     Value::from(f),
                     vec![Value::from(a), Value::from(b)],
-                ))),
+                )),
                 val: lambda_val,
                 span: None,
             }],
