@@ -9,7 +9,7 @@ use indexmap::IndexSet;
 use rand::distr::{Alphabetic, SampleString};
 use scheme_rs_macros::{Trace, bridge};
 
-use crate::{exceptions::Exception, strings::WideString, value::Value};
+use crate::{exceptions::Exception, records::Embedded, value::Value};
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Trace)]
 pub struct Symbol(pub(crate) u32);
@@ -88,8 +88,8 @@ pub fn symbol_equal_pred(
 }
 
 #[bridge(name = "string->symbol", lib = "(rnrs base builtins (6))")]
-pub fn string_to_symbol(s: WideString) -> Symbol {
-    Symbol::intern(&s.to_string())
+pub fn string_to_symbol(s: Embedded<String>) -> Symbol {
+    Symbol::intern(&s)
 }
 
 #[bridge(name = "symbol->string", lib = "(rnrs base builtins (6))")]

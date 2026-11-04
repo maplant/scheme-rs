@@ -27,8 +27,8 @@ use crate::{
     gc::Trace,
     lists::iter_list,
     ports::{BufferMode, Port, Transcoder},
+    records::Embedded,
     registry::bridge,
-    strings::WideString,
     syntax::{Span, lex::Lexer},
     value::{FIXNUM_MAX, FIXNUM_MIN, Value, ValueType},
 };
@@ -2483,7 +2483,7 @@ pub fn number_to_string(
 
 #[maybe_async]
 #[bridge(name = "string->number", lib = "(rnrs base builtins (6))")]
-pub fn string_to_number(s: WideString, radix: Option<u32>) -> Result<Value, Exception> {
+pub fn string_to_number(s: Embedded<String>, radix: Option<u32>) -> Result<Value, Exception> {
     let radix = match radix {
         None => 10,
         Some(radix) => match radix {
@@ -2497,7 +2497,6 @@ pub fn string_to_number(s: WideString, radix: Option<u32>) -> Result<Value, Exce
     };
 
     // TODO: This is not ideal
-    let s = s.to_string();
     let bytes = Cursor::new(s.as_bytes().to_vec());
     let port = Port::new("", bytes, BufferMode::Block, Some(Transcoder::native()));
     let info = &port.0.info;
