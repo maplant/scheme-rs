@@ -334,6 +334,47 @@ impl Cps {
     }
 }
 
+pub(super) fn closed_lambdas(
+    bindings: &HashMap<Local, &LambdaBinding>,
+    free_vars: &FreeVariables,
+    escaping: &Escaping,
+) -> HashSet<Local> {
+    let conts = bindings
+        .iter()
+        .flat_map(|(val, binding)| {
+            [
+                (!binding.is_func() && escaping.contains(*val)).then_some(*val),
+                binding.args.continuation,
+            ]
+        })
+        .flatten()
+        .collect::<HashSet<_>>();
+    let mut closed = bindings
+        .iter()
+        .flat_map(|(val, binding)| binding.is_func().then_some(*val))
+        .collect::<HashSet<_>>();
+    loop {
+        let new_closed = closed
+            .iter()
+            .filter_map(|val| {
+                let binding = bindings[val];
+                let args = binding.args.iter().copied().collect::<HashSet<_>>();
+                free_vars
+                    .free_in(binding.body.dest)
+                    .iter()
+                    .all(|free| {
+                        args.contains(free) || conts.contains(free) || closed.contains(free)
+                    })
+                    .then_some(*val)
+            })
+            .collect::<HashSet<_>>();
+        if new_closed.len() == closed.len() {
+            return closed;
+        }
+        closed = new_closed;
+    }
+}
+
 fn values_to_locals(vals: &[Value]) -> HashSet<Local> {
     vals.iter().flat_map(|val| val.to_local()).collect()
 }

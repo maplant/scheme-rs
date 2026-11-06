@@ -1989,6 +1989,7 @@ impl Definitions {
         let mut exprs_parsed = Vec::new();
 
         // Mark all of the defs as defined:
+        let mut defined = HashSet::default();
         for (def_form, _) in defs.iter() {
             if let Some([_, def, ..]) = def_form.as_list() {
                 let ident = match def.as_list() {
@@ -2004,6 +2005,10 @@ impl Definitions {
                     ident.remove_scope(*scope);
                 }
                 let binding = ident.bind();
+                // Check for illegal re-definition:
+                if !defined.insert(ident.clone()) {
+                    return Err(error::syntax_error(def, None, "illegal redefinition"));
+                }
                 env.def_var(binding, ident.sym);
             }
         }
