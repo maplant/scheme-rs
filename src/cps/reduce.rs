@@ -330,7 +330,7 @@ impl Cps {
     ) -> Self {
         let Cps { inst, dest } = self;
 
-        let scope = scope.new([dest]);
+        let scope = scope.push([dest]);
 
         let result = match inst {
             Inst::PrimOp(PrimOp::ReadCell, vals, cexpr)
@@ -352,14 +352,12 @@ impl Cps {
                     && let Some(global) = val.to_global()
                     && !global.is_mutable()
                     && let Some(alias) = global_aliases.get(&global)
-                    && alias
-                        .to_local()
-                        .map_or(true, |local| scope.contains(&local)) =>
+                    && alias.to_local().is_none_or(|local| scope.contains(&local)) =>
             {
                 let alias = if let Some(local) = alias.to_local()
                     && let Some(constant) = constants.get(&local)
                 {
-                    Value::from(constant.clone())
+                    constant.clone()
                 } else {
                     alias.clone()
                 };
@@ -407,8 +405,13 @@ impl Cps {
                     constants.insert(dest, folded);
                     cexpr.propagate_constants(&scope, constants, global_aliases, uses, modified)
                 } else {
-                    let cexpr =
-                        cexpr.propagate_constants(&scope, constants, global_aliases, uses, modified);
+                    let cexpr = cexpr.propagate_constants(
+                        &scope,
+                        constants,
+                        global_aliases,
+                        uses,
+                        modified,
+                    );
                     Cps::with_dest(Inst::PrimOp(prim_op, vals, Box::new(cexpr)), dest)
                 }
             }
@@ -449,7 +452,7 @@ impl Cps {
                 Cps::with_dest(Inst::If(cond, Box::new(succ), Box::new(fail)), dest)
             }
             Inst::Fix(mut bindings, cexpr) => {
-                let scope = scope.new(bindings.iter().map(|binding| binding.val));
+                let scope = scope.push(bindings.iter().map(|binding| binding.val));
 
                 for LambdaBinding { body, val, .. } in &mut bindings {
                     let mut modified_body_branch = false;
@@ -463,7 +466,7 @@ impl Cps {
                         )
                     });
                     if modified_body_branch {
-                        uses.remove(&val);
+                        uses.remove(val);
                     }
                     *modified |= modified_body_branch;
                 }

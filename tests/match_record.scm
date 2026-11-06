@@ -1,7 +1,7 @@
 (import (rnrs) (rust) (test) (match))
 
 (define-rust-type vec2 vec2-rtd make-vec2 vec2?)
-(define-rust-type vec3 vec3-rtd make-vec3 vec2?)
+(define-rust-type vec3 vec3-rtd make-vec3 vec3?)
 
 (assert-equal?
  (match (make-vec2 1 2)

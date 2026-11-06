@@ -176,19 +176,12 @@ impl TopLevelEnvironment {
     pub(crate) fn new_program(path: &Path) -> Self {
         let _ = Runtime::handle();
         let scope = Scope::new();
-        let import = Symbol::intern("import");
-        let import_binding = crate::registry::primitive(import);
-        add_binding(Identifier::from_symbol(import, scope), import_binding);
         Self(Gc::new(TopLevelEnvironmentInner {
             kind: TopLevelKind::Program {
                 path: path.to_path_buf(),
             },
             exports: HashMap::default(),
-            imports: RwLock::new(
-                [(import_binding, PRIMITIVES_LIB.get().unwrap().clone())]
-                    .into_iter()
-                    .collect(),
-            ),
+            imports: RwLock::new(HashMap::default()),
             state: RwLock::new(LibraryState::Invoked),
             scope,
         }))
@@ -291,18 +284,6 @@ impl TopLevelEnvironment {
             body,
         ))))
     }
-
-    /*
-        pub(crate) fn get_kind(&self) -> &TopLevelKind {
-            &self.0.kind
-    }
-        */
-
-    /*
-    pub(crate) fn get_state(&self) -> MappedRwLockReadGuard<'_, LibraryState> {
-        RwLockReadGuard::map(self.0.read(), |inner| &inner.state)
-    }
-    */
 
     /// Evaluate the scheme expression in the provided environment and return
     /// the values. The `import_policy` controls which libraries may be imported;
@@ -583,7 +564,10 @@ impl LexicalContour {
         if let Some(bound) = { self.bindings.lock().get(&binding).cloned() } {
             match bound {
                 LocalBinding::Keyword(transformer) => Ok(Some(transformer.clone())),
-                LocalBinding::Imported(imported) => maybe_await!(imported.lookup_keyword(binding)),
+                LocalBinding::Imported(imported) => {
+                    maybe_await!(imported.maybe_expand())?;
+                    maybe_await!(imported.lookup_keyword(binding))
+                }
                 _ => Ok(None),
             }
         } else {
@@ -597,6 +581,10 @@ impl LexicalContour {
             match bound {
                 LocalBinding::Var(local) => Ok(Some(Var::Local(local))),
                 LocalBinding::Imported(imported) => {
+                    // It is not possible for a local scope to import its
+                    // containing top level environment, so we can always invoke
+                    // here
+                    maybe_await!(imported.maybe_invoke())?;
                     Ok(maybe_await!(imported.lookup_var(binding))?.map(Var::Global))
                 }
                 _ => Ok(None),
@@ -632,6 +620,13 @@ impl LexicalContour {
     pub fn import(&self, import_set: ImportSet) -> Result<(), Exception> {
         let registry = Runtime::handle().get_registry();
         let mut registry_inner = maybe_await!(registry.0.write());
+
+        // Check for circular dependencies:
+        if let TopLevelKind::Libary { name, .. } = &self.fetch_top().0.kind {
+            registry_inner
+                .check_for_circular_dependencies(&name.name, import_set.library_name())?;
+        }
+
         let imports = maybe_await!(registry_inner.import(import_set))?;
         let mut bindings = self.bindings.lock();
         for (sym, import) in imports {
@@ -641,6 +636,7 @@ impl LexicalContour {
                     return Err(error::name_bound_multiple_times(sym));
                 }
                 Entry::Vacant(slot) => {
+                    add_pending_top_level_binding(import.binding, import.origin.clone());
                     add_binding(Identifier::from_symbol(sym, self.scope), import.binding);
                     slot.insert(binding_type);
                 }
@@ -650,7 +646,6 @@ impl LexicalContour {
         Ok(())
     }
 
-    #[cfg(feature = "lsp")]
     pub fn fetch_top(&self) -> TopLevelEnvironment {
         self.up.fetch_top()
     }
@@ -671,6 +666,28 @@ impl Environment {
             bindings: Mutex::new(HashMap::default()),
             scope,
         }))
+    }
+
+    pub fn new_program_contour(top: &TopLevelEnvironment, inner_scope: Scope) -> Self {
+        let top_env = Self::Top(top.clone());
+        let import = Symbol::intern("import");
+        let mut import_ident = Identifier::from_symbol(import, top.scope());
+        import_ident.add_scope(inner_scope);
+        let import_binding = crate::registry::primitive(import);
+        add_binding(import_ident, import_binding);
+        let inner_contour = LexicalContour {
+            up: top_env,
+            bindings: Mutex::new(
+                [(
+                    import_binding,
+                    LocalBinding::Imported(PRIMITIVES_LIB.get().unwrap().clone()),
+                )]
+                .into_iter()
+                .collect(),
+            ),
+            scope: inner_scope,
+        };
+        Self::LexicalContour(Gc::new(inner_contour))
     }
 
     pub fn new_syntax_case_contour(
@@ -776,7 +793,6 @@ impl Environment {
         }
     }
 
-    #[cfg(feature = "lsp")]
     pub fn fetch_top(&self) -> TopLevelEnvironment {
         match self {
             Self::Top(top) => top.clone(),

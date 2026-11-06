@@ -15,9 +15,9 @@ use std::{mem::MaybeUninit, ptr::NonNull, sync::Arc};
 use crate::{
     cps::{
         Value as CpsValue,
-        analysis::{Escaping, FreeVariables, Liveness},
+        analysis::{Escaping, FreeVariables, Liveness, closed_lambdas},
     },
-    proc::{Application, ContBarrier, ProcDebugInfo, Procedure, ReturnAddress, UserPtr},
+    proc::{Application, ContBarrier, FuncPtr, ProcDebugInfo, Procedure, ReturnAddress, UserPtr},
     runtime::{DebugInfo, Runtime},
     value::{
         FALSE_VALUE, FIXNUM_MAX, FIXNUM_MIN, NULL_VALUE, TAG, TRUE_VALUE, Tag, UNDEFINED_VALUE,
@@ -237,6 +237,36 @@ pub(crate) fn codegen_jit_user_entry_fn(module: &mut JITModule) -> JitUserEntryF
     }
 }
 
+struct Function {
+    func_id: FuncId,
+    closed: Option<Procedure>,
+}
+
+impl Function {
+    fn is_closed(&self) -> bool {
+        self.closed.is_some()
+    }
+}
+
+fn bind_closed(
+    local: Local,
+    funcs: &HashMap<Local, Function>,
+    builder: &mut FunctionBuilder<'_>,
+    live: &mut LiveValues,
+) -> bool {
+    if let Some(Function {
+        closed: Some(proc), ..
+    }) = funcs.get(&local)
+    {
+        let raw = SchemeValue::as_raw(&SchemeValue::from(proc.clone()));
+        let val = builder.ins().iconst(types::I64, raw as i64);
+        live.bind(local, IrValue::Ref(val));
+        true
+    } else {
+        false
+    }
+}
+
 impl Cps {
     pub(crate) fn compile(
         self,
@@ -255,14 +285,46 @@ impl Cps {
             );
         }
 
-        // Collect free variables
+        // Collect free variables:
         let free_vars = FreeVariables::analyze(&self);
 
-        // Collect escaping functions
+        // Collect escaping functions:
         let mut lambda_bindings = HashMap::default();
         self.collect_bindings(&mut lambda_bindings);
         let escaping = Escaping::find_escaping(&self, &lambda_bindings, &free_vars);
         let liveness = Liveness::analyze(&self, &free_vars, &escaping);
+
+        // Collect closed functions:
+        let mut funcs = closed_lambdas(&lambda_bindings, &free_vars, &escaping)
+            .into_iter()
+            .map(|val| {
+                let binding = &lambda_bindings[&val];
+                let proc = Procedure::with_debug_info(
+                    Vec::new(),
+                    FuncPtr::User(UserPtr(NonNull::dangling())),
+                    binding.args.num_required(),
+                    binding.args.variadic,
+                    binding.span.as_ref().map(|span| {
+                        Arc::new(ProcDebugInfo::new(
+                            binding.val.name,
+                            binding.args.args.clone(),
+                            span.clone(),
+                        ))
+                    }),
+                );
+                let sig = sig(&binding.args);
+                let func_id = module
+                    .declare_anonymous_function(&sig)
+                    .expect("could not declare function");
+                (
+                    val,
+                    Function {
+                        closed: Some(proc),
+                        func_id,
+                    },
+                )
+            })
+            .collect::<HashMap<_, _>>();
 
         let mut cells = HashSet::default();
         self.cells(&mut cells);
@@ -292,21 +354,20 @@ impl Cps {
 
         let mut continuations = HashSet::default();
 
-        let mut cu = CompilationUnit {
+        let mut cu = CompilationUnit::new(
             builder,
-            live: LiveValues::new(),
+            LiveValues::new(),
+            None,
             runtime_funcs,
             params,
-            continuations: &mut continuations,
+            &escaping,
+            &liveness,
+            &free_vars,
+            &mut funcs,
+            &mut continuations,
             module,
-            local_cont_scopes: HashMap::default(),
-            local_cont_blocks: HashMap::default(),
-            free_vars: &free_vars,
-            escaping: &escaping,
-            liveness: &liveness,
-            proc_local: None,
             debug_info,
-        };
+        );
 
         let mut deferred_procs = Vec::new();
         let mut deferred_local_conts = Vec::new();
@@ -332,8 +393,9 @@ impl Cps {
                 &cells,
                 &escaping,
                 &liveness,
-                &mut continuations,
                 &free_vars,
+                &mut funcs,
+                &mut continuations,
                 module,
                 debug_info,
                 &mut deferred_procs,
@@ -342,6 +404,18 @@ impl Cps {
 
         module.finalize_definitions().unwrap();
 
+        // Patch in the finalized closed functions
+        let mut constants_pool = Runtime::handle().0.constants_pool.lock();
+        for Function { closed, func_id } in funcs.into_values() {
+            if let Some(mut proc) = closed {
+                let func = NonNull::new(module.get_finalized_function(func_id) as *mut u8).unwrap();
+                unsafe {
+                    proc.0.ptr.as_mut().func = FuncPtr::User(UserPtr(func));
+                }
+                constants_pool.insert(RuntimeValue::from(proc));
+            }
+        }
+
         ReturnAddress(NonNull::new(module.get_finalized_function(entry_func) as *mut u8).unwrap())
     }
 }
@@ -349,17 +423,62 @@ impl Cps {
 struct CompilationUnit<'m, 'a> {
     builder: FunctionBuilder<'m>,
     live: LiveValues,
-    local_cont_scopes: HashMap<Local, LiveValues>,
-    liveness: &'a Liveness,
     proc_local: Option<Local>,
+    local_cont_scopes: HashMap<Local, LiveValues>,
     local_cont_blocks: HashMap<Local, Block>,
     runtime_funcs: &'a RuntimeFunctions,
     params: [Value; 2],
-    continuations: &'a mut HashSet<Local>,
-    free_vars: &'a FreeVariables,
     escaping: &'a Escaping,
+    liveness: &'a Liveness,
+    free_vars: &'a FreeVariables,
+    funcs: &'a mut HashMap<Local, Function>,
+    continuations: &'a mut HashSet<Local>,
     module: &'a mut JITModule,
     debug_info: &'a mut DebugInfo,
+}
+
+impl<'m, 'a> CompilationUnit<'m, 'a> {
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        builder: FunctionBuilder<'m>,
+        live: LiveValues,
+        proc_local: Option<Local>,
+        runtime_funcs: &'a RuntimeFunctions,
+        params: [Value; 2],
+        escaping: &'a Escaping,
+        liveness: &'a Liveness,
+        free_vars: &'a FreeVariables,
+        funcs: &'a mut HashMap<Local, Function>,
+        continuations: &'a mut HashSet<Local>,
+        module: &'a mut JITModule,
+        debug_info: &'a mut DebugInfo,
+    ) -> Self {
+        /*
+        for (local, func) in funcs.iter() {
+            if let Some(proc) = &func.closed {
+                let raw = SchemeValue::as_raw(&SchemeValue::from(proc.clone()));
+                let val = builder.ins().iconst(types::I64, raw as i64);
+                live.bind(*local, IrValue::Ref(val));
+            }
+        }
+        */
+        Self {
+            builder,
+            live,
+            proc_local,
+            local_cont_scopes: HashMap::default(),
+            local_cont_blocks: HashMap::default(),
+            runtime_funcs,
+            params,
+            escaping,
+            liveness,
+            free_vars,
+            funcs,
+            continuations,
+            module,
+            debug_info,
+        }
+    }
 }
 
 impl CompilationUnit<'_, '_> {
@@ -1396,6 +1515,31 @@ impl CompilationUnit<'_, '_> {
             let [arg1, arg2, arg3, arg4, argn] = self.arg_slots_codegen(args, &HashSet::default());
             let out = self.get_out();
 
+            // Direct tail call to known function
+            if let Some(local) = operator.to_local()
+                && let Some((is_closed, func_id)) = self
+                    .funcs
+                    .get(&local)
+                    .map(|known| (known.is_closed(), known.func_id))
+            {
+                let op = if is_closed {
+                    op
+                } else if matches!(self.live.fetch(&local), IrValue::Owned(_)) {
+                    self.live.kill(local);
+                    op
+                } else {
+                    self.clone_value_codegen(op)
+                };
+                let op_owned = self.builder.ins().band_imm_s(op, !(TAG as i64));
+                self.drop_all_codegen();
+                let func_ref = self.module.declare_func_in_func(func_id, self.builder.func);
+                self.builder.ins().return_call(
+                    func_ref,
+                    &[op_owned, arg1, arg2, arg3, arg4, argn, barrier, out],
+                );
+                return;
+            }
+
             // Check if the operator can be tail called:
             let tail_callable = self
                 .module
@@ -1591,9 +1735,12 @@ impl CompilationUnit<'_, '_> {
                 binding.span,
                 self.continuations,
                 self.free_vars,
+                self.funcs,
                 self.module,
             );
-            if is_func {
+            if bind_closed(binding.val, self.funcs, &mut self.builder, &mut self.live) {
+                deferred_procs.push(bundle);
+            } else if is_func {
                 proc_bundles.push(bundle);
             } else if self.escaping.contains(binding.val) {
                 self.continuations.insert(binding.val);
@@ -1832,6 +1979,14 @@ fn cont_sig() -> Signature {
     sig
 }
 
+fn sig(args: &LambdaArgs) -> Signature {
+    if args.continuation.is_some() {
+        user_sig()
+    } else {
+        cont_sig()
+    }
+}
+
 impl ProcedureBundle {
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -1841,18 +1996,26 @@ impl ProcedureBundle {
         loc: Option<Span>,
         continuations: &HashSet<Local>,
         free_vars: &FreeVariables,
+        funcs: &mut HashMap<Local, Function>,
         module: &mut JITModule,
     ) -> Self {
-        let sig = Self::sig(&args);
-        let func_id = module
-            .declare_anonymous_function(&sig)
-            .expect("Could not declare function");
+        let func_id = funcs
+            .entry(val)
+            .or_insert_with(|| Function {
+                func_id: module
+                    .declare_anonymous_function(&sig(&args))
+                    .expect("Could not declare function"),
+                closed: None,
+            })
+            .func_id;
 
         let env = free_vars
             .free_in(body.dest)
             .difference(&args.iter().cloned().collect::<HashSet<_>>())
             .cloned()
-            .filter(|var| !continuations.contains(var))
+            .filter(|var| {
+                !continuations.contains(var) && !funcs.get(var).is_some_and(Function::is_closed)
+            })
             .collect::<Vec<_>>();
 
         Self {
@@ -1865,21 +2028,6 @@ impl ProcedureBundle {
         }
     }
 
-    /// A lambda with a continuation parameter is a user function; one
-    /// without is a continuation.
-    fn is_user(args: &LambdaArgs) -> bool {
-        args.continuation.is_some()
-    }
-
-    /// The signature of the generated function.
-    fn sig(args: &LambdaArgs) -> Signature {
-        if Self::is_user(args) {
-            user_sig()
-        } else {
-            cont_sig()
-        }
-    }
-
     #[allow(clippy::too_many_arguments)]
     fn codegen(
         self,
@@ -1887,16 +2035,17 @@ impl ProcedureBundle {
         cells: &HashSet<Local>,
         escaping: &Escaping,
         liveness: &Liveness,
-        continuations: &mut HashSet<Local>,
         free_vars: &FreeVariables,
+        funcs: &mut HashMap<Local, Function>,
+        continuations: &mut HashSet<Local>,
         module: &mut JITModule,
         debug_info: &mut DebugInfo,
         deferred_procs: &mut Vec<Self>,
     ) {
         let mut builder_context = FunctionBuilderContext::new();
         let mut ctx = module.make_context();
-        let is_user = Self::is_user(&self.args);
-        ctx.func.signature = Self::sig(&self.args);
+        let is_user = self.args.continuation.is_some();
+        ctx.func.signature = sig(&self.args);
 
         let (arg1_param, barrier_param, out_param) = if is_user {
             (USER_ARG1_PARAM, USER_BARRIER_PARAM, USER_OUT_PARAM)
@@ -1917,13 +2066,25 @@ impl ProcedureBundle {
             [block_params[barrier_param], block_params[out_param]]
         };
 
+        // Bind closed functions:
+        for free_var in free_vars.free_in(self.body.dest) {
+            bind_closed(*free_var, funcs, &mut builder, &mut live);
+        }
+
         // Load environment:
         let proc_local = if is_user {
             // Load the environment from the self (proc) parameter:
             let proc = builder.block_params(entry_block)[PROC_PARAM];
             let proc = builder.ins().bor_imm_s(proc, Tag::Procedure as i64);
             let proc_local = Local::gensym();
-            live.bind(proc_local, IrValue::Owned(proc));
+            live.bind(
+                proc_local,
+                if funcs.get(&self.val).is_some_and(Function::is_closed) {
+                    IrValue::Ref(proc)
+                } else {
+                    IrValue::Owned(proc)
+                },
+            );
             if !self.env.is_empty() {
                 let proc_env = module.declare_func_in_func(runtime_funcs.proc_env, builder.func);
                 let call = builder.ins().call(proc_env, &[proc]);
@@ -2219,21 +2380,20 @@ impl ProcedureBundle {
 
         continuations.extend(self.args.continuation);
 
-        let mut cu = CompilationUnit {
+        let mut cu = CompilationUnit::new(
             builder,
             live,
-            continuations,
-            local_cont_scopes: HashMap::default(),
-            local_cont_blocks: HashMap::default(),
-            escaping,
-            liveness,
             proc_local,
             runtime_funcs,
             params,
-            module,
+            escaping,
+            liveness,
             free_vars,
+            funcs,
+            continuations,
+            module,
             debug_info,
-        };
+        );
 
         let mut deferred_local_conts = Vec::new();
         cu.cps_codegen(self.body, deferred_procs, &mut deferred_local_conts);

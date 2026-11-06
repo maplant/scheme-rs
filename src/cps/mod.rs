@@ -467,7 +467,7 @@ impl Scope<'_> {
         self.curr.contains(local) || self.up.is_some_and(|up| up.contains(local))
     }
 
-    fn new(&self, locals: impl IntoIterator<Item = Local>) -> Scope<'_> {
+    fn push(&self, locals: impl IntoIterator<Item = Local>) -> Scope<'_> {
         Scope {
             up: Some(self),
             curr: locals.into_iter().collect(),

@@ -30,16 +30,16 @@
 (define y 42)
 (assert-equal? (+ x y) 65)
 
-(define x 23)
-(define y 42)
+(define x2 23)
+(define y2 42)
 
-(assert-equal? (let ((y 43))
-                 (+ x y))
+(assert-equal? (let ((y2 43))
+                 (+ x2 y2))
                66)
 
-(assert-equal? (let ((y 43))
-                 (let ((y 44))
-                   (+ x y)))
+(assert-equal? (let ((y2 43))
+                 (let ((y2 44))
+                   (+ x2 y2)))
                67)
 
 ;; 1.6 Procedures
@@ -49,13 +49,13 @@
 
 (assert-equal? (f 23) 65)
 
-(define (f x)
+(define (f2 x)
   (+ x 42))
 
 (define (g p x)
   (p x))
 
-(assert-equal? (g f 23) 65)
+(assert-equal? (g f2 23) 65)
 
 (define (h op x y)
   (op x y))
@@ -491,12 +491,12 @@
          #'(x . rest)
          (get-clause id #'ls))]))
 
-(define (test x)
+(define (test2 x)
   (syntax-case x ()
     [(_ field-spec* ...) #t]
     [_ #f]))
 
-(assert-equal? (test (get-clause #'fields #'((fields x y)))) #t)
+(assert-equal? (test2 (get-clause #'fields #'((fields x y)))) #t)
 
 ;; Test quasiquoting
 (assert-equal? `(1 2 3 ,(+ 1 2 3)) (list 1 2 3 6))
