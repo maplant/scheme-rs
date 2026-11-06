@@ -92,7 +92,7 @@ use crate::{
     lists::{self, Pair, PairInner},
     num::{ComplexNumber, Number, NumberInner, NumberRepr, SimpleNumber},
     proc::{ContBarrier, Procedure, ProcedureInner, ReturnAddress},
-    records::{Embeddable, Embedded, Record, RecordInner, RecordTypeDescriptor},
+    records::{Embeddable, Embedded, Record, RecordInner},
     registry::bridge,
     symbols::Symbol,
     syntax::Syntax,
@@ -173,9 +173,6 @@ impl Value {
                     if !untagged.is_null() {
                         Gc::increment_reference_count(untagged as *mut RecordInner)
                     }
-                }
-                Tag::RecordTypeDescriptor => {
-                    Arc::increment_strong_count(untagged as *const RecordTypeDescriptor)
                 }
                 Tag::Pair => {
                     if !untagged.is_null() {
@@ -327,10 +324,6 @@ impl Value {
                 let rec = unsafe { Gc::from_raw(untagged as *mut RecordInner) };
                 UnpackedValue::Record(Record(rec))
             }
-            Tag::RecordTypeDescriptor => {
-                let rt = unsafe { Arc::from_raw(untagged as *const RecordTypeDescriptor) };
-                UnpackedValue::RecordTypeDescriptor(rt)
-            }
             Tag::Pair if untagged.is_null() => UnpackedValue::Null,
             Tag::Pair => {
                 let pair = unsafe { Gc::from_raw(untagged as *mut PairInner) };
@@ -418,7 +411,6 @@ impl Value {
             UnpackedValue::Symbol(s) => s.hash(state),
             UnpackedValue::Procedure(c) => Gc::as_ptr(&c.0).hash(state),
             UnpackedValue::Record(r) => r.eq_hash(state),
-            UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
             UnpackedValue::Pair(p) => Gc::as_ptr(&p.0).hash(state),
             UnpackedValue::Cell(c) => c.0.read().eqv_hash(state),
         }
@@ -438,7 +430,6 @@ impl Value {
             UnpackedValue::Symbol(s) => s.hash(state),
             UnpackedValue::Procedure(c) => Gc::as_ptr(&c.0).hash(state),
             UnpackedValue::Record(r) => r.eqv_hash(state),
-            UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
             UnpackedValue::Pair(p) => Gc::as_ptr(&p.0).hash(state),
             UnpackedValue::Cell(c) => c.0.read().eqv_hash(state),
         }
@@ -469,7 +460,6 @@ impl Value {
                 recursive.insert(self.clone());
                 r.equal_hash(recursive, state);
             }
-            UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
             UnpackedValue::Pair(p) => {
                 recursive.insert(self.clone());
                 let (car, cdr) = p.clone().into();
@@ -507,9 +497,6 @@ impl Drop for Value {
                     if !untagged.is_null() {
                         drop(Gc::from_raw(untagged as *mut RecordInner));
                     }
-                }
-                Tag::RecordTypeDescriptor => {
-                    drop(Arc::from_raw(untagged as *const RecordTypeDescriptor));
                 }
                 Tag::Pair => {
                     if !untagged.is_null() {
@@ -647,7 +634,6 @@ pub(crate) enum Tag {
     Number = 2 << 1,
     Procedure = 3 << 1,
     Record = 4 << 1,
-    RecordTypeDescriptor = 5 << 1,
     Cell = 6 << 1,
     ReturnAddress = 7 << 1,
 }
@@ -668,8 +654,6 @@ impl From<usize> for Tag {
             Self::Procedure
         } else if tag == Self::Record as usize {
             Self::Record
-        } else if tag == Self::RecordTypeDescriptor as usize {
-            Self::RecordTypeDescriptor
         } else if tag == Self::Cell as usize {
             Self::Cell
         } else if tag == Self::ReturnAddress as usize {
@@ -692,7 +676,6 @@ pub enum ValueType {
     Symbol,
     Procedure,
     Record,
-    RecordTypeDescriptor,
 }
 
 /// The external, unpacked, enumeration representation of a scheme value.
@@ -710,7 +693,6 @@ pub enum UnpackedValue {
     Symbol(Symbol),
     Procedure(Procedure),
     Record(Record),
-    RecordTypeDescriptor(Arc<RecordTypeDescriptor>),
     Pair(Pair),
     Cell(Cell),
     ReturnAddress(#[trace(skip)] ReturnAddress),
@@ -747,10 +729,6 @@ impl UnpackedValue {
                 let untagged = Gc::into_raw(rec.0);
                 Value::from_mut_ptr_and_tag(untagged, Tag::Record)
             }
-            Self::RecordTypeDescriptor(rt) => {
-                let untagged = Arc::into_raw(rt);
-                Value::from_ptr_and_tag(untagged, Tag::RecordTypeDescriptor)
-            }
             Self::Pair(pair) => {
                 let untagged = Gc::into_raw(pair.0);
                 Value::from_mut_ptr_and_tag(untagged, Tag::Pair)
@@ -776,7 +754,6 @@ impl UnpackedValue {
             (Self::Pair(a), Self::Pair(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::Procedure(a), Self::Procedure(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::Record(a), Self::Record(b)) => a.eq(b),
-            (Self::RecordTypeDescriptor(a), Self::RecordTypeDescriptor(b)) => Arc::ptr_eq(a, b),
             (Self::Cell(a), b) => a.0.read().unpacked_ref().eq(b),
             (a, Self::Cell(b)) => a.eq(&b.0.read().unpacked_ref()),
             _ => false,
@@ -801,7 +778,6 @@ impl UnpackedValue {
             (Self::Pair(a), Self::Pair(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::Procedure(a), Self::Procedure(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::Record(a), Self::Record(b)) => a.eqv(b),
-            (Self::RecordTypeDescriptor(a), Self::RecordTypeDescriptor(b)) => Arc::ptr_eq(a, b),
             (Self::Cell(a), b) => a.0.read().unpacked_ref().eqv(b),
             (a, Self::Cell(b)) => a.eqv(&b.0.read().unpacked_ref()),
             _ => false,
@@ -818,7 +794,6 @@ impl UnpackedValue {
             Self::Pair(_) | Self::Null => Symbol::intern("pair").to_str(),
             Self::Procedure(_) => Symbol::intern("procedure").to_str(),
             Self::Record(record) => record.rtd().name.to_str(),
-            Self::RecordTypeDescriptor(_) => Symbol::intern("rtd").to_str(),
             Self::ReturnAddress(_) => Symbol::intern("%return-address").to_str(),
             Self::Cell(cell) => cell.0.read().type_name(),
         }
@@ -835,7 +810,6 @@ impl UnpackedValue {
             Self::Pair(_) => ValueType::Pair,
             Self::Procedure(_) | Self::ReturnAddress(_) => ValueType::Procedure,
             Self::Record(_) => ValueType::Record,
-            Self::RecordTypeDescriptor(_) => ValueType::RecordTypeDescriptor,
             Self::Cell(cell) => cell.0.read().type_of(),
         }
     }
@@ -1143,7 +1117,6 @@ impl_try_from_value_for!(Procedure, Procedure, "procedure");
 impl_try_from_value_for!(Pair, Pair, "pair");
 impl_try_from_value_for!(Record, Record, "record");
 impl_try_from_value_for!(ReturnAddress, ReturnAddress, "%return-address");
-impl_try_from_value_for!(Arc<RecordTypeDescriptor>, RecordTypeDescriptor, "rt");
 
 impl From<UnpackedValue> for Option<(Value, Value)> {
     fn from(val: UnpackedValue) -> Self {

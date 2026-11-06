@@ -912,7 +912,7 @@ fn derive_embeddable_inner(input: DeriveInput) -> Result<proc_macro2::TokenStrea
     Ok(quote! {
         const _: () = {
             #[inline(always)]
-            fn this_rtd() -> ::std::sync::Arc<::scheme_rs::records::RecordTypeDescriptor> {
+            fn this_rtd() -> ::scheme_rs::records::RecordTypeDescriptor {
                 ::scheme_rs::records::rtd!(
                     ty: #ty,
                     name: #name,
@@ -930,7 +930,7 @@ fn derive_embeddable_inner(input: DeriveInput) -> Result<proc_macro2::TokenStrea
 
             #[automatically_derived]
             unsafe impl ::scheme_rs::records::Embeddable for #ty {
-                fn rtd() -> ::std::sync::Arc<::scheme_rs::records::RecordTypeDescriptor> {
+                fn rtd() -> ::scheme_rs::records::RecordTypeDescriptor {
                     this_rtd()
                 }
 
@@ -1741,7 +1741,7 @@ pub fn rtd(tokens: TokenStream) -> TokenStream {
         Some(parent) => quote!({
             let parent = <#parent as ::scheme_rs::records::Embeddable>::rtd();
             let mut inherits = parent.inherits.clone();
-            inherits.insert(::scheme_rs::by_address::ByAddress(parent));
+            inherits.insert(::scheme_rs::by_address::ByAddress(parent.0));
             inherits
         }),
         None => quote!(Default::default()),
@@ -1787,9 +1787,9 @@ pub fn rtd(tokens: TokenStream) -> TokenStream {
 
     quote! {
         {
-            static RTD: std::sync::LazyLock<std::sync::Arc<::scheme_rs::records::RecordTypeDescriptor>> =
-                std::sync::LazyLock::new(|| {
-                    std::sync::Arc::new(::scheme_rs::records::RecordTypeDescriptor {
+            static RTD: ::std::sync::LazyLock<::scheme_rs::records::RecordTypeDescriptor> =
+                ::std::sync::LazyLock::new(|| ::scheme_rs::records::RecordTypeDescriptor(
+                    ::scheme_rs::records::Embedded::new(::scheme_rs::records::RecordTypeDescriptorInner {
                         name: ::scheme_rs::symbols::Symbol::intern(#name),
                         inherits: #inherits,
                         opaque: #opaque,
@@ -1800,7 +1800,7 @@ pub fn rtd(tokens: TokenStream) -> TokenStream {
                         embedded_constructor: #embedded_constructor,
                         embedded_vtable: Some(::scheme_rs::records::EmbeddableVTable::new::<#ty>(#num_embedded_fields)),
                     })
-                });
+                ));
             #bridge
             RTD.clone()
         }

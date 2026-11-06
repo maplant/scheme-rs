@@ -23,7 +23,7 @@ use crate::{
 type Future = Shared<BoxFuture<'static, Result<Vec<Value>, Exception>>>;
 
 unsafe impl Embeddable for Future {
-    fn rtd() -> Arc<RecordTypeDescriptor> {
+    fn rtd() -> RecordTypeDescriptor {
         rtd!(
             ty: Future,
             name: "future",
@@ -55,7 +55,7 @@ pub async fn await_future(
 }
 
 unsafe impl Embeddable for Arc<TcpListener> {
-    fn rtd() -> Arc<RecordTypeDescriptor> {
+    fn rtd() -> RecordTypeDescriptor {
         rtd!(
             ty: Arc<TcpListener>,
             name: "tcp-listener",
@@ -74,7 +74,7 @@ pub async fn bind_tcp(addr: Embedded<String>) -> Result<Arc<TcpListener>, Except
 }
 
 unsafe impl Embeddable for Arc<Mutex<TcpStream>> {
-    fn rtd() -> Arc<RecordTypeDescriptor> {
+    fn rtd() -> RecordTypeDescriptor {
         rtd!(
             ty: Arc<Mutex<TcpStream>>,
             name: "socket",
