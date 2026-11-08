@@ -190,7 +190,7 @@ struct Vec3 {
 }
 
 unsafe impl Embeddable for Vec3 {
-    fn rtd() -> Arc<RecordTypeDescriptor> {
+    fn rtd() -> RecordTypeDescriptor {
         rtd!(
             ty: Vec3,
             name: "vec3",
