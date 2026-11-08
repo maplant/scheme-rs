@@ -781,7 +781,7 @@ impl UnpackedValue {
             (Self::Number(a), Self::Number(b)) => a.eq(b),
             (Self::Character(a), Self::Character(b)) => a == b,
             (Self::Null, Self::Null) => true,
-            (Self::Pair(a), Self::Pair(b)) => Pair::ptr_eq(&a, &b),
+            (Self::Pair(a), Self::Pair(b)) => Pair::ptr_eq(a, b),
             (Self::Procedure(a), Self::Procedure(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::Record(a), Self::Record(b)) => a.eq(b),
             (Self::Cell(a), b) => a.get().unpacked_ref().eq(b),
@@ -805,7 +805,7 @@ impl UnpackedValue {
             // Both obj1 and obj2 are the empty list
             (Self::Null, Self::Null) => true,
             // Everything else is pointer equivalence
-            (Self::Pair(a), Self::Pair(b)) => Pair::ptr_eq(&a, &b),
+            (Self::Pair(a), Self::Pair(b)) => Pair::ptr_eq(a, b),
             (Self::Procedure(a), Self::Procedure(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::Record(a), Self::Record(b)) => a.eqv(b),
             (Self::Cell(a), b) => a.get().unpacked_ref().eqv(b),
