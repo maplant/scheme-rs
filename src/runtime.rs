@@ -128,7 +128,7 @@ impl Runtime {
 
         // If the first form is not an import, import (rnrs)
         if add_rnrs_import {
-            maybe_await!(env.import("(library (rnrs))".parse()?, &env.get_scope_set()))?;
+            maybe_await!(env.import(env.parse_import_set("(library (rnrs))")?))?;
         }
 
         let mut mutable_vars = HashSet::default();

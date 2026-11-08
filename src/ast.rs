@@ -19,7 +19,7 @@ use crate::{
 };
 
 use scheme_rs_macros::{maybe_async, maybe_await};
-use std::{fmt, str::FromStr, sync::Arc};
+use std::{collections::BTreeSet, fmt, str::FromStr, sync::Arc};
 
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
@@ -804,34 +804,57 @@ impl ImportSet {
     /// Returns the base library name for this import set, recursively unwrapping
     /// any Only/Except/Prefix/Rename wrappers.
     pub fn library_name(&self) -> &[Symbol] {
+        &self.library_ref().name
+    }
+
+    pub fn library_ref(&self) -> &LibraryReference {
         match self {
-            ImportSet::Library(lib_ref) => &lib_ref.name,
+            ImportSet::Library(lib_ref) => lib_ref,
             ImportSet::Only { set, .. }
             | ImportSet::Except { set, .. }
             | ImportSet::Prefix { set, .. }
-            | ImportSet::Rename { set, .. } => set.library_name(),
+            | ImportSet::Rename { set, .. } => set.library_ref(),
         }
     }
-}
 
-impl FromStr for ImportSet {
-    type Err = Exception;
+    fn library_ref_mut(&mut self) -> &mut LibraryReference {
+        match self {
+            ImportSet::Library(lib_ref) => lib_ref,
+            ImportSet::Only { set, .. }
+            | ImportSet::Except { set, .. }
+            | ImportSet::Prefix { set, .. }
+            | ImportSet::Rename { set, .. } => set.library_ref_mut(),
+        }
+    }
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
+    pub(crate) fn from_str(s: &str, scopes: BTreeSet<Scope>) -> Result<Self, Exception> {
         let form = Syntax::from_str(s, None)?;
-        match form.as_list() {
+        let mut this = match form.as_list() {
             Some([item, end]) if end.is_null() => Self::parse(item),
             _ => Err(Exception::error(format!(
                 "expected a single import set, got: {s}"
             ))),
-        }
+        }?;
+        this.library_ref_mut().scopes = scopes;
+        Ok(this)
     }
 }
+
+/*
+impl FromStr for ImportSet {
+    type Err = Exception;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+
+    }
+}
+*/
 
 #[derive(Debug)]
 pub struct LibraryReference {
     pub(crate) name: Vec<Symbol>,
     pub(crate) version_ref: VersionReference,
+    pub(crate) scopes: BTreeSet<Scope>,
 }
 
 impl LibraryReference {
@@ -845,8 +868,19 @@ impl LibraryReference {
                         _ => Err(error::expected_identifier(form, Some(atom))),
                     })
                     .collect::<Result<Vec<_>, _>>()?;
+                let scopes = syms
+                    .first()
+                    .ok_or_else(|| error::syntax_error(form, None, "library name can't be empty"))?
+                    .as_ident()
+                    .unwrap()
+                    .scopes
+                    .clone();
                 let version_ref = VersionReference::parse(version_ref)?;
-                Ok(LibraryReference { name, version_ref })
+                Ok(LibraryReference {
+                    name,
+                    version_ref,
+                    scopes,
+                })
             }
             Some([syms @ .., end]) if end.is_null() => {
                 let name = syms
@@ -856,9 +890,17 @@ impl LibraryReference {
                         _ => Err(error::expected_identifier(form, Some(atom))),
                     })
                     .collect::<Result<Vec<_>, _>>()?;
+                let scopes = syms
+                    .first()
+                    .ok_or_else(|| error::syntax_error(form, None, "library name can't be empty"))?
+                    .as_ident()
+                    .unwrap()
+                    .scopes
+                    .clone();
                 Ok(LibraryReference {
                     name,
                     version_ref: VersionReference::SubVersions(Vec::new()),
+                    scopes,
                 })
             }
             None => Err(error::expected_list(form)),
@@ -2347,7 +2389,7 @@ fn splice_in_inner(
                         }
                         // Second pass: execute all imports (all have been validated)
                         for import_set in parsed_imports {
-                            maybe_await!(env.import(import_set, &ident.scopes))?;
+                            maybe_await!(env.import(import_set))?;
                         }
                         continue;
                     }

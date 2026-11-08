@@ -38,7 +38,7 @@ set of imports provided to the scheme code.
 ```rust
 # use scheme_rs::{runtime::Runtime, env::TopLevelEnvironment};
 let env = TopLevelEnvironment::new_repl();
-env.import("(library (rnrs))".parse().unwrap());
+env.import(env.parse_import_set("(library (rnrs))").unwrap());
 ```
 
 Now that you have an environment, you can call `eval` on it. The first
@@ -49,7 +49,7 @@ false and think careful of the functions you provide.
 ```rust
 # use scheme_rs::{env::TopLevelEnvironment, proc::Procedure};
 # let env = TopLevelEnvironment::new_repl();
-# env.import("(library (rnrs))".parse().unwrap());
+# env.import(env.parse_import_set("(library (rnrs))").unwrap());
 let vals = env.eval(
     false,
     "
@@ -78,7 +78,7 @@ anywhere.
 # env::TopLevelEnvironment, value::Value, proc::{ContBarrier, Procedure},
 # };
 # let env = TopLevelEnvironment::new_repl();
-# env.import("(library (rnrs))".parse().unwrap());
+# env.import(env.parse_import_set("(library (rnrs))").unwrap());
 # let [factorial] = env.eval(
 #     false,
 #     "
@@ -147,7 +147,7 @@ Once you've defined a bridge function it can be imported and called from scheme:
 # }
 # fn main() {
 # let env = TopLevelEnvironment::new_repl();
-# env.import("(library (rnrs))".parse().unwrap());
+# env.import(env.parse_import_set("(library (rnrs))").unwrap());
 let val = env.eval(
   true,
   "
