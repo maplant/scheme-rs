@@ -126,7 +126,7 @@ impl<'a> Formatter<'a> {
             }
             UnpackedValue::Procedure(_) => write!(self.f, "<procedure>"),
             UnpackedValue::Record(record) => record.fmt(self),
-            UnpackedValue::Cell(cell) => self.fmt_value(&cell.0.read()),
+            UnpackedValue::Cell(cell) => self.fmt_value(&cell.get()),
             UnpackedValue::ReturnAddress(_) => write!(self.f, "%return-address"),
         }
     }
@@ -146,7 +146,7 @@ impl<'a> Formatter<'a> {
             }
             UnpackedValue::Procedure(proc) => write!(self.f, "#<procedure {proc:?}>"),
             UnpackedValue::Record(record) => record.fmt(self),
-            UnpackedValue::Cell(cell) => self.fmt_value(&cell.0.read()),
+            UnpackedValue::Cell(cell) => self.fmt_value(&cell.get()),
             UnpackedValue::ReturnAddress(_) => write!(self.f, "%return-address"),
         }
     }

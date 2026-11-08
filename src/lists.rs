@@ -1,7 +1,10 @@
 //! Scheme pairs and lists.
 
+use std::{marker::PhantomData, mem::ManuallyDrop, num::NonZeroUsize, ptr::NonNull};
+
 use hashbrown::HashSet;
 use parking_lot::RwLock;
+use scheme_rs_gc::HeapObject;
 
 use crate::{
     exceptions::Exception,
@@ -18,37 +21,65 @@ pub(crate) struct PairInner {
     pub(crate) car: RwLock<Value>,
     /// The tail of the pair
     pub(crate) cdr: RwLock<Value>,
-    /// Whether or not the pair can be modified post creation
-    mutable: bool,
 }
 
 /// A pair of Scheme [Values](Value). Has a head (the [car](Pair::car())) and a
 /// tail (the [cdr](Pair::cdr())).
-#[derive(Clone, Trace)]
-pub struct Pair(pub(crate) Gc<PairInner>);
+pub struct Pair {
+    /// The car and cdr of the pair. The mutability is stored in the lowest bit
+    /// of the pointer
+    pub(crate) inner: NonNull<PairInner>,
+}
 
 impl Pair {
     /// Construct a new mutable Pair from a car and cdr
     pub fn mutable(car: Value, cdr: Value) -> Self {
-        Self(Gc::new(PairInner {
-            car: RwLock::new(car),
-            cdr: RwLock::new(cdr),
-            mutable: true,
-        }))
+        Self {
+            inner: NonNull::new(Gc::into_raw(Gc::new(PairInner {
+                car: RwLock::new(car),
+                cdr: RwLock::new(cdr),
+            })))
+            .unwrap()
+            .map_addr(|addr| addr | 1),
+        }
     }
 
     /// Construct a new immutable Pair from a car and cdr
     pub fn immutable(car: Value, cdr: Value) -> Self {
-        Self(Gc::new(PairInner {
-            car: RwLock::new(car),
-            cdr: RwLock::new(cdr),
-            mutable: false,
-        }))
+        Self {
+            inner: NonNull::new(Gc::into_raw(Gc::new(PairInner {
+                car: RwLock::new(car),
+                cdr: RwLock::new(cdr),
+            })))
+            .unwrap(),
+        }
+    }
+
+    pub fn ptr_eq(lhs: &Self, rhs: &Self) -> bool {
+        lhs.inner == rhs.inner
+    }
+
+    #[inline]
+    fn inner_and_mutability(&self) -> (ManuallyDrop<Gc<PairInner>>, bool) {
+        let mutable = self.inner.as_ptr() as usize & 1 == 1;
+        let inner = ManuallyDrop::new(unsafe {
+            Gc::from_raw(
+                self.inner
+                    .map_addr(|raw| NonZeroUsize::new_unchecked(raw.get() & !1))
+                    .as_ptr(),
+            )
+        });
+        (inner, mutable)
     }
 
     /// Extract the car (aka the head) from the Pair.
     pub fn car(&self) -> Value {
-        self.0.car.read().clone()
+        let (inner, mutable) = self.inner_and_mutability();
+        if mutable {
+            inner.car.read().clone()
+        } else {
+            unsafe { (*inner.car.data_ptr()).clone() }
+        }
     }
 
     /// Alias for [`car`](Pair::car())
@@ -58,7 +89,12 @@ impl Pair {
 
     /// Extract the cdr (aka the tail) from the Pair.
     pub fn cdr(&self) -> Value {
-        self.0.cdr.read().clone()
+        let (inner, mutable) = self.inner_and_mutability();
+        if mutable {
+            inner.cdr.read().clone()
+        } else {
+            unsafe { (*inner.cdr.data_ptr()).clone() }
+        }
     }
 
     /// Alias for [`cdr`](Pair::cdr())
@@ -68,8 +104,9 @@ impl Pair {
 
     /// Set the car of the Pair. Returns an error if pair is immutable.
     pub fn set_car(&self, new_car: Value) -> Result<(), Exception> {
-        if self.0.mutable {
-            *self.0.car.write() = new_car;
+        let (inner, mutable) = self.inner_and_mutability();
+        if mutable {
+            *inner.car.write() = new_car;
             Ok(())
         } else {
             Err(Exception::error("pair is not mutable"))
@@ -78,8 +115,9 @@ impl Pair {
 
     /// Set the cdr of the Pair. Returns an error if pair is immutable.
     pub fn set_cdr(&self, new_cdr: Value) -> Result<(), Exception> {
-        if self.0.mutable {
-            *self.0.cdr.write() = new_cdr;
+        let (inner, mutable) = self.inner_and_mutability();
+        if mutable {
+            *inner.cdr.write() = new_cdr;
             Ok(())
         } else {
             Err(Exception::error("pair is not mutable"))
@@ -87,9 +125,62 @@ impl Pair {
     }
 }
 
+unsafe impl Trace for Pair {
+    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(HeapObject)) {
+        unsafe {
+            visitor(HeapObject::from_data(
+                self.inner
+                    .map_addr(|addr| NonZeroUsize::new_unchecked(addr.get() & !1)),
+            ))
+        }
+    }
+
+    unsafe fn finalize(&mut self) {}
+}
+
+impl Clone for Pair {
+    fn clone(&self) -> Self {
+        unsafe {
+            Gc::increment_reference_count(self.inner.as_ptr().map_addr(|addr| addr & !1));
+        }
+        Self { inner: self.inner }
+    }
+}
+
+impl Drop for Pair {
+    fn drop(&mut self) {
+        unsafe { drop(Gc::from_raw(self.inner.as_ptr().map_addr(|addr| addr & !1))) }
+    }
+}
+
 impl From<Pair> for (Value, Value) {
     fn from(value: Pair) -> Self {
         (value.car(), value.cdr())
+    }
+}
+
+pub struct PairRef<'a> {
+    pub(crate) inner: ManuallyDrop<Pair>,
+    pub(crate) phantom: PhantomData<&'a (Value, Value)>,
+}
+
+impl PairRef<'_> {
+    pub fn car(&self) -> Value {
+        let (inner, mutable) = self.inner.inner_and_mutability();
+        if mutable {
+            inner.car.read().clone()
+        } else {
+            unsafe { (*inner.car.data_ptr()).clone() }
+        }
+    }
+
+    pub fn cdr(&self) -> Value {
+        let (inner, mutable) = self.inner.inner_and_mutability();
+        if mutable {
+            inner.cdr.read().clone()
+        } else {
+            unsafe { (*inner.cdr.data_ptr()).clone() }
+        }
     }
 }
 
