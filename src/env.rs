@@ -187,7 +187,7 @@ impl TopLevelEnvironment {
         }))
     }
 
-    pub(crate) fn scope(&self) -> Scope {
+    pub fn scope(&self) -> Scope {
         self.0.scope
     }
 
@@ -336,9 +336,12 @@ impl TopLevelEnvironment {
     }
 
     #[maybe_async]
-    pub fn import(&self, import_set: ImportSet) -> Result<(), Exception> {
+    pub fn import(
+        &self,
+        import_set: ImportSet,
+        scope_set: &BTreeSet<Scope>,
+    ) -> Result<(), Exception> {
         let registry = Runtime::handle().get_registry();
-        let scope = self.0.scope;
         let mut registry_inner = maybe_await!(registry.0.write());
         let imports = maybe_await!(registry_inner.import(import_set))?;
         let mut this_imports = maybe_await!(self.0.imports.write());
@@ -349,7 +352,13 @@ impl TopLevelEnvironment {
                 }
                 Entry::Vacant(slot) => {
                     add_pending_top_level_binding(import.binding, import.origin.clone());
-                    add_binding(Identifier::from_symbol(sym, scope), import.binding);
+                    add_binding(
+                        Identifier {
+                            sym,
+                            scopes: scope_set.clone(),
+                        },
+                        import.binding,
+                    );
                     slot.insert(import.origin);
                 }
                 _ => (),
@@ -617,7 +626,11 @@ impl LexicalContour {
     }
 
     #[maybe_async]
-    pub fn import(&self, import_set: ImportSet) -> Result<(), Exception> {
+    pub fn import(
+        &self,
+        import_set: ImportSet,
+        scope_set: &BTreeSet<Scope>,
+    ) -> Result<(), Exception> {
         let registry = Runtime::handle().get_registry();
         let mut registry_inner = maybe_await!(registry.0.write());
 
@@ -637,7 +650,13 @@ impl LexicalContour {
                 }
                 Entry::Vacant(slot) => {
                     add_pending_top_level_binding(import.binding, import.origin.clone());
-                    add_binding(Identifier::from_symbol(sym, self.scope), import.binding);
+                    add_binding(
+                        Identifier {
+                            sym,
+                            scopes: scope_set.clone(),
+                        },
+                        import.binding,
+                    );
                     slot.insert(binding_type);
                 }
                 _ => (),
@@ -786,10 +805,14 @@ impl Environment {
     }
 
     #[maybe_async]
-    pub fn import(&self, import_set: ImportSet) -> Result<(), Exception> {
+    pub fn import(
+        &self,
+        import_set: ImportSet,
+        scope_set: &BTreeSet<Scope>,
+    ) -> Result<(), Exception> {
         match self {
-            Self::Top(top) => maybe_await!(top.import(import_set)),
-            Self::LexicalContour(lc) => maybe_await!(lc.import(import_set)),
+            Self::Top(top) => maybe_await!(top.import(import_set, scope_set)),
+            Self::LexicalContour(lc) => maybe_await!(lc.import(import_set, scope_set)),
         }
     }
 

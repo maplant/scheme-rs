@@ -2347,7 +2347,7 @@ fn splice_in_inner(
                         }
                         // Second pass: execute all imports (all have been validated)
                         for import_set in parsed_imports {
-                            maybe_await!(env.import(import_set))?;
+                            maybe_await!(env.import(import_set, &ident.scopes))?;
                         }
                         continue;
                     }

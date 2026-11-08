@@ -32,7 +32,7 @@ pub(super) fn import_visible_libraries(form: &Syntax, env: &Environment) -> Resu
     if starts_with_import(form, env) {
         maybe_await!(import_document_imports(form, env))?;
     } else {
-        maybe_await!(env.import("(library (rnrs))".parse().unwrap()))?;
+        maybe_await!(env.import("(library (rnrs))".parse().unwrap(), &env.get_scope_set()))?;
     }
 
     Ok(())
@@ -60,7 +60,7 @@ fn import_document_imports(form: &Syntax, env: &Environment) -> Result<(), Excep
             continue;
         }
         for import_set in ImportSpec::parse(form)?.import_sets {
-            maybe_await!(env.import(import_set))?;
+            maybe_await!(env.import(import_set, &env.get_scope_set()))?;
         }
     }
 

@@ -133,8 +133,11 @@ fn entry(runtime: &Runtime) -> Result<(), Exception> {
 
     let repl = TopLevelEnvironment::new_repl();
 
-    maybe_await!(repl.import("(library (rnrs))".parse().unwrap()))
-        .expect("Failed to import standard library");
+    maybe_await!(repl.import(
+        "(library (rnrs))".parse().unwrap(),
+        &[repl.scope()].into_iter().collect()
+    ))
+    .expect("Failed to import standard library");
 
     let config = Config::builder()
         .auto_add_history(true)

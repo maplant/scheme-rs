@@ -48,7 +48,7 @@ pub fn environment(
         .collect::<Result<Vec<_>, _>>()?;
     let env = Environment::Top(TopLevelEnvironment::new_repl());
     for import_set in import_sets {
-        maybe_await!(env.import(import_set))?;
+        maybe_await!(env.import(import_set, &env.get_scope_set()))?;
     }
     let env = Value::from(env);
     Ok(barrier.call_cont(Args::pack([env])))
