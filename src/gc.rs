@@ -116,6 +116,7 @@ impl<T: ?Sized> Gc<T> {
         this.ptr.as_ptr()
     }
 
+    #[inline]
     pub(crate) fn into_raw(gc: Self) -> *mut T {
         ManuallyDrop::new(gc).ptr.as_ptr()
     }
@@ -127,6 +128,7 @@ impl<T: ?Sized> Gc<T> {
         inc_rc(ptr);
     }
 
+    #[inline]
     pub(crate) unsafe fn from_raw(ptr: *mut T) -> Self {
         debug_assert!(!ptr.is_null());
         let ptr = unsafe { NonNull::new_unchecked(ptr) };

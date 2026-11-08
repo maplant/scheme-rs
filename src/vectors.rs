@@ -8,7 +8,7 @@ use crate::{
     fmt::Formatter,
     gc::Trace,
     lists::{List, iter_list, slice_to_list},
-    records::{Embeddable, Embedded, Record},
+    records::{Embeddable, Embedded, Record, RecordTypeDescriptor},
     registry::bridge,
     value::Value,
 };
@@ -17,7 +17,7 @@ use parking_lot::{
     MappedRwLockReadGuard, MappedRwLockWriteGuard, RwLock, RwLockReadGuard, RwLockWriteGuard,
 };
 use scheme_rs_macros::rtd;
-use std::{clone::Clone, fmt, hash::Hash, ops::Range, sync::Arc};
+use std::{clone::Clone, fmt, hash::Hash, ops::Range};
 
 #[derive(Trace)]
 #[repr(align(16))]
@@ -29,7 +29,7 @@ pub(crate) struct VectorInner<T: Trace> {
 }
 
 unsafe impl Embeddable for VectorInner<Value> {
-    fn rtd() -> Arc<crate::records::RecordTypeDescriptor>
+    fn rtd() -> RecordTypeDescriptor
     where
         Self: Sized,
     {
@@ -159,7 +159,7 @@ impl From<Vector> for Value {
 }
 
 unsafe impl Embeddable for VectorInner<u8> {
-    fn rtd() -> Arc<crate::records::RecordTypeDescriptor>
+    fn rtd() -> RecordTypeDescriptor
     where
         Self: Sized,
     {

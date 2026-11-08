@@ -89,10 +89,10 @@ use parking_lot::RwLock;
 use crate::{
     exceptions::Exception,
     gc::{Gc, HeapObject, Trace},
-    lists::{self, Pair, PairInner},
+    lists::{self, Pair, PairInner, PairRef},
     num::{ComplexNumber, Number, NumberInner, NumberRepr, SimpleNumber},
     proc::{ContBarrier, Procedure, ProcedureInner, ReturnAddress},
-    records::{Embeddable, Embedded, Record, RecordInner, RecordTypeDescriptor},
+    records::{Embeddable, Embedded, Record, RecordInner},
     registry::bridge,
     symbols::Symbol,
     syntax::Syntax,
@@ -174,14 +174,12 @@ impl Value {
                         Gc::increment_reference_count(untagged as *mut RecordInner)
                     }
                 }
-                Tag::RecordTypeDescriptor => {
-                    Arc::increment_strong_count(untagged as *const RecordTypeDescriptor)
-                }
                 Tag::Pair => {
                     if !untagged.is_null() {
                         Gc::increment_reference_count(untagged as *mut PairInner)
                     }
                 }
+                Tag::IPair => Gc::increment_reference_count(untagged as *mut PairInner),
                 Tag::Cell => {
                     Gc::increment_reference_count(untagged as *mut Value);
                 }
@@ -327,17 +325,17 @@ impl Value {
                 let rec = unsafe { Gc::from_raw(untagged as *mut RecordInner) };
                 UnpackedValue::Record(Record(rec))
             }
-            Tag::RecordTypeDescriptor => {
-                let rt = unsafe { Arc::from_raw(untagged as *const RecordTypeDescriptor) };
-                UnpackedValue::RecordTypeDescriptor(rt)
-            }
             Tag::Pair if untagged.is_null() => UnpackedValue::Null,
-            Tag::Pair => {
-                let pair = unsafe { Gc::from_raw(untagged as *mut PairInner) };
-                UnpackedValue::Pair(Pair(pair))
-            }
+            Tag::Pair => UnpackedValue::Pair(Pair {
+                inner: unsafe {
+                    NonNull::new_unchecked(untagged.map_addr(|addr| addr | 1) as *mut PairInner)
+                },
+            }),
+            Tag::IPair => UnpackedValue::Pair(Pair {
+                inner: unsafe { NonNull::new_unchecked(untagged as *mut PairInner) },
+            }),
             Tag::Cell => {
-                let cell = unsafe { Gc::from_raw(untagged as *mut RwLock<Value>) };
+                let cell = unsafe { Gc::from_raw(untagged as *mut CellInner) };
                 UnpackedValue::Cell(Cell(cell))
             }
             Tag::FixNum => UnpackedValue::Number(Number(NumberRepr::Fixed(raw as i64 >> 1))),
@@ -348,32 +346,39 @@ impl Value {
     }
 
     /// Construct a mutable cons cell from two values.
+    #[inline]
     pub fn cons(car: impl Into<Value>, cdr: impl Into<Value>) -> Value {
         UnpackedValue::Pair(Pair::mutable(car.into(), cdr.into())).into_value()
     }
 
     #[inline]
-    pub(crate) fn pair_car(&self) -> Option<Value> {
-        Some(self.borrow_pair()?.car.read().clone())
-    }
+    pub fn borrow_pair(&self) -> Option<PairRef<'_>> {
+        let untagged = self.0 as usize & TAG;
 
-    #[inline]
-    pub(crate) fn pair_cdr(&self) -> Option<Value> {
-        Some(self.borrow_pair()?.cdr.read().clone())
-    }
-
-    #[inline]
-    fn borrow_pair(&self) -> Option<ManuallyDrop<Gc<PairInner>>> {
-        if self.0 as usize & TAG != Tag::Pair as usize {
+        let mutable = if untagged == Tag::Pair as usize {
+            true
+        } else if untagged == Tag::IPair as usize {
+            false
+        } else {
             return None;
-        }
+        };
+
         let untagged = self.0.map_addr(|raw| raw & !TAG);
+
         if untagged.is_null() {
             return None;
         }
-        Some(ManuallyDrop::new(unsafe {
-            Gc::from_raw(untagged as *mut PairInner)
-        }))
+
+        Some(PairRef {
+            inner: ManuallyDrop::new(Pair {
+                inner: unsafe {
+                    NonNull::new_unchecked(
+                        untagged.map_addr(|addr| addr | mutable as usize) as *mut PairInner
+                    )
+                },
+            }),
+            phantom: PhantomData,
+        })
     }
 
     pub fn unpacked_ref(&self) -> UnpackedValueRef<'_> {
@@ -418,9 +423,8 @@ impl Value {
             UnpackedValue::Symbol(s) => s.hash(state),
             UnpackedValue::Procedure(c) => Gc::as_ptr(&c.0).hash(state),
             UnpackedValue::Record(r) => r.eq_hash(state),
-            UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
-            UnpackedValue::Pair(p) => Gc::as_ptr(&p.0).hash(state),
-            UnpackedValue::Cell(c) => c.0.read().eqv_hash(state),
+            UnpackedValue::Pair(p) => p.inner.hash(state),
+            UnpackedValue::Cell(c) => c.get().eqv_hash(state),
         }
     }
 
@@ -438,9 +442,8 @@ impl Value {
             UnpackedValue::Symbol(s) => s.hash(state),
             UnpackedValue::Procedure(c) => Gc::as_ptr(&c.0).hash(state),
             UnpackedValue::Record(r) => r.eqv_hash(state),
-            UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
-            UnpackedValue::Pair(p) => Gc::as_ptr(&p.0).hash(state),
-            UnpackedValue::Cell(c) => c.0.read().eqv_hash(state),
+            UnpackedValue::Pair(p) => p.inner.hash(state),
+            UnpackedValue::Cell(c) => c.get().eqv_hash(state),
         }
     }
 
@@ -469,14 +472,13 @@ impl Value {
                 recursive.insert(self.clone());
                 r.equal_hash(recursive, state);
             }
-            UnpackedValue::RecordTypeDescriptor(rt) => Arc::as_ptr(rt).hash(state),
             UnpackedValue::Pair(p) => {
                 recursive.insert(self.clone());
                 let (car, cdr) = p.clone().into();
                 car.equal_hash(recursive, state);
                 cdr.equal_hash(recursive, state);
             }
-            UnpackedValue::Cell(c) => c.0.read().eqv_hash(state),
+            UnpackedValue::Cell(c) => c.get().eqv_hash(state),
         }
     }
 
@@ -508,10 +510,12 @@ impl Drop for Value {
                         drop(Gc::from_raw(untagged as *mut RecordInner));
                     }
                 }
-                Tag::RecordTypeDescriptor => {
-                    drop(Arc::from_raw(untagged as *const RecordTypeDescriptor));
-                }
                 Tag::Pair => {
+                    if !untagged.is_null() {
+                        drop(Gc::from_raw(untagged as *mut PairInner));
+                    }
+                }
+                Tag::IPair => {
                     if !untagged.is_null() {
                         drop(Gc::from_raw(untagged as *mut PairInner));
                     }
@@ -564,25 +568,33 @@ unsafe impl Trace for Value {
     }
 }
 
+#[derive(Trace)]
+#[repr(align(16))]
+pub(crate) struct CellInner(RwLock<Value>);
+
 /// A Cell is a value that is mutable, essentially a variable.
 #[derive(Clone, Trace)]
-pub struct Cell(pub(crate) Gc<RwLock<Value>>);
+pub struct Cell(pub(crate) Gc<CellInner>);
 
 impl Cell {
+    #[inline]
     pub fn new(val: Value) -> Self {
-        Self(Gc::new(RwLock::new(val)))
+        Self(Gc::new(CellInner(RwLock::new(val))))
     }
 
+    #[inline]
     pub fn get(&self) -> Value {
-        self.0.read().clone()
+        self.0.0.read().clone()
     }
 
+    #[inline]
     pub fn set(&self, new_val: Value) {
-        *self.0.write() = new_val;
+        *self.0.0.write() = new_val;
     }
 
     /// Constructs a value from the Cell. The resulting Value contains a
     /// reference to the cell and sees all mutations.
+    #[inline]
     pub fn into_value(self) -> Value {
         UnpackedValue::Cell(self).into_value()
     }
@@ -643,11 +655,11 @@ impl From<Exception> for Value {
 pub(crate) enum Tag {
     FixNum = 1,
     Pair = 0 << 1,
-    SmallValue = 1 << 1,
-    Number = 2 << 1,
-    Procedure = 3 << 1,
-    Record = 4 << 1,
-    RecordTypeDescriptor = 5 << 1,
+    IPair = 1 << 1,
+    SmallValue = 2 << 1,
+    Number = 3 << 1,
+    Procedure = 4 << 1,
+    Record = 5 << 1,
     Cell = 6 << 1,
     ReturnAddress = 7 << 1,
 }
@@ -660,6 +672,8 @@ impl From<usize> for Tag {
             Self::FixNum
         } else if tag == Self::Pair as usize {
             Self::Pair
+        } else if tag == Self::IPair as usize {
+            Self::IPair
         } else if tag == Self::SmallValue as usize {
             Self::SmallValue
         } else if tag == Self::Number as usize {
@@ -668,8 +682,6 @@ impl From<usize> for Tag {
             Self::Procedure
         } else if tag == Self::Record as usize {
             Self::Record
-        } else if tag == Self::RecordTypeDescriptor as usize {
-            Self::RecordTypeDescriptor
         } else if tag == Self::Cell as usize {
             Self::Cell
         } else if tag == Self::ReturnAddress as usize {
@@ -692,7 +704,6 @@ pub enum ValueType {
     Symbol,
     Procedure,
     Record,
-    RecordTypeDescriptor,
 }
 
 /// The external, unpacked, enumeration representation of a scheme value.
@@ -710,7 +721,6 @@ pub enum UnpackedValue {
     Symbol(Symbol),
     Procedure(Procedure),
     Record(Record),
-    RecordTypeDescriptor(Arc<RecordTypeDescriptor>),
     Pair(Pair),
     Cell(Cell),
     ReturnAddress(#[trace(skip)] ReturnAddress),
@@ -747,13 +757,11 @@ impl UnpackedValue {
                 let untagged = Gc::into_raw(rec.0);
                 Value::from_mut_ptr_and_tag(untagged, Tag::Record)
             }
-            Self::RecordTypeDescriptor(rt) => {
-                let untagged = Arc::into_raw(rt);
-                Value::from_ptr_and_tag(untagged, Tag::RecordTypeDescriptor)
-            }
             Self::Pair(pair) => {
-                let untagged = Gc::into_raw(pair.0);
-                Value::from_mut_ptr_and_tag(untagged, Tag::Pair)
+                let pair = ManuallyDrop::new(pair);
+                let mutable = pair.inner.as_ptr() as usize & 1 == 1;
+                let untagged = pair.inner.as_ptr().map_addr(|addr| addr & !1);
+                Value::from_mut_ptr_and_tag(untagged, if mutable { Tag::Pair } else { Tag::IPair })
             }
             Self::Cell(cell) => {
                 let untagged = Gc::into_raw(cell.0);
@@ -773,12 +781,11 @@ impl UnpackedValue {
             (Self::Number(a), Self::Number(b)) => a.eq(b),
             (Self::Character(a), Self::Character(b)) => a == b,
             (Self::Null, Self::Null) => true,
-            (Self::Pair(a), Self::Pair(b)) => Gc::ptr_eq(&a.0, &b.0),
+            (Self::Pair(a), Self::Pair(b)) => Pair::ptr_eq(a, b),
             (Self::Procedure(a), Self::Procedure(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::Record(a), Self::Record(b)) => a.eq(b),
-            (Self::RecordTypeDescriptor(a), Self::RecordTypeDescriptor(b)) => Arc::ptr_eq(a, b),
-            (Self::Cell(a), b) => a.0.read().unpacked_ref().eq(b),
-            (a, Self::Cell(b)) => a.eq(&b.0.read().unpacked_ref()),
+            (Self::Cell(a), b) => a.get().unpacked_ref().eq(b),
+            (a, Self::Cell(b)) => a.eq(&b.get().unpacked_ref()),
             _ => false,
         }
     }
@@ -798,12 +805,11 @@ impl UnpackedValue {
             // Both obj1 and obj2 are the empty list
             (Self::Null, Self::Null) => true,
             // Everything else is pointer equivalence
-            (Self::Pair(a), Self::Pair(b)) => Gc::ptr_eq(&a.0, &b.0),
+            (Self::Pair(a), Self::Pair(b)) => Pair::ptr_eq(a, b),
             (Self::Procedure(a), Self::Procedure(b)) => Gc::ptr_eq(&a.0, &b.0),
             (Self::Record(a), Self::Record(b)) => a.eqv(b),
-            (Self::RecordTypeDescriptor(a), Self::RecordTypeDescriptor(b)) => Arc::ptr_eq(a, b),
-            (Self::Cell(a), b) => a.0.read().unpacked_ref().eqv(b),
-            (a, Self::Cell(b)) => a.eqv(&b.0.read().unpacked_ref()),
+            (Self::Cell(a), b) => a.get().unpacked_ref().eqv(b),
+            (a, Self::Cell(b)) => a.eqv(&b.get().unpacked_ref()),
             _ => false,
         }
     }
@@ -818,9 +824,8 @@ impl UnpackedValue {
             Self::Pair(_) | Self::Null => Symbol::intern("pair").to_str(),
             Self::Procedure(_) => Symbol::intern("procedure").to_str(),
             Self::Record(record) => record.rtd().name.to_str(),
-            Self::RecordTypeDescriptor(_) => Symbol::intern("rtd").to_str(),
             Self::ReturnAddress(_) => Symbol::intern("%return-address").to_str(),
-            Self::Cell(cell) => cell.0.read().type_name(),
+            Self::Cell(cell) => cell.get().type_name(),
         }
     }
 
@@ -835,8 +840,7 @@ impl UnpackedValue {
             Self::Pair(_) => ValueType::Pair,
             Self::Procedure(_) | Self::ReturnAddress(_) => ValueType::Procedure,
             Self::Record(_) => ValueType::Record,
-            Self::RecordTypeDescriptor(_) => ValueType::RecordTypeDescriptor,
-            Self::Cell(cell) => cell.0.read().type_of(),
+            Self::Cell(cell) => cell.get().type_of(),
         }
     }
 }
@@ -1053,7 +1057,7 @@ macro_rules! impl_try_from_value_for {
             fn try_from(v: UnpackedValue) -> Result<Self, Self::Error> {
                 match v {
                     UnpackedValue::$variant(v) => Ok(v),
-                    UnpackedValue::Cell(cell) => cell.0.read().clone().try_into(),
+                    UnpackedValue::Cell(cell) => cell.get().clone().try_into(),
                     e => Err(Exception::type_error($type_name, &*e.type_name())),
                 }
             }
@@ -1143,7 +1147,6 @@ impl_try_from_value_for!(Procedure, Procedure, "procedure");
 impl_try_from_value_for!(Pair, Pair, "pair");
 impl_try_from_value_for!(Record, Record, "record");
 impl_try_from_value_for!(ReturnAddress, ReturnAddress, "%return-address");
-impl_try_from_value_for!(Arc<RecordTypeDescriptor>, RecordTypeDescriptor, "rt");
 
 impl From<UnpackedValue> for Option<(Value, Value)> {
     fn from(val: UnpackedValue) -> Self {

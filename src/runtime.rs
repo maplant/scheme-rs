@@ -446,7 +446,7 @@ unsafe fn arc_from_ptr<T>(ptr: *const T) -> Option<Arc<T>> {
 /// Allocate a new Gc with a value of undefined
 #[runtime_fn]
 unsafe extern "C" fn alloc_cell() -> *const () {
-    Value::into_raw(Cell(Gc::new(RwLock::new(Value::undefined()))).into_value())
+    Value::into_raw(Cell::new(Value::undefined()).into_value())
 }
 
 /// Read the value of a Cell.
@@ -636,7 +636,7 @@ unsafe extern "C" fn store(from: *const (), to: *const ()) {
         // immediately.
         let from = Value::from_raw_inc_rc(from);
         let to: ManuallyDrop<Cell> = ManuallyDrop::new(Value::from_raw(to).try_into().unwrap());
-        *to.0.write() = from;
+        to.set(from);
     }
 }
 
@@ -645,7 +645,7 @@ unsafe extern "C" fn store(from: *const (), to: *const ()) {
 unsafe extern "C" fn car(val: *const (), error: *mut Value) -> *const () {
     unsafe {
         let val = ManuallyDrop::new(Value::from_raw(val));
-        if let Some(car) = val.pair_car() {
+        if let Some(car) = val.borrow_pair().map(|p| p.car()) {
             return Value::into_raw(car);
         }
         match val.try_to::<Pair>() {
@@ -663,7 +663,7 @@ unsafe extern "C" fn car(val: *const (), error: *mut Value) -> *const () {
 unsafe extern "C" fn cdr(val: *const (), error: *mut Value) -> *const () {
     unsafe {
         let val = ManuallyDrop::new(Value::from_raw(val));
-        if let Some(cdr) = val.pair_cdr() {
+        if let Some(cdr) = val.borrow_pair().map(|p| p.cdr()) {
             return Value::into_raw(cdr);
         }
         match val.try_to::<Pair>() {

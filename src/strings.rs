@@ -7,7 +7,7 @@
 //! We reject the R6RS mandate and all features that depend on it, such as
 //! custom textual ports. In scheme-rs, strings are Rust strings.
 
-use std::{fmt, iter, sync::Arc};
+use std::{fmt, iter};
 
 use indexmap::IndexSet;
 use scheme_rs_macros::rtd;
@@ -24,7 +24,7 @@ use crate::{
 };
 
 unsafe impl Embeddable for String {
-    fn rtd() -> Arc<RecordTypeDescriptor>
+    fn rtd() -> RecordTypeDescriptor
     where
         Self: Sized,
     {

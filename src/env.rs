@@ -886,14 +886,14 @@ impl Global {
     }
 
     pub fn read(&self) -> Value {
-        self.val.0.read().clone()
+        self.val.get()
     }
 
     pub fn set(&self, new: Value) -> Result<(), Exception> {
         if !self.mutable {
             return Err(Exception::error("cannot modify immutable variable"));
         }
-        *self.val.0.write() = new;
+        self.val.set(new);
         Ok(())
     }
 }
@@ -907,7 +907,6 @@ impl fmt::Debug for Global {
 impl PartialEq for Global {
     fn eq(&self, rhs: &Self) -> bool {
         Gc::ptr_eq(&self.val.0, &rhs.val.0)
-        /* self.name == rhs.name && */
     }
 }
 

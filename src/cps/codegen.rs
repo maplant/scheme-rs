@@ -680,7 +680,10 @@ impl CompilationUnit<'_, '_> {
                 .ins()
                 .icmp_imm_s(IntCC::Equal, arg, NULL_VALUE as i64),
             PrimOp::IsPair => {
-                let tag = self.builder.ins().band_imm_s(arg, TAG as i64);
+                let tag = self
+                    .builder
+                    .ins()
+                    .band_imm_s(arg, (TAG & !(Tag::IPair as usize)) as i64);
                 let is_pair_tag =
                     self.builder
                         .ins()
