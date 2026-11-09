@@ -14,7 +14,7 @@ use crate::{
         },
         compile::Compiler,
     },
-    env::{Environment, Global, TopLevelEnvironment},
+    env::{Environment, Global, Scope, TopLevelEnvironment},
     exceptions::{Exception, SourceCache, raise},
     gc::{Gc, Trace, init_gc},
     hashtables::EqualHashSet,
@@ -98,7 +98,8 @@ impl Runtime {
         use tokio::fs::File;
 
         let progm = TopLevelEnvironment::new_program(path);
-        let env = Environment::Top(progm.clone());
+        let inner_scope = Scope::new();
+        let env = Environment::new_program_contour(&progm, inner_scope);
 
         let mut form = {
             let port = Port::new(
@@ -113,6 +114,7 @@ impl Runtime {
         };
 
         form.add_scope(progm.scope());
+        form.add_scope(inner_scope);
 
         // Check if the first form is an import
         let add_rnrs_import = if let Some(first_form) = form.car()
@@ -126,11 +128,12 @@ impl Runtime {
 
         // If the first form is not an import, import (rnrs)
         if add_rnrs_import {
-            maybe_await!(env.import("(library (rnrs))".parse()?))?;
+            maybe_await!(env.import(env.parse_import_set("(library (rnrs))")?))?;
         }
 
         let mut mutable_vars = HashSet::default();
         let body = maybe_await!(Definitions::parse_lib_body(&form, &env, &mut mutable_vars))?;
+
         maybe_await!(Compiler::new(mutable_vars).compile(self, &body))
     }
 

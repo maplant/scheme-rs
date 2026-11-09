@@ -1,7 +1,5 @@
 //! Dynamic evaluation.
 
-use std::collections::BTreeSet;
-
 use scheme_rs_macros::{maybe_async, maybe_await};
 
 use crate::{
@@ -40,13 +38,14 @@ pub fn environment(
     #[rest_args] import_spec: Value,
     barrier: &mut ContBarrier<'_>,
 ) -> Result<Application, Exception> {
+    let env = Environment::Top(TopLevelEnvironment::new_repl());
+    let scope_set = env.get_scope_set();
     let import_sets = crate::lists::iter_list(&import_spec)
         .map(|spec| {
-            let syntax = Syntax::datum_to_syntax(&BTreeSet::default(), spec, &Span::default());
+            let syntax = Syntax::datum_to_syntax(&scope_set, spec, &Span::default());
             ImportSet::parse(discard_for(&syntax))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let env = Environment::Top(TopLevelEnvironment::new_repl());
     for import_set in import_sets {
         maybe_await!(env.import(import_set))?;
     }

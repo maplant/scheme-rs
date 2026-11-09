@@ -32,7 +32,7 @@ pub(super) fn import_visible_libraries(form: &Syntax, env: &Environment) -> Resu
     if starts_with_import(form, env) {
         maybe_await!(import_document_imports(form, env))?;
     } else {
-        maybe_await!(env.import("(library (rnrs))".parse().unwrap()))?;
+        maybe_await!(env.import(env.parse_import_set("(library (rnrs))").unwrap()))?;
     }
 
     Ok(())

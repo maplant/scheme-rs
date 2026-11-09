@@ -8,18 +8,6 @@ use crate::cps::analysis::Escaping;
 
 use super::*;
 
-#[derive(Default)]
-struct Scope<'a> {
-    up: Option<&'a Scope<'a>>,
-    curr: HashSet<Local>,
-}
-
-impl Scope<'_> {
-    fn contains(&self, local: &Local) -> bool {
-        self.curr.contains(local) || self.up.is_some_and(|up| up.contains(local))
-    }
-}
-
 impl Cps {
     /// Convert functions that do not escape and always return to the same place
     /// into local continuations.

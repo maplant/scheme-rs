@@ -176,19 +176,12 @@ impl TopLevelEnvironment {
     pub(crate) fn new_program(path: &Path) -> Self {
         let _ = Runtime::handle();
         let scope = Scope::new();
-        let import = Symbol::intern("import");
-        let import_binding = crate::registry::primitive(import);
-        add_binding(Identifier::from_symbol(import, scope), import_binding);
         Self(Gc::new(TopLevelEnvironmentInner {
             kind: TopLevelKind::Program {
                 path: path.to_path_buf(),
             },
             exports: HashMap::default(),
-            imports: RwLock::new(
-                [(import_binding, PRIMITIVES_LIB.get().unwrap().clone())]
-                    .into_iter()
-                    .collect(),
-            ),
+            imports: RwLock::new(HashMap::default()),
             state: RwLock::new(LibraryState::Invoked),
             scope,
         }))
@@ -292,18 +285,6 @@ impl TopLevelEnvironment {
         ))))
     }
 
-    /*
-        pub(crate) fn get_kind(&self) -> &TopLevelKind {
-            &self.0.kind
-    }
-        */
-
-    /*
-    pub(crate) fn get_state(&self) -> MappedRwLockReadGuard<'_, LibraryState> {
-        RwLockReadGuard::map(self.0.read(), |inner| &inner.state)
-    }
-    */
-
     /// Evaluate the scheme expression in the provided environment and return
     /// the values. The `import_policy` controls which libraries may be imported;
     /// use `ImportPolicy::Allow` to permit all imports, or provide an allowlist
@@ -357,8 +338,8 @@ impl TopLevelEnvironment {
     #[maybe_async]
     pub fn import(&self, import_set: ImportSet) -> Result<(), Exception> {
         let registry = Runtime::handle().get_registry();
-        let scope = self.0.scope;
         let mut registry_inner = maybe_await!(registry.0.write());
+        let scopes = import_set.library_ref().scopes.clone();
         let imports = maybe_await!(registry_inner.import(import_set))?;
         let mut this_imports = maybe_await!(self.0.imports.write());
         for (sym, import) in imports {
@@ -368,7 +349,13 @@ impl TopLevelEnvironment {
                 }
                 Entry::Vacant(slot) => {
                     add_pending_top_level_binding(import.binding, import.origin.clone());
-                    add_binding(Identifier::from_symbol(sym, scope), import.binding);
+                    add_binding(
+                        Identifier {
+                            sym,
+                            scopes: scopes.clone(),
+                        },
+                        import.binding,
+                    );
                     slot.insert(import.origin);
                 }
                 _ => (),
@@ -525,6 +512,11 @@ impl TopLevelEnvironment {
             None
         }
     }
+
+    pub fn parse_import_set(&self, import_set: &str) -> Result<ImportSet, Exception> {
+        let scopes = [self.scope()].into_iter().collect();
+        ImportSet::from_str(import_set, scopes)
+    }
 }
 
 impl fmt::Debug for TopLevelEnvironment {
@@ -583,7 +575,10 @@ impl LexicalContour {
         if let Some(bound) = { self.bindings.lock().get(&binding).cloned() } {
             match bound {
                 LocalBinding::Keyword(transformer) => Ok(Some(transformer.clone())),
-                LocalBinding::Imported(imported) => maybe_await!(imported.lookup_keyword(binding)),
+                LocalBinding::Imported(imported) => {
+                    maybe_await!(imported.maybe_expand())?;
+                    maybe_await!(imported.lookup_keyword(binding))
+                }
                 _ => Ok(None),
             }
         } else {
@@ -597,6 +592,10 @@ impl LexicalContour {
             match bound {
                 LocalBinding::Var(local) => Ok(Some(Var::Local(local))),
                 LocalBinding::Imported(imported) => {
+                    // It is not possible for a local scope to import its
+                    // containing top level environment, so we can always invoke
+                    // here
+                    maybe_await!(imported.maybe_invoke())?;
                     Ok(maybe_await!(imported.lookup_var(binding))?.map(Var::Global))
                 }
                 _ => Ok(None),
@@ -632,8 +631,17 @@ impl LexicalContour {
     pub fn import(&self, import_set: ImportSet) -> Result<(), Exception> {
         let registry = Runtime::handle().get_registry();
         let mut registry_inner = maybe_await!(registry.0.write());
+
+        // Check for circular dependencies:
+        if let TopLevelKind::Libary { name, .. } = &self.fetch_top().0.kind {
+            registry_inner
+                .check_for_circular_dependencies(&name.name, import_set.library_name())?;
+        }
+
+        let scopes = import_set.library_ref().scopes.clone();
         let imports = maybe_await!(registry_inner.import(import_set))?;
         let mut bindings = self.bindings.lock();
+
         for (sym, import) in imports {
             let binding_type = LocalBinding::Imported(import.origin.clone());
             match bindings.entry(import.binding) {
@@ -641,7 +649,14 @@ impl LexicalContour {
                     return Err(error::name_bound_multiple_times(sym));
                 }
                 Entry::Vacant(slot) => {
-                    add_binding(Identifier::from_symbol(sym, self.scope), import.binding);
+                    add_pending_top_level_binding(import.binding, import.origin.clone());
+                    add_binding(
+                        Identifier {
+                            sym,
+                            scopes: scopes.clone(),
+                        },
+                        import.binding,
+                    );
                     slot.insert(binding_type);
                 }
                 _ => (),
@@ -650,7 +665,6 @@ impl LexicalContour {
         Ok(())
     }
 
-    #[cfg(feature = "lsp")]
     pub fn fetch_top(&self) -> TopLevelEnvironment {
         self.up.fetch_top()
     }
@@ -671,6 +685,28 @@ impl Environment {
             bindings: Mutex::new(HashMap::default()),
             scope,
         }))
+    }
+
+    pub fn new_program_contour(top: &TopLevelEnvironment, inner_scope: Scope) -> Self {
+        let top_env = Self::Top(top.clone());
+        let import = Symbol::intern("import");
+        let mut import_ident = Identifier::from_symbol(import, top.scope());
+        import_ident.add_scope(inner_scope);
+        let import_binding = crate::registry::primitive(import);
+        add_binding(import_ident, import_binding);
+        let inner_contour = LexicalContour {
+            up: top_env,
+            bindings: Mutex::new(
+                [(
+                    import_binding,
+                    LocalBinding::Imported(PRIMITIVES_LIB.get().unwrap().clone()),
+                )]
+                .into_iter()
+                .collect(),
+            ),
+            scope: inner_scope,
+        };
+        Self::LexicalContour(Gc::new(inner_contour))
     }
 
     pub fn new_syntax_case_contour(
@@ -776,12 +812,16 @@ impl Environment {
         }
     }
 
-    #[cfg(feature = "lsp")]
     pub fn fetch_top(&self) -> TopLevelEnvironment {
         match self {
             Self::Top(top) => top.clone(),
             Self::LexicalContour(lc) => lc.fetch_top(),
         }
+    }
+
+    pub fn parse_import_set(&self, import_set: &str) -> Result<ImportSet, Exception> {
+        let scopes = self.get_scope_set();
+        ImportSet::from_str(import_set, scopes)
     }
 }
 
@@ -1153,8 +1193,10 @@ mod tests {
 
     #[test]
     fn import_set_library_name() {
+        let env = TopLevelEnvironment::new_repl();
+
         // Plain library reference
-        let import_set: ImportSet = "(scheme write)".parse().unwrap();
+        let import_set: ImportSet = env.parse_import_set("(scheme write)").unwrap();
         let name: Vec<String> = import_set
             .library_name()
             .iter()
@@ -1163,7 +1205,7 @@ mod tests {
         assert_eq!(name, vec!["scheme", "write"]);
 
         // Wrapped in (only ...)
-        let import_set: ImportSet = "(only (scheme base) define)".parse().unwrap();
+        let import_set: ImportSet = env.parse_import_set("(only (scheme base) define)").unwrap();
         let name: Vec<String> = import_set
             .library_name()
             .iter()
@@ -1172,7 +1214,9 @@ mod tests {
         assert_eq!(name, vec!["scheme", "base"]);
 
         // Wrapped in (except ...)
-        let import_set: ImportSet = "(except (scheme write) display)".parse().unwrap();
+        let import_set: ImportSet = env
+            .parse_import_set("(except (scheme write) display)")
+            .unwrap();
         let name: Vec<String> = import_set
             .library_name()
             .iter()
@@ -1181,7 +1225,7 @@ mod tests {
         assert_eq!(name, vec!["scheme", "write"]);
 
         // Wrapped in (prefix ...)
-        let import_set: ImportSet = "(prefix (scheme base) s:)".parse().unwrap();
+        let import_set: ImportSet = env.parse_import_set("(prefix (scheme base) s:)").unwrap();
         let name: Vec<String> = import_set
             .library_name()
             .iter()
@@ -1190,7 +1234,9 @@ mod tests {
         assert_eq!(name, vec!["scheme", "base"]);
 
         // Wrapped in (rename ...)
-        let import_set: ImportSet = "(rename (scheme write) (display show))".parse().unwrap();
+        let import_set: ImportSet = env
+            .parse_import_set("(rename (scheme write) (display show))")
+            .unwrap();
         let name: Vec<String> = import_set
             .library_name()
             .iter()
