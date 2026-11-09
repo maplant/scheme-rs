@@ -1,32 +1,43 @@
 #![cfg(not(loom))]
 
-use core::sync::atomic::Ordering;
-use std::any::TypeId;
+mod common;
 
-use scheme_rs_gc::{
-    BLOCK_SIZE, HeapObject, VTable, budget, init_gc, set_heap_size, shutdown_gc, unroot,
+use std::{
+    alloc::Layout,
+    sync::atomic::{AtomicUsize, Ordering},
+    time::{Duration, Instant},
 };
 
-struct Obj(#[allow(dead_code)] [u8; 1024]);
+use common::TestHeader;
+use scheme_rs_gc::{BLOCK_SIZE, Collector, Heap, start_collector};
 
-fn vtable() -> VTable {
-    VTable {
-        visit_children: |_, _| {},
-        finalize: |_| {},
+static EPOCHS: AtomicUsize = AtomicUsize::new(0);
+
+struct CountingCollector;
+
+impl Collector for CountingCollector {
+    type Header = TestHeader;
+    fn new(_heap: &'static Heap<TestHeader>) -> Self {
+        CountingCollector
     }
+    fn collect(&mut self) {
+        EPOCHS.fetch_add(1, Ordering::Relaxed);
+    }
+    fn shutdown(&mut self) {}
 }
 
 #[test]
-fn a_full_heap_collects_and_retries() {
-    set_heap_size(2 * BLOCK_SIZE).unwrap();
-    init_gc();
-    assert_eq!(budget(), 2 * BLOCK_SIZE);
-    for _ in 0..(16 * 2 * BLOCK_SIZE / size_of::<Obj>()) {
-        unsafe {
-            let obj = HeapObject::from_data(HeapObject::alloc(Obj([0; 1024])));
-            unroot(obj, TypeId::of::<Obj>(), vtable);
-            obj.rc().fetch_sub(1, Ordering::Release);
-        }
+fn crossing_the_trigger_notifies_the_collector() {
+    let heap = Box::leak(Box::new(Heap::<TestHeader>::new(4 * BLOCK_SIZE).unwrap()));
+    let _gc = start_collector::<CountingCollector>(heap).unwrap();
+    let mut mutator = heap.mutator();
+    let layout = Layout::from_size_align(1024, 8).unwrap();
+
+    while mutator.alloc(layout).is_ok() {}
+
+    let deadline = Instant::now() + Duration::from_millis(200);
+    while EPOCHS.load(Ordering::Relaxed) == 0 {
+        assert!(Instant::now() < deadline, "collector was not notified");
+        std::thread::yield_now();
     }
-    shutdown_gc();
 }
