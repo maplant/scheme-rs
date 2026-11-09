@@ -21,6 +21,9 @@ loom = "0.7"
 [dev-dependencies]
 criterion = "0.5"
 
+[build-dependencies]
+cc = "1"
+
 [[bench]]
 name = "alloc"
 harness = false
