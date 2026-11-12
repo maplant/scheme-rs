@@ -1,3 +1,5 @@
+use std::mem;
+
 use heck::ToKebabCase;
 use proc_macro::{self, TokenStream};
 use proc_macro2::{Literal, Span};
@@ -86,7 +88,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
     let mut bridge = parse_macro_input!(item as ItemFn);
     let docs = doc_string(&bridge.attrs);
 
-    let wrapper_name = std::mem::replace(
+    let wrapper_name = mem::replace(
         &mut bridge.sig.ident,
         Ident::new("__inner__", Span::call_site()),
     );
@@ -272,12 +274,6 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
 
     let visibility = bridge.vis.clone();
 
-    if name.is_none() && env_var_idx == 0 {
-        return Error::new(Span::call_site(), "name attribute is required")
-            .into_compile_error()
-            .into();
-    };
-
     if name.is_some() && env_var_idx > 0 {
         return Error::new(
             Span::call_site(),
@@ -437,9 +433,13 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
         }
     };
 
-    let registration = if let Some(name) = name
-        && let Some(lib) = lib
-    {
+    let registration = if let Some(lib) = lib {
+        let name = name.unwrap_or_else(|| {
+            LitStr::new(
+                &bridge.sig.ident.to_string().to_kebab_case(),
+                Span::call_site(),
+            )
+        });
         let bridge_ty = if bridge.sig.asyncness.is_some() {
             quote!(Async)
         } else {
