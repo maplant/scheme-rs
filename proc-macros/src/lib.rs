@@ -374,6 +374,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
 
     let func = if bridge.sig.asyncness.is_some() {
         quote! {
+            #[allow(unreachable_code)]
             #visibility fn #wrapper_name<'a>(
                 proc: ::scheme_rs::proc::Procedure,
                 arg1: ::scheme_rs::value::Value,
@@ -404,6 +405,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
         }
     } else {
         quote! {
+            #[allow(unreachable_code)]
             #visibility extern "C" fn #wrapper_name(
                 proc: ::scheme_rs::proc::Procedure,
                 arg1: ::scheme_rs::value::Value,
@@ -657,7 +659,7 @@ fn codegen_known_bridge(
     };
 
     quote! {
-        #[allow(clippy::needless_question_mark)]
+        #[allow(unreachable_code, clippy::needless_question_mark)]
         #visibility extern "C" fn #wrapper_name(
             #( #args: ::scheme_rs::value::Value, )*
             error: &mut ::scheme_rs::value::Value

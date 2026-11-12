@@ -310,6 +310,7 @@ macro_rules! impl_empty_trace {
             unsafe impl Trace for $x {
                 unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(HeapObject)) {}
 
+                #[allow(dropping_copy_types, dropping_references)]
                 unsafe fn finalize(&mut self) {
                     unsafe {
                         drop_in_place(self as *mut Self);
@@ -356,11 +357,7 @@ where
 {
     unsafe fn visit_children(&self, _visitor: &mut dyn FnMut(HeapObject)) {}
 
-    unsafe fn finalize(&mut self) {
-        unsafe {
-            drop_in_place(self as *mut Self);
-        }
-    }
+    unsafe fn finalize(&mut self) {}
 }
 
 /// # Safety
