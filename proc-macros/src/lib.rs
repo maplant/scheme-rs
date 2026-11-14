@@ -9,7 +9,7 @@ use syn::{
     GenericParam, Generics, Ident, ItemFn, Lit, LitBool, LitStr, Member, Meta, Pat, PatIdent,
     PatType, Result, ReturnType, Token, Type, TypePath, TypeReference, Visibility, braced,
     bracketed, parenthesized,
-    parse::{Parse, ParseStream, Parser},
+    parse::{Parse, ParseStream},
     parse_macro_input, parse_quote,
     punctuated::Punctuated,
     spanned::Spanned,
@@ -1842,18 +1842,21 @@ pub fn rtd(tokens: TokenStream) -> TokenStream {
             let inputs = 0..num_inputs;
             let types = inputs.clone().map(|_| quote!(::scheme_rs::value::Value));
             quote!(Some({
-                ::scheme_rs::records::RustParentConstructor::new(|vals| {
-                    if vals.len() != #num_inputs {
-                        return Err(::scheme_rs::exceptions::Exception::wrong_num_of_args(#num_inputs, vals.len()));
-                    }
-                    let constructor: fn(#(#types,)*) -> ::scheme_rs::Result<_> = #constructor;
-                    let value = (constructor)(#(vals[#inputs].clone(),)*)?;
-                    Ok(Box::new(move |dst: *mut ()| {
-                        unsafe {
-                            dst.cast::<#ty>().write(value);
+                ::scheme_rs::records::RustParentConstructor::new(
+                    |vals| {
+                        if vals.len() != #num_inputs {
+                            return Err(::scheme_rs::exceptions::Exception::wrong_num_of_args(#num_inputs, vals.len()));
                         }
-                    }))
-                })
+                        let constructor: fn(#(#types,)*) -> ::scheme_rs::Result<_> = #constructor;
+                        let value = (constructor)(#(vals[#inputs].clone(),)*)?;
+                        Ok(Box::new(move |dst: *mut ()| {
+                            unsafe {
+                                dst.cast::<#ty>().write(value);
+                            }
+                        }))
+                    },
+                    #num_inputs
+                )
             }))
         }
         None => quote!(None),

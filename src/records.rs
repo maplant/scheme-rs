@@ -383,6 +383,38 @@ impl RecordTypeDescriptor {
     pub fn num_fields(&self) -> usize {
         self.0.fields.len() + self.0.num_inherited_fields
     }
+
+    pub fn is_rust_root(&self) -> bool {
+        self.embedded_vtable
+            .is_some_and(|vt| Embedded::ptr_eq(&self.0, &(vt.rtd)().0))
+    }
+
+    pub fn constructor_chain_parent(&self) -> Option<RecordTypeDescriptor> {
+        if self.is_rust_root() {
+            None
+        } else {
+            self.inherits
+                .last()
+                .map(|p| RecordTypeDescriptor(p.0.clone()))
+        }
+    }
+
+    fn sub_constructor_arity(&self) -> usize {
+        if let Some(rust_constructor) = &self.embedded_constructor
+            && self.is_rust_root()
+        {
+            rust_constructor.num_args
+        } else {
+            self.fields.len()
+        }
+    }
+
+    fn constructor_arity(&self) -> usize {
+        self.sub_constructor_arity()
+            + self
+                .constructor_chain_parent()
+                .map_or(0, |p| p.constructor_arity())
+    }
 }
 
 impl Deref for RecordTypeDescriptor {
@@ -1069,11 +1101,15 @@ where
 pub struct RustParentConstructor {
     #[trace(skip)]
     constructor: ParentConstructor,
+    num_args: usize,
 }
 
 impl RustParentConstructor {
-    pub fn new(constructor: ParentConstructor) -> Self {
-        Self { constructor }
+    pub fn new(constructor: ParentConstructor, num_args: usize) -> Self {
+        Self {
+            constructor,
+            num_args,
+        }
     }
 }
 
@@ -1186,7 +1222,7 @@ pub struct RecordConstructorDescriptor {
 pub fn make_default_record_constructor_descriptor(
     rtd: RecordTypeDescriptor,
 ) -> Embedded<RecordConstructorDescriptor> {
-    let parent = rtd.inherits.last().map(|parent| {
+    let parent = rtd.constructor_chain_parent().map(|parent| {
         make_default_record_constructor_descriptor(RecordTypeDescriptor(parent.0.clone()))
     });
     let protocol = Procedure::new(
@@ -1219,20 +1255,17 @@ pub fn make_record_constructor_descriptor(
     }
 
     let parent_rcd = if parent_rcd.is_true() {
-        let Some(parent_rtd) = rtd.inherits.last() else {
-            return Err(Exception::error("rtd is a base type"));
+        let Some(parent_rtd) = rtd.constructor_chain_parent() else {
+            return Err(Exception::error("rtd is a base type or a Rust struct"));
         };
         let parent_rcd = parent_rcd.try_to::<Embedded<RecordConstructorDescriptor>>()?;
         if !Embedded::ptr_eq(&parent_rcd.rtd.0, &parent_rtd.0) {
             return Err(Exception::error("parent rtd does not match parent rcd"));
         }
         Some(parent_rcd)
-    } else if !rtd.is_base_record_type() {
-        Some(make_default_record_constructor_descriptor(
-            RecordTypeDescriptor(rtd.inherits.last().unwrap().0.clone()),
-        ))
     } else {
-        None
+        rtd.constructor_chain_parent()
+            .map(make_default_record_constructor_descriptor)
     };
 
     let protocol = if protocol.is_true() {
@@ -1314,7 +1347,7 @@ fn chain_constructors(
     let remaining_rtds = rtds.split_off(1);
     let curr_rtd: RecordTypeDescriptor = rtds[0].clone().try_into()?;
     let rtds_remain = !remaining_rtds.is_empty();
-    let num_args = curr_rtd.fields.len();
+    let num_args = curr_rtd.sub_constructor_arity();
     let collected = append_list(&collected, args)?;
     let next_proc = Procedure::new(
         vec![
@@ -1351,7 +1384,7 @@ fn constructor(
     let (embedded_vtable_and_writer, fields) =
         if let Some(embedded_constructor) = rtd.embedded_constructor {
             let embedded_vtable = rtd.embedded_vtable.unwrap();
-            let remaining_fields = fields.split_off(embedded_vtable.embedded_fields);
+            let remaining_fields = fields.split_off(embedded_constructor.num_args);
             // Call the rust constructor for the embedded type
             let writer = (embedded_constructor.constructor)(&fields)?;
             (Some((embedded_vtable, writer)), remaining_fields)
@@ -1422,7 +1455,7 @@ fn default_protocol(
     ctor: Value,
     barrier: &mut ContBarrier,
 ) -> Result<Application, Exception> {
-    let num_args = rtd.num_fields();
+    let num_args = rtd.constructor_arity();
 
     let constructor = Procedure::new(
         vec![ctor, Value::from(rtd)],
@@ -1442,8 +1475,8 @@ fn default_protocol_constructor(
     barrier: &mut ContBarrier,
 ) -> Result<Application, Exception> {
     let mut args = args;
-    if let Some(parent) = rtd.inherits.last() {
-        let (parent_args, remaining) = split_list(args, parent.num_fields())?;
+    if let Some(parent) = rtd.constructor_chain_parent() {
+        let (parent_args, remaining) = split_list(args, parent.constructor_arity())?;
         args = parent_args;
         barrier.push_cont([remaining], call_constructor_continuation);
     }
