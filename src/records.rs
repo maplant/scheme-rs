@@ -319,6 +319,10 @@ unsafe impl Embeddable for RecordTypeDescriptorInner {
 
         RTD.clone()
     }
+
+    fn fmt(&self, _record: &Record, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
 }
 
 impl RecordTypeDescriptorInner {
@@ -792,8 +796,14 @@ pub unsafe trait Embeddable: Trace + Any + Send + Sync {
         Err(Exception::error(format!("invalid record field: {k}")))
     }
 
-    fn fmt(&self, _record: &Record, _fmt: &mut Formatter<'_>) -> fmt::Result {
-        Ok(())
+    fn fmt(&self, record: &Record, f: &mut Formatter<'_>) -> fmt::Result {
+        let mut fmt_record = f.fmt_record(record.rtd().name);
+
+        for (name, field) in record.iter_all_fields() {
+            fmt_record.entry(name, &field)?;
+        }
+
+        fmt_record.finish()
     }
 
     fn eq(&self, rhs: &Record) -> bool
@@ -1173,7 +1183,7 @@ pub struct RecordConstructorDescriptor {
     protocol: Procedure,
 }
 
-fn make_default_record_constructor_descriptor(
+pub fn make_default_record_constructor_descriptor(
     rtd: RecordTypeDescriptor,
 ) -> Embedded<RecordConstructorDescriptor> {
     let parent = rtd.inherits.last().map(|parent| {
