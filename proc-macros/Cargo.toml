@@ -7,7 +7,6 @@ description = "Embedded scheme for the async-rust ecosystem (macros)"
 license = "MPL-2.0"
 
 documentation = "https://docs.rs/crate/scheme-rs"
-homepage = "https://github.com/maplant/scheme-rs"
 repository = "https://github.com/maplant/scheme-rs"
 
 [lib]

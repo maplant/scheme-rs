@@ -97,7 +97,7 @@ use std::{
     any::Any,
     collections::HashMap,
     fmt,
-    mem::MaybeUninit,
+    mem::{self, MaybeUninit},
     ops::DerefMut,
     ptr::NonNull,
     sync::{
@@ -788,32 +788,22 @@ const fn assert_non_capturing<F>() {
     );
 }
 
-/// Create a function from a type. Has the effect of converting a `impl Fn`
-/// into a callable function. This code is taken from the rust stdlib nightly
-/// feature `conjure_zst`.
-///
-/// # Safety
-///
-/// Generally incredibly unsafe and should only be used in this particular
-/// context.
-#[allow(clippy::uninit_assumed_init)]
-unsafe fn conjure<F>() -> F {
-    const { assert_non_capturing::<F>() };
-    unsafe { std::mem::MaybeUninit::<F>::uninit().assume_init() }
-}
-
 impl<F, R, const N: usize> IntoRustContinuation<(), N> for F
 where
     F: Fn([Value; N], &mut ContBarrier) -> R + Send + Sync + 'static,
     R: IntoApplication + 'static,
 {
     fn into_rust_cont(self) -> RustContinuation {
+        const {
+            assert_non_capturing::<F>();
+        }
+
         RustContinuation(|args, barrier: &mut ContBarrier<'_>| {
             let env = barrier.pop_env_n::<N>();
             if !args.0[0].is_undefined() {
                 return raise(Exception::wrong_num_of_args(0, args.len()).into(), barrier);
             }
-            (unsafe { conjure::<F>() })(env, barrier).into_application(barrier)
+            (unsafe { mem::conjure_zst::<F>() })(env, barrier).into_application(barrier)
         })
     }
 }
@@ -824,9 +814,13 @@ where
     R: IntoApplication + 'static,
 {
     fn into_rust_cont(self) -> RustContinuation {
+        const {
+            assert_non_capturing::<F>();
+        }
+
         RustContinuation(|args, barrier: &mut ContBarrier<'_>| {
             let env = barrier.pop_env_n::<N>();
-            (unsafe { conjure::<F>() })(env, Rest(args.into_list()), barrier)
+            (unsafe { mem::conjure_zst::<F>() })(env, Rest(args.into_list()), barrier)
                 .into_application(barrier)
         })
     }
@@ -949,11 +943,15 @@ macro_rules! impl_rust_cont {
         )*
         {
             fn into_rust_cont(self) -> RustContinuation {
+                const {
+                    assert_non_capturing::<F>();
+                }
+
                 RustContinuation(|args, barrier: &mut ContBarrier<'_>| {
                     let env = barrier.pop_env_n::<N>();
                     let values = direct_args!(args, barrier; $( $arg )*);
                     let mut values = values.into_iter();
-                    (unsafe { conjure::<F>() })(
+                    (unsafe { mem::conjure_zst::<F>() })(
                         env,
                         $(
                             match <Value as TryInto<$arg>>::try_into(values.next().unwrap()) {
@@ -977,11 +975,15 @@ macro_rules! impl_rust_cont {
         )*
         {
             fn into_rust_cont(self) -> RustContinuation {
+                const {
+                    assert_non_capturing::<F>();
+                }
+
                 RustContinuation(|args, barrier: &mut ContBarrier<'_>| {
                     let env = barrier.pop_env_n::<N>();
                     let (values, rest) = direct_args_rest!(args, barrier; $( $arg )*);
                     let mut values = values.into_iter();
-                    (unsafe { conjure::<F>() })(
+                    (unsafe { mem::conjure_zst::<F>() })(
                         env,
                         $(
                             match <Value as TryInto<$arg>>::try_into(values.next().unwrap()) {
