@@ -8,7 +8,6 @@ license = "MPL-2.0"
 keywords = ["scheme", "JIT", "async", "scripting"]
 
 documentation = "https://docs.rs/crate/scheme-rs"
-homepage = "https://github.com/maplant/scheme-rs"
 repository = "https://github.com/maplant/scheme-rs"
 
 [dependencies]
