@@ -33,14 +33,15 @@ use futures::future::BoxFuture;
 #[cfg(not(feature = "async"))]
 use parking_lot::RwLock;
 
-/// Define and register a Scheme function in Rust.
-pub use scheme_rs_macros::bridge;
+/// Define and register a Scheme procedure in Rust.
+pub use scheme_rs_macros::define;
 
-/// Define and register a Scheme keyword in Rust.
-pub use scheme_rs_macros::keyword;
+#[deprecated(since = "0.3.0", note = "use the `define` attribute instead")]
+pub use scheme_rs_macros::define as bridge;
 
-/// Define and register a Scheme function in Rust written in continuation
-/// passing style.
+/// Define and register a Scheme syntax transformer in Rust.
+pub use scheme_rs_macros::define_syntax;
+
 use scheme_rs_macros::{maybe_async, maybe_await};
 
 pub(crate) mod error {

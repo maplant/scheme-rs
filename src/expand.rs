@@ -6,11 +6,12 @@ use crate::{
     gc::{Gc, Trace},
     proc::Procedure,
     records::{Embeddable, Embedded},
+    registry::define,
     symbols::Symbol,
     syntax::{Identifier, Span, Syntax},
     value::Value,
 };
-use scheme_rs_macros::{bridge, maybe_async, maybe_await, runtime_fn};
+use scheme_rs_macros::{maybe_async, maybe_await, runtime_fn};
 
 mod error {
     use crate::exceptions::{Message, SyntaxViolation};
@@ -864,7 +865,7 @@ unsafe extern "C" fn error_no_patterns_match() -> i64 {
     Value::into_raw(Value::from(condition)) as i64
 }
 
-#[bridge(name = "make-variable-transformer", lib = "(rnrs base builtins (6))")]
+#[define(name = "make-variable-transformer", lib = "(rnrs base builtins (6))")]
 pub fn make_variable_transformer(proc: Procedure) -> Procedure {
     let mut var_transformer = proc.0.as_ref().clone();
     var_transformer.is_variable_transformer = true;

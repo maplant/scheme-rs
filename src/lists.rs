@@ -10,7 +10,7 @@ use crate::{
     exceptions::Exception,
     gc::{Gc, Trace},
     proc::{Application, Args, ContBarrier, Procedure},
-    registry::bridge,
+    registry::define,
     value::{UnpackedValue, Value, ValueType},
 };
 
@@ -379,12 +379,12 @@ pub fn is_list(curr: &Value, seen: &mut HashSet<Value>) -> bool {
     is_list(&curr.cdr(), seen)
 }
 
-#[bridge(name = "list?", lib = "(rnrs base builtins (6))")]
+#[define(name = "list?", lib = "(rnrs base builtins (6))")]
 pub fn list_pred(arg: Value) -> bool {
     is_list(&arg, &mut HashSet::default())
 }
 
-#[bridge(name = "list", lib = "(rnrs base builtins (6))")]
+#[define(name = "list", lib = "(rnrs base builtins (6))")]
 pub fn list(#[rest_args] args: Value) -> Value {
     // Rebuild the rest args as a fresh mutable list:
     fn rebuild(args: &Value) -> Value {
@@ -396,34 +396,34 @@ pub fn list(#[rest_args] args: Value) -> Value {
     rebuild(&args)
 }
 
-#[bridge(name = "cons", lib = "(rnrs base builtins (6))")]
+#[define(name = "cons", lib = "(rnrs base builtins (6))")]
 pub fn cons(car: Value, cdr: Value, _: &mut ContBarrier) -> Pair {
     Pair::mutable(car.clone(), cdr.clone())
 }
 
-#[bridge(name = "car", lib = "(rnrs base builtins (6))")]
+#[define(name = "car", lib = "(rnrs base builtins (6))")]
 pub fn car(val: Pair, _: &mut ContBarrier) -> Value {
     val.car()
 }
 
-#[bridge(name = "cdr", lib = "(rnrs base builtins (6))")]
+#[define(name = "cdr", lib = "(rnrs base builtins (6))")]
 pub fn cdr(val: Pair, _: &mut ContBarrier) -> Value {
     val.cdr()
 }
 
-#[bridge(name = "set-car!", lib = "(rnrs mutable-pairs (6))")]
+#[define(name = "set-car!", lib = "(rnrs mutable-pairs (6))")]
 pub fn set_car(pair: Pair, val: Value) -> Result<(), Exception> {
     pair.set_car(val.clone())?;
     Ok(())
 }
 
-#[bridge(name = "set-cdr!", lib = "(rnrs mutable-pairs (6))")]
+#[define(name = "set-cdr!", lib = "(rnrs mutable-pairs (6))")]
 pub fn set_cdr(pair: Pair, val: Value) -> Result<(), Exception> {
     pair.set_cdr(val.clone())?;
     Ok(())
 }
 
-#[bridge(name = "length", lib = "(rnrs base builtins (6))")]
+#[define(name = "length", lib = "(rnrs base builtins (6))")]
 pub fn length_builtin(arg: Value) -> Result<usize, Exception> {
     length(&arg)
 }
@@ -444,12 +444,12 @@ pub fn length(arg: &Value) -> Result<usize, Exception> {
     Ok(length)
 }
 
-#[bridge(name = "list->vector", lib = "(rnrs base builtins (6))")]
+#[define(name = "list->vector", lib = "(rnrs base builtins (6))")]
 pub fn list_to_vector(List { items, .. }: List) -> Value {
     Value::from(items)
 }
 
-#[bridge(name = "list->string", lib = "(rnrs base builtins (6))")]
+#[define(name = "list->string", lib = "(rnrs base builtins (6))")]
 pub fn list_to_string(List { items, .. }: List) -> Result<String, Exception> {
     items.into_iter().map(char::try_from).collect()
 }
@@ -483,7 +483,7 @@ pub(crate) fn append_list(list: &Value, tail: Value) -> Result<Value, Exception>
     Ok(Value::from(head))
 }
 
-#[bridge(name = "append", lib = "(rnrs base builtins (6))")]
+#[define(name = "append", lib = "(rnrs base builtins (6))")]
 pub fn append(#[rest_args] lists: Value) -> Result<Value, Exception> {
     fn append_lists(lists: &Value) -> Result<Value, Exception> {
         let Some(pair) = lists.cast::<Pair>() else {
@@ -532,7 +532,7 @@ fn push_map_output(head: Value, tail: Value, val: Value) -> (Value, Value) {
     }
 }
 
-#[bridge(name = "map", lib = "(rnrs base builtins (6))")]
+#[define(name = "map", lib = "(rnrs base builtins (6))")]
 pub fn map(
     mapper: Value,
     list_1: Value,
@@ -594,7 +594,7 @@ fn mapn_k(env: [Value; 4], mapped: Value, barrier: &mut ContBarrier) -> Applicat
     }
 }
 
-#[bridge(name = "zip", lib = "(rnrs base builtins (6))")]
+#[define(name = "zip", lib = "(rnrs base builtins (6))")]
 pub fn zip(list1: Value, #[rest_args] listn: Value) -> Result<Value, Exception> {
     fn zip_one(list: &Value, output: &mut Option<Vec<Value>>) -> Result<(), Exception> {
         let List { items, .. } = list.try_to()?;

@@ -31,7 +31,7 @@ use scheme_rs_macros::{maybe_async, maybe_await};
 #[cfg(feature = "tokio")]
 use tokio::task::spawn_blocking;
 
-use crate::{Either, registry::bridge};
+use crate::{Either, registry::define};
 
 /// A heap allocated garbage collected smart pointer. Gc requires that `T`
 /// implements the [`Trace`] trait to properly track references.
@@ -965,7 +965,7 @@ where
     }
 }
 
-#[bridge(name = "gc-header-size", lib = "(runtime (1))")]
+#[define(name = "gc-header-size", lib = "(runtime (1))")]
 pub fn gc_header_size() -> usize {
     HEADER_SIZE
 }
@@ -982,7 +982,7 @@ pub async fn collect_garbage() {
 }
 
 #[maybe_async]
-#[bridge(name = "collect-garbage", lib = "(runtime (1))")]
+#[define(name = "collect-garbage", lib = "(runtime (1))")]
 pub fn collect_garbage_bridge() {
     maybe_await!(collect_garbage());
 }

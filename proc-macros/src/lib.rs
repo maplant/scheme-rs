@@ -15,10 +15,10 @@ use syn::{
     spanned::Spanned,
 };
 
-/// The `bridge` proc macro allows one to register Scheme procedures written in
+/// The `define` proc macro allows one to register Scheme procedures written in
 /// Rust.
 ///
-/// Rust functions registered with `bridge` must have the following syntax:
+/// Rust functions registered with `define` must have the following syntax:
 /// `async? fn(#[rest_arg]? arg: T, ...) -> R`
 ///
 /// The types of the arguments can be any `T` for which `T: TryFrom<Value>`, or
@@ -37,13 +37,16 @@ use syn::{
 ///
 /// Bridge functions can be async if the `async` feature flag is enabled.
 ///
-/// The `bridge` proc macro takes two arguments: `def` which specifies the
+/// The `define` proc macro takes two arguments: `name` which specifies the
 /// scheme procedure name and `lib` which specifies the library to register the
 /// procedure to. At time of variable resolution, if the library has no scheme
 /// code associated with it, all bridge functions registered to that library
 /// will be assumed to be public. More control can be given by associating
 /// scheme code with the library, in that case bridge functions will need to be
 /// made public by putting them in the `export` spec.
+///
+/// The `name` argument can be omitted from the definition and the function's
+/// name will automatically be converted to kebab case and used as the name.
 ///
 /// # Capturing the environment
 ///
@@ -62,13 +65,13 @@ use syn::{
 /// treated as no return value rather than the empty list in this context).
 ///
 /// ```rust,ignore
-/// #[bridge(name = "length", lib = "(list-length (1))")]
+/// #[define(name = "length", lib = "(list-length (1))")]
 /// pub fn length(arg: List) -> usize {
 ///     arg.len()
 /// }
 /// ```
 #[proc_macro_attribute]
-pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
+pub fn define(args: TokenStream, item: TokenStream) -> TokenStream {
     let mut name: Option<LitStr> = None;
     let mut lib: Option<LitStr> = None;
     let bridge_attr_parser = syn::meta::parser(|meta| {
@@ -79,7 +82,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
             lib = Some(meta.value()?.parse()?);
             Ok(())
         } else {
-            Err(meta.error("unsupported bridge property"))
+            Err(meta.error("unsupported define property"))
         }
     });
 
@@ -91,7 +94,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 #[proc_macro_attribute]
-pub fn keyword(args: TokenStream, item: TokenStream) -> TokenStream {
+pub fn define_syntax(args: TokenStream, item: TokenStream) -> TokenStream {
     let mut name: Option<LitStr> = None;
     let mut lib: Option<LitStr> = None;
     let bridge_attr_parser = syn::meta::parser(|meta| {
@@ -102,7 +105,7 @@ pub fn keyword(args: TokenStream, item: TokenStream) -> TokenStream {
             lib = Some(meta.value()?.parse()?);
             Ok(())
         } else {
-            Err(meta.error("unsupported keyword property"))
+            Err(meta.error("unsupported define_syntax property"))
         }
     });
 
@@ -141,7 +144,7 @@ fn bridge_inner(
     if is_keyword && bridge.sig.inputs.len() != 1 {
         return Err(Error::new(
             bridge.sig.inputs.span(),
-            "keywords must take one argument",
+            "define_syntax transformers must take one argument",
         ));
     }
 
@@ -782,12 +785,12 @@ fn derive_embeddable_inner(input: DeriveInput) -> Result<proc_macro2::TokenStrea
             .collect::<Result<Vec<_>>>()?;
 
         quote! {
-            #[::scheme_rs::registry::bridge(name = #predicate_name, lib = #lib)]
+            #[::scheme_rs::registry::define(name = #predicate_name, lib = #lib)]
             pub fn predicate_fn(val: ::scheme_rs::value::Value) -> bool {
                 val.is_a::<::scheme_rs::records::Embedded<#ty>>()
             }
 
-            #[::scheme_rs::registry::bridge(name = #constructor_name, lib = #lib)]
+            #[::scheme_rs::registry::define(name = #constructor_name, lib = #lib)]
             pub fn constructor_fn(
                 #( #constructor_args: ::scheme_rs::value::Value, )*
             ) -> ::scheme_rs::Result<::scheme_rs::records::Embedded<#ty>> {
@@ -795,7 +798,7 @@ fn derive_embeddable_inner(input: DeriveInput) -> Result<proc_macro2::TokenStrea
                 (constructor)(#(#constructor_args,)*).map(::scheme_rs::records::Embedded::new)
             }
 
-            #[::scheme_rs::registry::keyword(name = #name, lib = #lib)]
+            #[::scheme_rs::registry::define_syntax(name = #name, lib = #lib)]
             pub fn record(
                 input: ::scheme_rs::records::Embedded<::scheme_rs::syntax::Syntax>
             ) -> ::scheme_rs::Result<::scheme_rs::syntax::Syntax> {
@@ -1871,7 +1874,7 @@ pub fn rtd(tokens: TokenStream) -> TokenStream {
     let bridge = lib.map(|lib| {
         let name = format!("{}-rtd", name.value());
         quote! {
-            #[::scheme_rs_macros::bridge(name = #name, lib = #lib)]
+            #[::scheme_rs_macros::define(name = #name, lib = #lib)]
             pub fn rtd() -> ::scheme_rs::value::Value {
                 ::scheme_rs::value::Value::from(RTD.clone())
             }

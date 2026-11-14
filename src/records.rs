@@ -227,7 +227,7 @@ use crate::{
     gc::{Gc, HeapObject, Trace, unroot},
     lists::{append_list, iter_list, split_list},
     proc::{Application, Args, ContBarrier, FuncPtr, Procedure},
-    registry::bridge,
+    registry::define,
     symbols::Symbol,
     value::{Cell, UnpackedValue, Value},
     vectors::Vector,
@@ -1132,7 +1132,7 @@ type NonGenerativeStore =
 
 static NONGENERATIVE: NonGenerativeStore = LazyLock::new(|| Arc::new(Mutex::new(HashMap::new())));
 
-#[bridge(
+#[define(
     name = "make-record-type-descriptor",
     lib = "(rnrs records procedural (6))"
 )]
@@ -1202,7 +1202,7 @@ pub fn make_record_type_descriptor(
     Ok(rtd)
 }
 
-#[bridge(
+#[define(
     name = "record-type-descriptor?",
     lib = "(rnrs records procedural (6))"
 )]
@@ -1238,7 +1238,7 @@ pub fn make_default_record_constructor_descriptor(
     })
 }
 
-#[bridge(
+#[define(
     name = "make-record-constructor-descriptor",
     lib = "(rnrs records procedural (6))"
 )]
@@ -1286,7 +1286,7 @@ pub fn make_record_constructor_descriptor(
     })
 }
 
-#[bridge(name = "record-constructor", lib = "(rnrs records procedural (6))")]
+#[define(name = "record-constructor", lib = "(rnrs records procedural (6))")]
 pub fn record_constructor(
     rcd: Embedded<RecordConstructorDescriptor>,
     barrier: &mut ContBarrier,
@@ -1336,7 +1336,7 @@ fn chain_protocols(env: [Value; 1], constructor: Value, barrier: &mut ContBarrie
     Application::new(curr_protocol, Args::pack([constructor]))
 }
 
-#[bridge]
+#[define]
 fn chain_constructors(
     #[env] rtds: Vector,
     #[env] collected: Value,
@@ -1369,7 +1369,7 @@ fn chain_constructors(
     Ok(barrier.call_cont(Args::pack([Value::from(next_proc)])))
 }
 
-#[bridge]
+#[define]
 fn constructor(
     #[env] rtd: RecordTypeDescriptor,
     #[env] collected: Value,
@@ -1449,7 +1449,7 @@ fn constructor(
     Ok(barrier.call_cont(Args::pack([Value::from(record)])))
 }
 
-#[bridge]
+#[define]
 fn default_protocol(
     #[env] rtd: RecordTypeDescriptor,
     ctor: Value,
@@ -1467,7 +1467,7 @@ fn default_protocol(
     Ok(barrier.call_cont(Args::pack([Value::from(constructor)])))
 }
 
-#[bridge]
+#[define]
 fn default_protocol_constructor(
     #[env] constructor: Procedure,
     #[env] rtd: RecordTypeDescriptor,
@@ -1493,7 +1493,7 @@ fn call_constructor_continuation(
     Application::new(constructor, Args::from_list(args))
 }
 
-#[bridge]
+#[define]
 fn record_predicate_fn(
     #[env] rtd: RecordTypeDescriptor,
     val: Value,
@@ -1502,7 +1502,7 @@ fn record_predicate_fn(
     Ok(barrier.call_cont(Args::pack([Value::from(is_subtype_of(&val, rtd)?)])))
 }
 
-#[bridge(name = "record-predicate", lib = "(rnrs records procedural (6))")]
+#[define(name = "record-predicate", lib = "(rnrs records procedural (6))")]
 pub fn record_predicate(rtd: Value) -> Procedure {
     // TODO: Check if RTD is a record type.
     Procedure::new(
@@ -1513,7 +1513,7 @@ pub fn record_predicate(rtd: Value) -> Procedure {
     )
 }
 
-#[bridge]
+#[define]
 fn record_accessor_fn(
     #[env] rtd: RecordTypeDescriptor,
     #[env] local_idx: Value,
@@ -1549,7 +1549,7 @@ fn record_accessor_fn(
     Ok(barrier.call_cont(Args::pack([val])))
 }
 
-#[bridge(name = "record-accessor", lib = "(rnrs records procedural (6))")]
+#[define(name = "record-accessor", lib = "(rnrs records procedural (6))")]
 pub fn record_accessor(rtd: RecordTypeDescriptor, idx: usize) -> Result<Procedure, Exception> {
     if idx >= rtd.fields.len() {
         return Err(Exception::error(format!(
@@ -1567,7 +1567,7 @@ pub fn record_accessor(rtd: RecordTypeDescriptor, idx: usize) -> Result<Procedur
     ))
 }
 
-#[bridge(
+#[define(
     name = "record-accessor-absolute",
     lib = "(rnrs records procedural (6))"
 )]
@@ -1606,7 +1606,7 @@ pub fn record_accessor_absolute(
     ))
 }
 
-#[bridge]
+#[define]
 fn record_mutator_fn(
     #[env] rtd: RecordTypeDescriptor,
     #[env] local_idx: Value,
@@ -1639,7 +1639,7 @@ fn record_mutator_fn(
     Ok(barrier.call_cont(Args::pack([])))
 }
 
-#[bridge(name = "record-mutator", lib = "(rnrs records procedural (6))")]
+#[define(name = "record-mutator", lib = "(rnrs records procedural (6))")]
 pub fn record_mutator(rtd: RecordTypeDescriptor, idx: usize) -> Result<Procedure, Exception> {
     if idx >= rtd.fields.len() {
         return Err(Exception::error(format!(
@@ -1658,7 +1658,7 @@ pub fn record_mutator(rtd: RecordTypeDescriptor, idx: usize) -> Result<Procedure
     ))
 }
 
-#[bridge(
+#[define(
     name = "record-mutator-absolute",
     lib = "(rnrs records procedural (6))"
 )]
@@ -1708,7 +1708,7 @@ pub fn record_mutator_absolute(
     ))
 }
 
-#[bridge(
+#[define(
     name = "record-field-absolute-index",
     lib = "(rnrs records procedural (6))"
 )]
@@ -1732,12 +1732,12 @@ pub fn record_field_absolute_index(
 
 // Inspection library:
 
-#[bridge(name = "record?", lib = "(rnrs records inspection (6))")]
+#[define(name = "record?", lib = "(rnrs records inspection (6))")]
 pub fn record_pred(obj: Value) -> bool {
     obj.cast::<Record>().is_some_and(|rec| !rec.rtd().opaque)
 }
 
-#[bridge(name = "record-rtd", lib = "(rnrs records inspection (6))")]
+#[define(name = "record-rtd", lib = "(rnrs records inspection (6))")]
 pub fn record_rtd(record: Value) -> Result<RecordTypeDescriptor, Exception> {
     match &*record.unpacked_ref() {
         UnpackedValue::Record(rec) if !rec.rtd().opaque => Ok(rec.rtd().clone()),
@@ -1747,12 +1747,12 @@ pub fn record_rtd(record: Value) -> Result<RecordTypeDescriptor, Exception> {
     }
 }
 
-#[bridge(name = "record-type-name", lib = "(rnrs records inspection (6))")]
+#[define(name = "record-type-name", lib = "(rnrs records inspection (6))")]
 pub fn record_type_name(rtd: RecordTypeDescriptor) -> Symbol {
     rtd.name
 }
 
-#[bridge(name = "record-type-parent", lib = "(rnrs records inspection (6))")]
+#[define(name = "record-type-parent", lib = "(rnrs records inspection (6))")]
 pub fn record_type_parent(rtd: RecordTypeDescriptor) -> Value {
     if let Some(parent) = rtd.inherits.last() {
         Value::from(parent.0.clone())
@@ -1761,7 +1761,7 @@ pub fn record_type_parent(rtd: RecordTypeDescriptor) -> Value {
     }
 }
 
-#[bridge(name = "record-type-uid", lib = "(rnrs records inspection (6))")]
+#[define(name = "record-type-uid", lib = "(rnrs records inspection (6))")]
 pub fn record_type_uid(rtd: RecordTypeDescriptor) -> Value {
     if let Some(uid) = rtd.uid {
         Value::from(uid)
@@ -1770,7 +1770,7 @@ pub fn record_type_uid(rtd: RecordTypeDescriptor) -> Value {
     }
 }
 
-#[bridge(
+#[define(
     name = "record-type-generative?",
     lib = "(rnrs records inspection (6))"
 )]
@@ -1778,17 +1778,17 @@ pub fn record_type_generative_pred(rtd: RecordTypeDescriptor) -> bool {
     rtd.uid.is_none()
 }
 
-#[bridge(name = "record-type-sealed?", lib = "(rnrs records inspection (6))")]
+#[define(name = "record-type-sealed?", lib = "(rnrs records inspection (6))")]
 pub fn record_type_sealed_pred(rtd: RecordTypeDescriptor) -> bool {
     rtd.sealed
 }
 
-#[bridge(name = "record-type-opaque?", lib = "(rnrs records inspection (6))")]
+#[define(name = "record-type-opaque?", lib = "(rnrs records inspection (6))")]
 pub fn record_type_opaque_pred(rtd: RecordTypeDescriptor) -> bool {
     rtd.opaque
 }
 
-#[bridge(
+#[define(
     name = "record-type-field-names",
     lib = "(rnrs records inspection (6))"
 )]
@@ -1801,7 +1801,7 @@ pub fn record_type_field_names(rtd: RecordTypeDescriptor) -> Value {
     Value::from(fields)
 }
 
-#[bridge(
+#[define(
     name = "record-type-all-field-names",
     lib = "(rnrs records inspection (6))"
 )]
@@ -1816,7 +1816,7 @@ pub fn record_type_all_field_names(rtd: RecordTypeDescriptor) -> Value {
     Value::from(fields)
 }
 
-#[bridge(name = "record-field-mutable?", lib = "(rnrs records inspection (6))")]
+#[define(name = "record-field-mutable?", lib = "(rnrs records inspection (6))")]
 pub fn record_field_mutable_pred(rtd: RecordTypeDescriptor, k: usize) -> Result<bool, Exception> {
     if k >= rtd.fields.len() {
         return Err(Exception::invalid_index(k, rtd.fields.len()));

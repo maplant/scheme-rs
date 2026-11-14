@@ -19,7 +19,7 @@ use crate::{
     fmt::{Formatter, Mode},
     lists::iter_list,
     records::{Embeddable, Embedded, Record, RecordTypeDescriptor},
-    registry::bridge,
+    registry::define,
     value::Value,
 };
 
@@ -62,18 +62,18 @@ unsafe impl Embeddable for String {
     }
 }
 
-#[bridge(name = "string?", lib = "(rnrs base builtins (6))")]
+#[define(name = "string?", lib = "(rnrs base builtins (6))")]
 pub fn string_pred(arg: Value) -> bool {
     arg.is_a::<Embedded<String>>()
 }
 
-#[bridge(name = "make-string", lib = "(rnrs base builtins (6))")]
+#[define(name = "make-string", lib = "(rnrs base builtins (6))")]
 pub fn make_string(k: usize, chr: Option<char>) -> Result<String> {
     let chr = chr.unwrap_or('\0');
     Ok(iter::repeat_n(chr, k).collect::<String>())
 }
 
-#[bridge(name = "string", lib = "(rnrs base builtins (6))")]
+#[define(name = "string", lib = "(rnrs base builtins (6))")]
 pub fn string(chr: Value, #[rest_args] chars: Value) -> Result<String> {
     [chr.clone()]
         .into_iter()
@@ -82,12 +82,12 @@ pub fn string(chr: Value, #[rest_args] chars: Value) -> Result<String> {
         .collect()
 }
 
-#[bridge(name = "string-length", lib = "(rnrs base builtins (6))")]
+#[define(name = "string-length", lib = "(rnrs base builtins (6))")]
 pub fn string_length(s: Embedded<String>) -> usize {
     s.chars().count()
 }
 
-#[bridge(name = "string-ref", lib = "(rnrs base builtins (6))")]
+#[define(name = "string-ref", lib = "(rnrs base builtins (6))")]
 pub fn string_ref(string: Embedded<String>, k: usize) -> Result<char> {
     string
         .chars()
@@ -95,7 +95,7 @@ pub fn string_ref(string: Embedded<String>, k: usize) -> Result<char> {
         .ok_or_else(|| Exception::error("out of range"))
 }
 
-#[bridge(name = "string=?", lib = "(rnrs base builtins (6))")]
+#[define(name = "string=?", lib = "(rnrs base builtins (6))")]
 pub fn is_string_eq(
     string_1: Embedded<String>,
     string_2: Value,
@@ -110,7 +110,7 @@ pub fn is_string_eq(
     Ok(true)
 }
 
-#[bridge(name = "string<?", lib = "(rnrs base builtins (6))")]
+#[define(name = "string<?", lib = "(rnrs base builtins (6))")]
 pub fn is_string_less(
     string_1: Embedded<String>,
     string_2: Value,
@@ -127,7 +127,7 @@ pub fn is_string_less(
     Ok(true)
 }
 
-#[bridge(name = "string>?", lib = "(rnrs base builtins (6))")]
+#[define(name = "string>?", lib = "(rnrs base builtins (6))")]
 pub fn is_string_greater(
     string_1: Embedded<String>,
     string_2: Value,
@@ -144,7 +144,7 @@ pub fn is_string_greater(
     Ok(true)
 }
 
-#[bridge(name = "string<=?", lib = "(rnrs base builtins (6))")]
+#[define(name = "string<=?", lib = "(rnrs base builtins (6))")]
 pub fn is_string_less_equal(
     string_1: Embedded<String>,
     string_2: Value,
@@ -161,7 +161,7 @@ pub fn is_string_less_equal(
     Ok(true)
 }
 
-#[bridge(name = "string>=?", lib = "(rnrs base builtins (6))")]
+#[define(name = "string>=?", lib = "(rnrs base builtins (6))")]
 pub fn is_string_greater_equal(
     string_1: Embedded<String>,
     string_2: Value,
@@ -178,7 +178,7 @@ pub fn is_string_greater_equal(
     Ok(true)
 }
 
-#[bridge(name = "substring", lib = "(rnrs base builtins (6))")]
+#[define(name = "substring", lib = "(rnrs base builtins (6))")]
 pub fn substring(string: Embedded<String>, start: usize, end: usize) -> Result<String> {
     if start > end {
         return Err(Exception::error(format!(
@@ -188,7 +188,7 @@ pub fn substring(string: Embedded<String>, start: usize, end: usize) -> Result<S
     Ok(string.chars().skip(start).take(end).collect())
 }
 
-#[bridge(name = "string-append", lib = "(rnrs base builtins (6))")]
+#[define(name = "string-append", lib = "(rnrs base builtins (6))")]
 pub fn list(#[rest_args] args: Value) -> Result<String> {
     let mut output = String::new();
     for arg in iter_list(&args) {
@@ -198,7 +198,7 @@ pub fn list(#[rest_args] args: Value) -> Result<String> {
     Ok(output)
 }
 
-#[bridge(name = "string->list", lib = "(rnrs base builtins (6))")]
+#[define(name = "string->list", lib = "(rnrs base builtins (6))")]
 pub fn string_to_list(string: Embedded<String>) -> Value {
     let mut list = Value::null();
     for chr in string.chars().rev() {
@@ -207,12 +207,12 @@ pub fn string_to_list(string: Embedded<String>) -> Value {
     list
 }
 
-#[bridge(name = "string-copy", lib = "(rnrs base builtins (6))")]
+#[define(name = "string-copy", lib = "(rnrs base builtins (6))")]
 pub fn string_copy(string: Embedded<String>) -> String {
     string.as_ref().clone()
 }
 
-#[bridge(name = "string->vector", lib = "(rnrs base builtins (6))")]
+#[define(name = "string->vector", lib = "(rnrs base builtins (6))")]
 pub fn string_to_vector(
     from: Embedded<String>,
     start: Option<usize>,
@@ -239,14 +239,14 @@ pub fn string_to_vector(
         .collect())
 }
 
-#[bridge(name = "string-set!", lib = "(rnrs mutable-strings (6))")]
+#[define(name = "string-set!", lib = "(rnrs mutable-strings (6))")]
 pub fn string_set_bang(_string: Embedded<String>, _k: usize, _chr: char) -> Result<()> {
     Err(Exception::implementation_restriction(
         "string-set! is not available",
     ))
 }
 
-#[bridge(name = "string-foldcase", lib = "(rnrs base builtins (6))")]
+#[define(name = "string-foldcase", lib = "(rnrs base builtins (6))")]
 pub fn string_foldcase(string: Embedded<String>) -> String {
     string
         .chars()

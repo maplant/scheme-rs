@@ -28,7 +28,7 @@ use crate::{
     lists::iter_list,
     ports::{BufferMode, Port, Transcoder},
     records::Embedded,
-    registry::bridge,
+    registry::define,
     syntax::{Span, lex::Lexer},
     value::{FIXNUM_MAX, FIXNUM_MIN, Value, ValueType},
 };
@@ -1935,79 +1935,79 @@ impl_op_for_number!(Div, div);
 ////////////////////////////////////////////////////////////////////////////////
 // Numerical built-ins:
 
-#[bridge(name = "number?", lib = "(rnrs base builtins (6))")]
+#[define(name = "number?", lib = "(rnrs base builtins (6))")]
 pub fn is_number(arg: Value) -> bool {
     arg.type_of() == ValueType::Number
 }
 
-#[bridge(name = "complex?", lib = "(rnrs base builtins (6))")]
+#[define(name = "complex?", lib = "(rnrs base builtins (6))")]
 pub fn is_complex(arg: Value) -> bool {
     arg.cast::<Number>()
         .as_ref()
         .is_some_and(Number::is_complex)
 }
 
-#[bridge(name = "real?", lib = "(rnrs base builtins (6))")]
+#[define(name = "real?", lib = "(rnrs base builtins (6))")]
 pub fn is_real(arg: Value) -> bool {
     arg.cast::<Number>().as_ref().is_some_and(Number::is_real)
 }
 
-#[bridge(name = "rational?", lib = "(rnrs base builtins (6))")]
+#[define(name = "rational?", lib = "(rnrs base builtins (6))")]
 pub fn is_rational(arg: Value) -> bool {
     arg.cast::<Number>()
         .as_ref()
         .is_some_and(Number::is_rational)
 }
 
-#[bridge(name = "integer?", lib = "(rnrs base builtins (6))")]
+#[define(name = "integer?", lib = "(rnrs base builtins (6))")]
 pub fn is_integer(arg: Value) -> bool {
     arg.cast::<Number>()
         .as_ref()
         .is_some_and(Number::is_integer)
 }
 
-#[bridge(name = "real-valued?", lib = "(rnrs base builtins (6))")]
+#[define(name = "real-valued?", lib = "(rnrs base builtins (6))")]
 pub fn real_valued_pred(arg: Value) -> bool {
     arg.cast::<Number>()
         .as_ref()
         .is_some_and(Number::is_real_valued)
 }
 
-#[bridge(name = "rational-valued?", lib = "(rnrs base builtins (6))")]
+#[define(name = "rational-valued?", lib = "(rnrs base builtins (6))")]
 pub fn rational_valued_pred(arg: Value) -> bool {
     arg.cast::<Number>()
         .as_ref()
         .is_some_and(Number::is_rational_valued)
 }
 
-#[bridge(name = "integer-valued?", lib = "(rnrs base builtins (6))")]
+#[define(name = "integer-valued?", lib = "(rnrs base builtins (6))")]
 pub fn integer_valued_pred(arg: Value) -> bool {
     arg.cast::<Number>()
         .as_ref()
         .is_some_and(Number::is_integer_valued)
 }
 
-#[bridge(name = "exact?", lib = "(rnrs base builtins (6))")]
+#[define(name = "exact?", lib = "(rnrs base builtins (6))")]
 pub fn exact_pred(z: Number) -> bool {
     z.is_exact()
 }
 
-#[bridge(name = "inexact?", lib = "(rnrs base builtins (6))")]
+#[define(name = "inexact?", lib = "(rnrs base builtins (6))")]
 pub fn inexact_pred(z: Number) -> bool {
     z.is_inexact()
 }
 
-#[bridge(name = "inexact", lib = "(rnrs base builtins (6))")]
+#[define(name = "inexact", lib = "(rnrs base builtins (6))")]
 pub fn inexact(z: Number) -> Number {
     z.inexact()
 }
 
-#[bridge(name = "exact", lib = "(rnrs base builtins (6))")]
+#[define(name = "exact", lib = "(rnrs base builtins (6))")]
 pub fn exact(z: Number) -> Number {
     z.exact()
 }
 
-#[bridge(name = "=", lib = "(rnrs base builtins (6))")]
+#[define(name = "=", lib = "(rnrs base builtins (6))")]
 pub fn equal(#[rest_args] args: Value) -> Result<bool, Exception> {
     equal_prim(iter_list(&args))
 }
@@ -2026,7 +2026,7 @@ pub(crate) fn equal_prim(vals: impl IntoIterator<Item = Value>) -> Result<bool, 
     Ok(true)
 }
 
-#[bridge(name = "<", lib = "(rnrs base builtins (6))")]
+#[define(name = "<", lib = "(rnrs base builtins (6))")]
 pub fn lesser(#[rest_args] args: Value) -> Result<bool, Exception> {
     lesser_prim(iter_list(&args))
 }
@@ -2053,7 +2053,7 @@ pub(crate) fn lesser_prim(vals: impl IntoIterator<Item = Value>) -> Result<bool,
     Ok(true)
 }
 
-#[bridge(name = ">", lib = "(rnrs base builtins (6))")]
+#[define(name = ">", lib = "(rnrs base builtins (6))")]
 pub fn greater(#[rest_args] args: Value) -> Result<bool, Exception> {
     greater_prim(iter_list(&args))
 }
@@ -2082,7 +2082,7 @@ pub(crate) fn greater_prim(vals: impl IntoIterator<Item = Value>) -> Result<bool
     Ok(true)
 }
 
-#[bridge(name = "<=", lib = "(rnrs base builtins (6))")]
+#[define(name = "<=", lib = "(rnrs base builtins (6))")]
 pub fn lesser_equal(#[rest_args] args: Value) -> Result<bool, Exception> {
     lesser_equal_prim(iter_list(&args))
 }
@@ -2112,7 +2112,7 @@ pub(crate) fn lesser_equal_prim(vals: impl IntoIterator<Item = Value>) -> Result
     Ok(true)
 }
 
-#[bridge(name = ">=", lib = "(rnrs base builtins (6))")]
+#[define(name = ">=", lib = "(rnrs base builtins (6))")]
 pub fn greater_equal(#[rest_args] args: Value) -> Result<bool, Exception> {
     greater_equal_prim(iter_list(&args))
 }
@@ -2142,37 +2142,37 @@ pub(crate) fn greater_equal_prim(vals: impl IntoIterator<Item = Value>) -> Resul
     Ok(true)
 }
 
-#[bridge(name = "zero?", lib = "(rnrs base builtins (6))")]
+#[define(name = "zero?", lib = "(rnrs base builtins (6))")]
 pub fn zero(num: Number) -> bool {
     num.is_zero()
 }
 
-#[bridge(name = "odd?", lib = "(rnrs base builtins (6))")]
+#[define(name = "odd?", lib = "(rnrs base builtins (6))")]
 pub fn odd(int: Integer) -> bool {
     int.odd()
 }
 
-#[bridge(name = "even?", lib = "(rnrs base builtins (6))")]
+#[define(name = "even?", lib = "(rnrs base builtins (6))")]
 pub fn even(int: Integer) -> bool {
     int.even()
 }
 
-#[bridge(name = "finite?", lib = "(rnrs base builtins (6))")]
+#[define(name = "finite?", lib = "(rnrs base builtins (6))")]
 pub fn is_finite(num: SimpleNumber) -> bool {
     num.is_finite()
 }
 
-#[bridge(name = "infinite?", lib = "(rnrs base builtins (6))")]
+#[define(name = "infinite?", lib = "(rnrs base builtins (6))")]
 pub fn is_infinite(num: SimpleNumber) -> bool {
     num.is_infinite()
 }
 
-#[bridge(name = "nan?", lib = "(rnrs base builtins (6))")]
+#[define(name = "nan?", lib = "(rnrs base builtins (6))")]
 pub fn is_nan(num: SimpleNumber) -> bool {
     num.is_nan()
 }
 
-#[bridge(name = "+", lib = "(rnrs base builtins (6))")]
+#[define(name = "+", lib = "(rnrs base builtins (6))")]
 pub fn add(#[rest_args] args: Value) -> Result<Number, Exception> {
     add_prim(iter_list(&args))
 }
@@ -2186,7 +2186,7 @@ pub(crate) fn add_prim(vals: impl IntoIterator<Item = Value>) -> Result<Number, 
     Ok(result)
 }
 
-#[bridge(name = "*", lib = "(rnrs base builtins (6))")]
+#[define(name = "*", lib = "(rnrs base builtins (6))")]
 pub fn mul(#[rest_args] args: Value) -> Result<Number, Exception> {
     mul_prim(iter_list(&args))
 }
@@ -2200,7 +2200,7 @@ pub(crate) fn mul_prim(vals: impl IntoIterator<Item = Value>) -> Result<Number, 
     Ok(result)
 }
 
-#[bridge(name = "-", lib = "(rnrs base builtins (6))")]
+#[define(name = "-", lib = "(rnrs base builtins (6))")]
 pub fn sub(arg1: Value, #[rest_args] args: Value) -> Result<Number, Exception> {
     sub_prim(&arg1, iter_list(&args))
 }
@@ -2222,7 +2222,7 @@ pub(crate) fn sub_prim(
     }
 }
 
-#[bridge(name = "/", lib = "(rnrs base builtins (6))")]
+#[define(name = "/", lib = "(rnrs base builtins (6))")]
 pub fn div(arg1: Value, #[rest_args] args: Value) -> Result<Number, Exception> {
     div_prim(&arg1, iter_list(&args))
 }
@@ -2250,7 +2250,7 @@ pub(crate) fn div_prim(
     Ok(result)
 }
 
-#[bridge(name = "div-and-mod", lib = "(rnrs base builtins (6))")]
+#[define(name = "div-and-mod", lib = "(rnrs base builtins (6))")]
 pub fn div_mod(
     x1: SimpleNumber,
     x2: SimpleNumber,
@@ -2264,7 +2264,7 @@ pub fn div_mod(
     Ok((nd, modulo))
 }
 
-#[bridge(name = "div", lib = "(rnrs base builtins (6))")]
+#[define(name = "div", lib = "(rnrs base builtins (6))")]
 pub fn integer_division(x1: SimpleNumber, x2: SimpleNumber) -> Result<SimpleNumber, Exception> {
     if x2.is_zero() {
         Err(Exception::error("division by zero"))
@@ -2273,7 +2273,7 @@ pub fn integer_division(x1: SimpleNumber, x2: SimpleNumber) -> Result<SimpleNumb
     }
 }
 
-#[bridge(name = "mod", lib = "(rnrs base builtins (6))")]
+#[define(name = "mod", lib = "(rnrs base builtins (6))")]
 pub fn modulo(x1: SimpleNumber, x2: SimpleNumber) -> Result<SimpleNumber, Exception> {
     if x2.is_zero() {
         return Err(Exception::error("modulo by zero"));
@@ -2287,7 +2287,7 @@ pub fn modulo(x1: SimpleNumber, x2: SimpleNumber) -> Result<SimpleNumber, Except
     }
 }
 
-#[bridge(name = "numerator", lib = "(rnrs base builtins (6))")]
+#[define(name = "numerator", lib = "(rnrs base builtins (6))")]
 pub fn numerator(num: SimpleNumber) -> Value {
     match num {
         SimpleNumber::Rational(r) => {
@@ -2297,7 +2297,7 @@ pub fn numerator(num: SimpleNumber) -> Value {
     }
 }
 
-#[bridge(name = "denominator", lib = "(rnrs base builtins (6))")]
+#[define(name = "denominator", lib = "(rnrs base builtins (6))")]
 pub fn denominator(num: SimpleNumber) -> Result<Value, Exception> {
     match num {
         SimpleNumber::Rational(r) => Ok(Value::from(Integer::from(r.into_denominator()))),
@@ -2314,7 +2314,7 @@ pub fn denominator(num: SimpleNumber) -> Result<Value, Exception> {
     }
 }
 
-#[bridge(name = "floor", lib = "(rnrs base builtins (6))")]
+#[define(name = "floor", lib = "(rnrs base builtins (6))")]
 pub fn floor(num: SimpleNumber) -> Value {
     match num {
         SimpleNumber::Rational(r) => Value::from(Integer::rounding_from(r, RoundingMode::Floor).0),
@@ -2323,7 +2323,7 @@ pub fn floor(num: SimpleNumber) -> Value {
     }
 }
 
-#[bridge(name = "ceiling", lib = "(rnrs base builtins (6))")]
+#[define(name = "ceiling", lib = "(rnrs base builtins (6))")]
 pub fn ceiling(num: SimpleNumber) -> Value {
     match num {
         SimpleNumber::Rational(r) => {
@@ -2334,7 +2334,7 @@ pub fn ceiling(num: SimpleNumber) -> Value {
     }
 }
 
-#[bridge(name = "truncate", lib = "(rnrs base builtins (6))")]
+#[define(name = "truncate", lib = "(rnrs base builtins (6))")]
 pub fn truncate(num: SimpleNumber) -> Value {
     match num {
         SimpleNumber::Rational(r) => Value::from(Integer::rounding_from(r, RoundingMode::Down).0),
@@ -2343,7 +2343,7 @@ pub fn truncate(num: SimpleNumber) -> Value {
     }
 }
 
-#[bridge(name = "round", lib = "(rnrs base builtins (6))")]
+#[define(name = "round", lib = "(rnrs base builtins (6))")]
 pub fn round(num: SimpleNumber) -> Value {
     match num {
         SimpleNumber::Rational(r) => {
@@ -2354,12 +2354,12 @@ pub fn round(num: SimpleNumber) -> Value {
     }
 }
 
-#[bridge(name = "exp", lib = "(rnrs base builtins (6))")]
+#[define(name = "exp", lib = "(rnrs base builtins (6))")]
 pub fn exp(z: Number) -> Number {
     z.exp()
 }
 
-#[bridge(name = "log", lib = "(rnrs base builtins (6))")]
+#[define(name = "log", lib = "(rnrs base builtins (6))")]
 pub fn log(z: Value, base: Option<f64>) -> Result<f64, Exception> {
     let num = match z.try_to::<SimpleNumber>()? {
         SimpleNumber::FixedInteger(i) => i as f64,
@@ -2374,64 +2374,64 @@ pub fn log(z: Value, base: Option<f64>) -> Result<f64, Exception> {
     }
 }
 
-#[bridge(name = "sin", lib = "(rnrs base builtins (6))")]
+#[define(name = "sin", lib = "(rnrs base builtins (6))")]
 pub fn sin(z: Number) -> Number {
     z.sin()
 }
 
-#[bridge(name = "cos", lib = "(rnrs base builtins (6))")]
+#[define(name = "cos", lib = "(rnrs base builtins (6))")]
 pub fn cos(z: Number) -> Number {
     z.cos()
 }
 
-#[bridge(name = "tan", lib = "(rnrs base builtins (6))")]
+#[define(name = "tan", lib = "(rnrs base builtins (6))")]
 pub fn tan(z: Number) -> Number {
     z.tan()
 }
 
-#[bridge(name = "asin", lib = "(rnrs base builtins (6))")]
+#[define(name = "asin", lib = "(rnrs base builtins (6))")]
 pub fn asin(z: Number) -> Number {
     z.asin()
 }
 
-#[bridge(name = "acos", lib = "(rnrs base builtins (6))")]
+#[define(name = "acos", lib = "(rnrs base builtins (6))")]
 pub fn acos(z: Number) -> Number {
     z.acos()
 }
 
-#[bridge(name = "atan", lib = "(rnrs base builtins (6))")]
+#[define(name = "atan", lib = "(rnrs base builtins (6))")]
 pub fn atan(z: Number) -> Number {
     z.atan()
 }
 
-#[bridge(name = "sqrt", lib = "(rnrs base builtins (6))")]
+#[define(name = "sqrt", lib = "(rnrs base builtins (6))")]
 pub fn sqrt(z: Number) -> Number {
     z.sqrt()
 }
 
-#[bridge(name = "exact-integer-sqrt", lib = "(rnrs base builtins (6))")]
+#[define(name = "exact-integer-sqrt", lib = "(rnrs base builtins (6))")]
 pub fn exact_integer_sqrt(arg: Integer) -> (Integer, Integer) {
     let s = (&arg).floor_sqrt();
     let r = arg - &s * &s;
     (s, r)
 }
 
-#[bridge(name = "expt", lib = "(rnrs base builtins (6))")]
+#[define(name = "expt", lib = "(rnrs base builtins (6))")]
 pub fn expt(z1: Number, z2: Number) -> Number {
     z1.pow(&z2)
 }
 
-#[bridge(name = "make-rectangular", lib = "(rnrs base builtins (6))")]
+#[define(name = "make-rectangular", lib = "(rnrs base builtins (6))")]
 pub fn make_rectangular(x1: SimpleNumber, x2: SimpleNumber) -> ComplexNumber {
     ComplexNumber::new(x1, x2)
 }
 
-#[bridge(name = "make-polar", lib = "(rnrs base builtins (6))")]
+#[define(name = "make-polar", lib = "(rnrs base builtins (6))")]
 pub fn make_polar(x1: SimpleNumber, x2: SimpleNumber) -> ComplexNumber {
     ComplexNumber::from_polar(x1, x2)
 }
 
-#[bridge(name = "real-part", lib = "(rnrs base builtins (6))")]
+#[define(name = "real-part", lib = "(rnrs base builtins (6))")]
 pub fn real_part(num: Number) -> Value {
     if let Some(complex) = num.as_complex() {
         Value::from(complex.re.clone())
@@ -2440,7 +2440,7 @@ pub fn real_part(num: Number) -> Value {
     }
 }
 
-#[bridge(name = "imag-part", lib = "(rnrs base builtins (6))")]
+#[define(name = "imag-part", lib = "(rnrs base builtins (6))")]
 pub fn imag_part(num: Number) -> Result<SimpleNumber, Exception> {
     if let Some(complex) = num.as_complex() {
         Ok(complex.im.clone())
@@ -2449,7 +2449,7 @@ pub fn imag_part(num: Number) -> Result<SimpleNumber, Exception> {
     }
 }
 
-#[bridge(name = "magnitude", lib = "(rnrs base builtins (6))")]
+#[define(name = "magnitude", lib = "(rnrs base builtins (6))")]
 pub fn magnitude(num: Number) -> Value {
     if let Some(complex) = num.as_complex() {
         Value::from(complex.magnitude())
@@ -2458,13 +2458,13 @@ pub fn magnitude(num: Number) -> Value {
     }
 }
 
-#[bridge(name = "angle", lib = "(rnrs base builtins (6))")]
+#[define(name = "angle", lib = "(rnrs base builtins (6))")]
 pub fn angle(z: ComplexNumber) -> SimpleNumber {
     let (_, angle) = z.to_polar();
     angle
 }
 
-#[bridge(name = "number->string", lib = "(rnrs base builtins (6))")]
+#[define(name = "number->string", lib = "(rnrs base builtins (6))")]
 pub fn number_to_string(
     z: ComplexNumber,
     radix: Option<u32>,
@@ -2482,7 +2482,7 @@ pub fn number_to_string(
 }
 
 #[maybe_async]
-#[bridge(name = "string->number", lib = "(rnrs base builtins (6))")]
+#[define(name = "string->number", lib = "(rnrs base builtins (6))")]
 pub fn string_to_number(s: Embedded<String>, radix: Option<u32>) -> Result<Value, Exception> {
     let radix = match radix {
         None => 10,
@@ -2551,22 +2551,22 @@ impl TryFrom<&Value> for Fixnum {
     }
 }
 
-#[bridge(name = "fixnum?", lib = "(rnrs arithmetic fixnums (6))")]
+#[define(name = "fixnum?", lib = "(rnrs arithmetic fixnums (6))")]
 pub fn fixnum_pred(obj: Value) -> bool {
     obj.cast::<Fixnum>().is_some()
 }
 
-#[bridge(name = "fixnum-width", lib = "(rnrs arithmetic fixnums (6))")]
+#[define(name = "fixnum-width", lib = "(rnrs arithmetic fixnums (6))")]
 pub fn fixnum_width() -> i64 {
     63
 }
 
-#[bridge(name = "least-fixnum", lib = "(rnrs arithmetic fixnums (6))")]
+#[define(name = "least-fixnum", lib = "(rnrs arithmetic fixnums (6))")]
 pub fn least_fixnum() -> i64 {
     FIXNUM_MIN
 }
 
-#[bridge(name = "greatest-fixnum", lib = "(rnrs arithmetic fixnums (6))")]
+#[define(name = "greatest-fixnum", lib = "(rnrs arithmetic fixnums (6))")]
 pub fn greatest_fixnum() -> i64 {
     FIXNUM_MAX
 }
@@ -2602,7 +2602,7 @@ impl TryFrom<&Value> for Flonum {
     }
 }
 
-#[bridge(name = "flonum?", lib = "(rnrs arithmetic flonums (6))")]
+#[define(name = "flonum?", lib = "(rnrs arithmetic flonums (6))")]
 pub fn flonum_pred(obj: Value) -> bool {
     obj.cast::<Flonum>().is_some()
 }

@@ -108,14 +108,14 @@ assert_eq!(result, 120);
 # Running Rust code from Scheme
 
 The simplest way to create Rust functions that are callable from Scheme
-is with the [`bridge`](registry::bridge) procedural macro. The `bridge` proc
-allows one to write Scheme functions in a direct style in Rust that are
+is with the [`define`](registry::define) procedural macro. The `define` proc 
+macro allows one to write Scheme functions in a direct style in Rust that are
 automatically registered into a given library:
 
 ```rust
 # use scheme_rs::{
-# registry::bridge, value::Value, exceptions::Exception};
-#[bridge(name = "add-five", lib = "(add-five-lib)")]
+# registry::define, value::Value, exceptions::Exception};
+#[define(name = "add-five", lib = "(add-five-lib)")]
 fn add_five(num: Value) -> Result<Value, Exception> {
     let num: usize = num.try_into()?;
     Ok(Value::from(num + 5))
@@ -127,8 +127,8 @@ run-time, so the following definition is also valid:
 
 ```rust
 # use scheme_rs::{
-# registry::bridge, value::Value, exceptions::Exception};
-#[bridge(name = "add-five", lib = "(add-five-lib)")]
+# registry::define, value::Value, exceptions::Exception};
+#[define(name = "add-five", lib = "(add-five-lib)")]
 fn add_five(num: usize) -> Result<Value, Exception> {
     Ok(Value::from(num + 5))
 }
@@ -138,9 +138,9 @@ Once you've defined a bridge function it can be imported and called from scheme:
 
 ```rust
 # use scheme_rs::{
-# registry::bridge, value::Value, exceptions::Exception, 
+# registry::define, value::Value, exceptions::Exception, 
 # env::TopLevelEnvironment};
-# #[bridge(name = "add-five", lib = "(add-five-lib)")]
+# #[define(name = "add-five", lib = "(add-five-lib)")]
 # fn add_five(num: Value) -> Result<Value, Exception> {
 #    let num: usize = num.try_into()?;
 #    Ok(Value::from(num + 5))
@@ -250,10 +250,10 @@ Creating a new mutable references enforces a new continuation barrier.
 
 ```rust
 # use scheme_rs::{
-# registry::bridge, value::Value, exceptions::Exception, 
+# registry::define, value::Value, exceptions::Exception, 
 # env::TopLevelEnvironment,
 # proc::{Application, ContBarrier, Procedure, Args}}; 
-#[bridge(name = "inc", lib = "(example)")]
+#[define(name = "inc", lib = "(example)")]
 pub fn inc(barrier: &mut ContBarrier) -> Result<Application, Exception> {
     let var = {
         let var: &mut u32 = barrier.get_param("var").unwrap().downcast_mut().unwrap();
@@ -263,7 +263,7 @@ pub fn inc(barrier: &mut ContBarrier) -> Result<Application, Exception> {
     Ok(barrier.call_cont(Args::pack([Value::from(var)])))
 }
 
-#[bridge(name = "call-with-var", lib = "(example)")]
+#[define(name = "call-with-var", lib = "(example)")]
 pub fn call_with_var(
     thunk: Procedure,
     barrier: &mut ContBarrier,
