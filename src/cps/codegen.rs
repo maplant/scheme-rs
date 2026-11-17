@@ -303,12 +303,11 @@ impl Cps {
                 let proc = Procedure::with_debug_info(
                     [],
                     FuncPtr::User(UserPtr(NonNull::dangling())),
-                    binding.args.num_required(),
-                    binding.args.variadic,
                     binding.span.as_ref().map(|span| {
                         ProcDebugInfo::new(
                             binding.val.name,
                             binding.args.args.clone(),
+                            binding.args.is_variadic,
                             span.clone(),
                         )
                     }),
@@ -1845,21 +1844,16 @@ impl CompilationUnit<'_, '_> {
             .builder
             .ins()
             .iconst(types::I32, bundle.env.len() as i64);
-        let num_required = self
-            .builder
-            .ins()
-            .iconst(types::I32, bundle.args.num_required() as i64);
-        let is_variadic = self
-            .builder
-            .ins()
-            .iconst(types::I8, bundle.args.variadic as i64);
-        assert_eq!(std::mem::size_of::<bool>(), 1);
 
         if bundle.args.continuation.is_some() {
-            let mut args = vec![func_ptr, env_addr, env_len, num_required, is_variadic];
+            let mut args = vec![func_ptr, env_addr, env_len];
             args.push(if let Some(ref loc) = bundle.loc {
-                let debug_info =
-                    ProcDebugInfo::new(bundle.val.name, bundle.args.args.clone(), loc.clone());
+                let debug_info = ProcDebugInfo::new(
+                    bundle.val.name,
+                    bundle.args.args.clone(),
+                    bundle.args.is_variadic,
+                    loc.clone(),
+                );
                 let debug_info_ptr = debug_info as *const ProcDebugInfo;
                 self.builder.ins().iconst(types::I64, debug_info_ptr as i64)
             } else {
@@ -2116,7 +2110,7 @@ impl ProcedureBundle {
         };
 
         let num_required = self.args.num_required();
-        let variadic = self.args.variadic;
+        let variadic = self.args.is_variadic;
 
         if num_required <= crate::proc::MAX_DIRECT_ARGS {
             // Fast path: no argument touches the argn list.

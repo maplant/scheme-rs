@@ -7,23 +7,16 @@ pub(super) struct ProcedureInfo {
 }
 
 pub(super) fn procedure_info(fallback_name: String, procedure: &Procedure) -> ProcedureInfo {
-    let (required, variadic) = procedure.get_formals();
-    let (name, args, docs): (String, Vec<String>, Option<String>) =
+    let (name, args, docs, required, variadic): (String, Vec<String>, Option<String>, usize, bool) =
         procedure.get_debug_info().map_or_else(
-            || {
-                (
-                    fallback_name,
-                    (0..required + usize::from(variadic))
-                        .map(|idx| format!("${idx}"))
-                        .collect(),
-                    None,
-                )
-            },
+            || (fallback_name, vec![format!("unknown")], None, 0, true),
             |debug_info| {
                 (
                     debug_info.name.to_string(),
                     debug_info.args.iter().map(ToString::to_string).collect(),
                     debug_info.docs.clone(),
+                    debug_info.args.len() - debug_info.is_variadic as usize,
+                    debug_info.is_variadic,
                 )
             },
         );

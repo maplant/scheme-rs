@@ -73,8 +73,6 @@ pub enum Bridge {
 pub struct BridgeFn {
     name: &'static str,
     lib_name: &'static str,
-    num_args: usize,
-    variadic: bool,
     wrapper: Bridge,
     debug_info: BridgeFnDebugInfo,
 }
@@ -83,16 +81,12 @@ impl BridgeFn {
     pub const fn new(
         name: &'static str,
         lib_name: &'static str,
-        num_args: usize,
-        variadic: bool,
         wrapper: Bridge,
         debug_info: BridgeFnDebugInfo,
     ) -> Self {
         Self {
             name,
             lib_name,
-            num_args,
-            variadic,
             wrapper,
             debug_info,
         }
@@ -107,6 +101,7 @@ pub struct BridgeFnDebugInfo {
     pub(crate) column: u32,
     pub(crate) offset: usize,
     pub(crate) args: &'static [&'static str],
+    pub(crate) is_variadic: bool,
     pub(crate) docs: &'static str,
 }
 
@@ -117,6 +112,7 @@ impl BridgeFnDebugInfo {
         column: u32,
         offset: usize,
         args: &'static [&'static str],
+        is_variadic: bool,
         docs: &'static str,
     ) -> Self {
         Self {
@@ -125,6 +121,7 @@ impl BridgeFnDebugInfo {
             column,
             offset,
             args,
+            is_variadic,
             docs,
         }
     }
@@ -195,8 +192,6 @@ impl RegistryInner {
                         #[cfg(feature = "async")]
                         Bridge::Async(func) => FuncPtr::AsyncBridge(func),
                     },
-                    bridge_fn.num_args,
-                    bridge_fn.variadic,
                     Some(debug_info),
                 ),
             );

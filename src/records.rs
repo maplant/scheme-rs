@@ -1180,8 +1180,6 @@ fn make_default_record_constructor_descriptor(
     let protocol = Procedure::new(
         [Value::from(rtd.clone())],
         FuncPtr::Bridge(default_protocol),
-        1,
-        false,
     );
     Embedded::new(RecordConstructorDescriptor {
         parent,
@@ -1229,8 +1227,6 @@ pub fn make_record_constructor_descriptor(
         Procedure::new(
             [Value::from(rtd.clone())],
             FuncPtr::Bridge(default_protocol),
-            1,
-            false,
         )
     };
 
@@ -1256,8 +1252,6 @@ pub fn record_constructor(
         Procedure::new(
             [Value::from(rtds), Value::null()],
             FuncPtr::Bridge(chain_constructors),
-            0,
-            true,
         ),
         Args::pack([]),
     ))
@@ -1302,7 +1296,6 @@ fn chain_constructors(
     let remaining_rtds = rtds.split_off(1);
     let curr_rtd: RecordTypeDescriptor = rtds[0].clone().try_into()?;
     let rtds_remain = !remaining_rtds.is_empty();
-    let num_args = curr_rtd.fields.len();
     let collected = append_list(&collected, args)?;
     let next_proc = Procedure::new(
         [
@@ -1318,8 +1311,6 @@ fn chain_constructors(
         } else {
             FuncPtr::Bridge(constructor)
         },
-        num_args,
-        false,
     );
     Ok(barrier.call_cont(Args::pack([Value::from(next_proc)])))
 }
@@ -1410,13 +1401,9 @@ fn default_protocol(
     ctor: Value,
     barrier: &mut ContBarrier,
 ) -> Result<Application, Exception> {
-    let num_args = rtd.num_fields();
-
     let constructor = Procedure::new(
         [ctor, Value::from(rtd)],
         FuncPtr::Bridge(default_protocol_constructor),
-        num_args,
-        false,
     );
 
     Ok(barrier.call_cont(Args::pack([Value::from(constructor)])))
@@ -1460,12 +1447,7 @@ fn record_predicate_fn(
 #[bridge(name = "record-predicate", lib = "(rnrs records procedural (6))")]
 pub fn record_predicate(rtd: Value) -> Procedure {
     // TODO: Check if RTD is a record type.
-    Procedure::new(
-        [rtd.clone()],
-        FuncPtr::Bridge(record_predicate_fn),
-        1,
-        false,
-    )
+    Procedure::new([rtd.clone()], FuncPtr::Bridge(record_predicate_fn))
 }
 
 #[bridge]
@@ -1517,8 +1499,6 @@ pub fn record_accessor(rtd: RecordTypeDescriptor, idx: usize) -> Result<Procedur
     Ok(Procedure::new(
         [Value::from(rtd), Value::from(idx)],
         FuncPtr::Bridge(record_accessor_fn),
-        1,
-        false,
     ))
 }
 
@@ -1539,8 +1519,6 @@ pub fn record_accessor_absolute(
                     Value::from(idx - parent.num_inherited_fields),
                 ],
                 FuncPtr::Bridge(record_accessor_fn),
-                1,
-                false,
             ));
         }
     }
@@ -1556,8 +1534,6 @@ pub fn record_accessor_absolute(
     Ok(Procedure::new(
         [Value::from(rtd), Value::from(idx)],
         FuncPtr::Bridge(record_accessor_fn),
-        1,
-        false,
     ))
 }
 
@@ -1608,8 +1584,6 @@ pub fn record_mutator(rtd: RecordTypeDescriptor, idx: usize) -> Result<Procedure
     Ok(Procedure::new(
         [Value::from(rtd), Value::from(idx)],
         FuncPtr::Bridge(record_mutator_fn),
-        2,
-        false,
     ))
 }
 
@@ -1636,8 +1610,6 @@ pub fn record_mutator_absolute(
                     Value::from(idx - parent.num_inherited_fields),
                 ],
                 FuncPtr::Bridge(record_mutator_fn),
-                2,
-                false,
             ));
         }
     }
@@ -1658,8 +1630,6 @@ pub fn record_mutator_absolute(
     Ok(Procedure::new(
         [Value::from(rtd), Value::from(idx)],
         FuncPtr::Bridge(record_mutator_fn),
-        2,
-        false,
     ))
 }
 

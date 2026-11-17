@@ -742,8 +742,6 @@ unsafe extern "C" fn make_user(
     fn_ptr: NonNull<u8>,
     env: *const *const (),
     num_envs: u32,
-    num_required_args: u32,
-    variadic: bool,
     debug_info: *const ProcDebugInfo,
 ) -> *const () {
     unsafe {
@@ -751,8 +749,6 @@ unsafe extern "C" fn make_user(
         let proc = Procedure(ProcedureInner::new_rooted(
             (0..num_envs).map(|i| Value::from_raw_inc_rc(env.add(i as usize).read())),
             FuncPtr::User(UserPtr(fn_ptr)),
-            num_required_args as usize,
-            variadic,
             false,
             debug_info.as_ref(),
         ));
