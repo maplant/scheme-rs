@@ -38,7 +38,7 @@ use std::{
     mem::{ManuallyDrop, MaybeUninit},
     path::Path,
     ptr::NonNull,
-    sync::{Arc, LazyLock},
+    sync::LazyLock,
 };
 
 /// Scheme-rs core runtime
@@ -286,18 +286,6 @@ impl RuntimeInner {
     }
 }
 
-#[derive(Trace, Clone, Debug, Default)]
-pub(crate) struct DebugInfo {
-    /// Stored user function debug information:
-    stored_func_info: Vec<Arc<ProcDebugInfo>>,
-}
-
-impl DebugInfo {
-    pub fn store_func_info(&mut self, debug_info: Arc<ProcDebugInfo>) {
-        self.stored_func_info.push(debug_info);
-    }
-}
-
 #[cfg(not(feature = "async"))]
 type CompletionTx = std::sync::mpsc::SyncSender<ReturnAddress>;
 #[cfg(not(feature = "async"))]
@@ -391,18 +379,13 @@ fn compilation_task(mut module: JITModule, mut compilation_queue_rx: Compilation
 
     let runtime_funcs = runtime_funcs_builder.build().unwrap();
 
-    // By storing all of the debug information in the same lifetime as the
-    // Context, we can directly put pointers referencing the debug information
-    // in our JIT compiled functions:
-    let mut debug_info = DebugInfo::default();
-
     while let Some(task) = recv_compilation_task(&mut compilation_queue_rx) {
         let CompilationTask {
             completion_tx,
             compilation_unit,
         } = task;
 
-        let proc = compilation_unit.compile(&runtime_funcs, &mut module, &mut debug_info);
+        let proc = compilation_unit.compile(&runtime_funcs, &mut module);
 
         let _ = completion_tx.send(proc);
     }
@@ -435,16 +418,6 @@ impl RuntimeFn {
 }
 
 inventory::collect!(RuntimeFn);
-
-unsafe fn arc_from_ptr<T>(ptr: *const T) -> Option<Arc<T>> {
-    unsafe {
-        if ptr.is_null() {
-            return None;
-        }
-        Arc::increment_strong_count(ptr);
-        Some(Arc::from_raw(ptr))
-    }
-}
 
 /// Allocate a new Gc with a value of undefined
 #[runtime_fn]
@@ -796,7 +769,7 @@ unsafe extern "C" fn make_user(
             FuncPtr::User(UserPtr(fn_ptr)),
             num_required_args as usize,
             variadic,
-            arc_from_ptr(debug_info),
+            debug_info.as_ref(),
         )));
 
         Value::into_raw(Value::from(proc))

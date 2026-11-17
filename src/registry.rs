@@ -16,7 +16,7 @@ use crate::{
 
 use std::{
     path::{Path, PathBuf},
-    sync::{Arc, LazyLock, OnceLock},
+    sync::{LazyLock, OnceLock},
 };
 
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
@@ -178,10 +178,7 @@ impl RegistryInner {
         let mut new_libs = HashMap::<Vec<Symbol>, Lib>::default();
 
         for bridge_fn in bridges {
-            let debug_info = Arc::new(ProcDebugInfo::from_bridge_fn(
-                bridge_fn.name,
-                bridge_fn.debug_info,
-            ));
+            let debug_info = ProcDebugInfo::from_bridge_fn(bridge_fn.name, bridge_fn.debug_info);
             let lib_name = LibraryName::from_str(bridge_fn.lib_name, None)?;
             let lib = new_libs.entry(lib_name.name).or_insert_with(|| Lib {
                 version: lib_name.version,

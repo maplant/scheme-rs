@@ -10,7 +10,7 @@ use cranelift::{
 use cranelift_jit::JITModule;
 use cranelift_module::{FuncId, Linkage, Module};
 use indexmap::IndexMap;
-use std::{mem::MaybeUninit, ptr::NonNull, sync::Arc};
+use std::{mem::MaybeUninit, ptr::NonNull};
 
 use crate::{
     cps::{
@@ -18,7 +18,7 @@ use crate::{
         analysis::{Escaping, FreeVariables, Liveness, closed_lambdas},
     },
     proc::{Application, ContBarrier, FuncPtr, ProcDebugInfo, Procedure, ReturnAddress, UserPtr},
-    runtime::{DebugInfo, Runtime},
+    runtime::Runtime,
     value::{
         FALSE_VALUE, FIXNUM_MAX, FIXNUM_MIN, NULL_VALUE, TAG, TRUE_VALUE, Tag, UNDEFINED_VALUE,
         Value as SchemeValue,
@@ -272,7 +272,6 @@ impl Cps {
         self,
         runtime_funcs: &RuntimeFunctions,
         module: &mut JITModule,
-        debug_info: &mut DebugInfo,
     ) -> ReturnAddress {
         if std::env::var("SCHEME_RS_DEBUG").is_ok() {
             eprintln!(
@@ -305,11 +304,11 @@ impl Cps {
                     binding.args.num_required(),
                     binding.args.variadic,
                     binding.span.as_ref().map(|span| {
-                        Arc::new(ProcDebugInfo::new(
+                        ProcDebugInfo::new(
                             binding.val.name,
                             binding.args.args.clone(),
                             span.clone(),
-                        ))
+                        )
                     }),
                 );
                 let sig = sig(&binding.args);
@@ -366,7 +365,6 @@ impl Cps {
             &mut funcs,
             &mut continuations,
             module,
-            debug_info,
         );
 
         let mut deferred_procs = Vec::new();
@@ -397,7 +395,6 @@ impl Cps {
                 &mut funcs,
                 &mut continuations,
                 module,
-                debug_info,
                 &mut deferred_procs,
             );
         }
@@ -434,7 +431,6 @@ struct CompilationUnit<'m, 'a> {
     funcs: &'a mut HashMap<Local, Function>,
     continuations: &'a mut HashSet<Local>,
     module: &'a mut JITModule,
-    debug_info: &'a mut DebugInfo,
 }
 
 impl<'m, 'a> CompilationUnit<'m, 'a> {
@@ -451,17 +447,7 @@ impl<'m, 'a> CompilationUnit<'m, 'a> {
         funcs: &'a mut HashMap<Local, Function>,
         continuations: &'a mut HashSet<Local>,
         module: &'a mut JITModule,
-        debug_info: &'a mut DebugInfo,
     ) -> Self {
-        /*
-        for (local, func) in funcs.iter() {
-            if let Some(proc) = &func.closed {
-                let raw = SchemeValue::as_raw(&SchemeValue::from(proc.clone()));
-                let val = builder.ins().iconst(types::I64, raw as i64);
-                live.bind(*local, IrValue::Ref(val));
-            }
-        }
-        */
         Self {
             builder,
             live,
@@ -476,7 +462,6 @@ impl<'m, 'a> CompilationUnit<'m, 'a> {
             funcs,
             continuations,
             module,
-            debug_info,
         }
     }
 }
@@ -1871,13 +1856,9 @@ impl CompilationUnit<'_, '_> {
         if bundle.args.continuation.is_some() {
             let mut args = vec![func_ptr, env_addr, env_len, num_required, is_variadic];
             args.push(if let Some(ref loc) = bundle.loc {
-                let debug_info = Arc::new(ProcDebugInfo::new(
-                    bundle.val.name,
-                    bundle.args.args.clone(),
-                    loc.clone(),
-                ));
-                let debug_info_ptr = Arc::as_ptr(&debug_info);
-                self.debug_info.store_func_info(debug_info);
+                let debug_info =
+                    ProcDebugInfo::new(bundle.val.name, bundle.args.args.clone(), loc.clone());
+                let debug_info_ptr = debug_info as *const ProcDebugInfo;
                 self.builder.ins().iconst(types::I64, debug_info_ptr as i64)
             } else {
                 self.builder.ins().iconst(types::I64, 0)
@@ -2042,7 +2023,6 @@ impl ProcedureBundle {
         funcs: &mut HashMap<Local, Function>,
         continuations: &mut HashSet<Local>,
         module: &mut JITModule,
-        debug_info: &mut DebugInfo,
         deferred_procs: &mut Vec<Self>,
     ) {
         let mut builder_context = FunctionBuilderContext::new();
@@ -2395,7 +2375,6 @@ impl ProcedureBundle {
             funcs,
             continuations,
             module,
-            debug_info,
         );
 
         let mut deferred_local_conts = Vec::new();

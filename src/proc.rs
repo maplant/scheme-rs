@@ -101,7 +101,7 @@ use std::{
     ops::DerefMut,
     ptr::NonNull,
     sync::{
-        Arc, LazyLock,
+        LazyLock,
         atomic::{AtomicUsize, Ordering},
     },
 };
@@ -373,7 +373,8 @@ pub(crate) struct ProcedureInner {
     pub(crate) is_variable_transformer: bool,
     /// Debug information for this function. Only applicable if the function is
     /// a user function, i.e. not a continuation.
-    pub(crate) debug_info: Option<Arc<ProcDebugInfo>>,
+    #[trace(skip)]
+    pub(crate) debug_info: Option<&'static ProcDebugInfo>,
 }
 
 impl ProcedureInner {
@@ -382,7 +383,7 @@ impl ProcedureInner {
         func: FuncPtr,
         num_required_args: usize,
         variadic: bool,
-        debug_info: Option<Arc<ProcDebugInfo>>,
+        debug_info: Option<&'static ProcDebugInfo>,
     ) -> Self {
         Self {
             env,
@@ -500,7 +501,7 @@ impl Procedure {
         func: FuncPtr,
         num_required_args: usize,
         variadic: bool,
-        debug_info: Option<Arc<ProcDebugInfo>>,
+        debug_info: Option<&'static ProcDebugInfo>,
     ) -> Self {
         Self(Gc::new(ProcedureInner::new(
             env,
@@ -523,7 +524,7 @@ impl Procedure {
     }
 
     /// Return the debug information associated with procedure, if it exists.
-    pub fn get_debug_info(&self) -> Option<Arc<ProcDebugInfo>> {
+    pub fn get_debug_info(&self) -> Option<&'static ProcDebugInfo> {
         self.0.debug_info.clone()
     }
 
@@ -1020,17 +1021,17 @@ pub struct ProcDebugInfo {
 }
 
 impl ProcDebugInfo {
-    pub fn new(name: Option<Symbol>, args: Vec<Local>, location: Span) -> Self {
-        Self {
+    pub fn new(name: Option<Symbol>, args: Vec<Local>, location: Span) -> &'static Self {
+        Box::leak(Box::new(Self {
             name: name.unwrap_or_else(|| Symbol::intern("<lambda>")),
             args,
             location,
             docs: None,
-        }
+        }))
     }
 
-    pub fn from_bridge_fn(name: &'static str, debug_info: BridgeFnDebugInfo) -> Self {
-        Self {
+    pub fn from_bridge_fn(name: &'static str, debug_info: BridgeFnDebugInfo) -> &'static Self {
+        Box::leak(Box::new(Self {
             name: Symbol::intern(name),
             args: debug_info
                 .args
@@ -1044,7 +1045,7 @@ impl ProcDebugInfo {
                 file: std::sync::Arc::from(debug_info.file.to_string()),
             },
             docs: (!debug_info.docs.is_empty()).then(|| debug_info.docs.to_string()),
-        }
+        }))
     }
 }
 
