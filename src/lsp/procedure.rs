@@ -9,7 +9,7 @@ pub(super) struct ProcedureInfo {
 pub(super) fn procedure_info(fallback_name: String, procedure: &Procedure) -> ProcedureInfo {
     let (name, args, docs, required, variadic): (String, Vec<String>, Option<String>, usize, bool) =
         procedure.get_debug_info().map_or_else(
-            || (fallback_name, vec![format!("unknown")], None, 0, true),
+            || (fallback_name, vec!["unknown".to_string()], None, 0, true),
             |debug_info| {
                 (
                     debug_info.name.to_string(),
