@@ -154,7 +154,7 @@ impl Bump {
 /// blocks it bumps into. It is `Send`, so it can follow a task between
 /// threads.
 pub struct Mutator<'h, H: ObjectHeader, A: Allocator = Global> {
-    heap: &'h Heap<H, A>,
+    pub(crate) heap: &'h Heap<H, A>,
     bump: Bump,
 }
 

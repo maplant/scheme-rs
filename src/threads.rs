@@ -1,17 +1,22 @@
 //! Threading primitives
 
 use std::{
+    sync::{
+        OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
     thread::{self, ThreadId},
     time::Duration,
 };
 
 use parking_lot::Mutex;
-use scheme_rs_gc::without_gc_watching;
+use scheme_rs_gc::{HeapSlot, without_gc_watching};
 use scheme_rs_macros::bridge;
 
 use crate::{
     exceptions::Exception,
-    gc::{Gc, Trace},
+    gc::Trace,
+    lists::{List, list_to_vec},
     proc::{Application, Args, ContBarrier, Procedure},
     records::{Embeddable, Embedded},
     value::Value,
@@ -21,29 +26,42 @@ use crate::{
 #[scheme(name = "%join-handle", sealed = true, opaque = true)]
 pub struct JoinHandle {
     #[trace(skip)]
-    id: ThreadId,
-    result: Gc<Mutex<Result<Vec<Value>, Exception>>>,
+    id: OnceLock<ThreadId>,
+    #[trace(skip)]
+    thread: Mutex<Option<thread::JoinHandle<()>>>,
+    result: HeapSlot<Value>,
+    #[trace(skip)]
+    failed: AtomicBool,
 }
 
 #[bridge(name = "spawn", lib = "(threads (1))")]
-pub fn spawn(thunk: Procedure) -> JoinHandle {
-    let cell = Gc::new(Mutex::new(Ok(Vec::new())));
-    let cell_cloned = cell.clone();
-    let join_handle = thread::spawn(move || {
-        let mut cell_write = cell_cloned.lock();
-
+pub fn spawn(thunk: Procedure) -> Embedded<JoinHandle> {
+    let handle = Embedded::new(JoinHandle {
+        id: OnceLock::new(),
+        thread: Mutex::new(None),
+        result: HeapSlot::new(Value::undefined()),
+        failed: AtomicBool::new(false),
+    });
+    let h = handle.clone();
+    let t = thread::spawn(move || {
+        let _ = h.id.set(thread::current().id());
         #[cfg(not(feature = "async"))]
-        {
-            *cell_write = thunk.call(&[], &mut ContBarrier::new());
-        }
+        let v = thunk.call(&[], &mut ContBarrier::new());
 
         #[cfg(feature = "async")]
-        {
-            *cell_write = thunk.call_sync(&[], &mut ContBarrier::new());
+        let v = thunk.call_sync(&[], &mut ContBarrier::new());
+
+        match v {
+            Ok(vals) => h.result.set(Value::from(List::from_iter(vals))),
+            Err(e) => {
+                h.result.set(e.0);
+                h.failed.store(true, Ordering::Release);
+            }
         }
     });
-    let id = join_handle.thread().id();
-    JoinHandle { id, result: cell }
+
+    *handle.thread.lock() = Some(t);
+    handle
 }
 
 #[bridge(name = "join", lib = "(threads (1))")]
@@ -51,16 +69,17 @@ pub fn join(
     handle: Embedded<JoinHandle>,
     barrier: &mut ContBarrier,
 ) -> Result<Application, Exception> {
-    let curr_id = thread::current().id();
-    if curr_id == handle.id {
-        Err(Exception::error(format!(
-            "thread {curr_id:?} attempted to join itself"
-        )))
-    } else {
-        Ok(barrier.call_cont(Args::pack(
-            without_gc_watching(|| handle.result.lock()).clone()?,
-        )))
+    let thread = handle.thread.lock().take();
+    if let Some(t) = thread {
+        without_gc_watching(|| t.join()).expect("spawned thread panicked");
     }
+    let v = handle.result.get();
+    if handle.failed.load(Ordering::Acquire) {
+        return Err(Exception(v));
+    }
+    let mut vals = Vec::new();
+    list_to_vec(&v, &mut vals);
+    Ok(barrier.call_cont(Args::pack(vals)))
 }
 
 #[bridge(name = "sleep", lib = "(threads (1))")]

@@ -1,5 +1,7 @@
 //! Immix line/block heap: the first step toward an LXR collector for scheme-rs.
 
+#[cfg(not(loom))]
+mod array;
 mod bitmap;
 mod collector;
 mod cycle_collector;
@@ -14,6 +16,7 @@ mod mutator;
 mod reclaimer;
 mod region;
 mod safepoint;
+#[cfg(not(loom))]
 mod slot;
 mod sync;
 #[cfg(not(loom))]
@@ -30,9 +33,10 @@ pub use heap_object::{HEADER_SIZE, Header, HeapObject, VTable};
 #[cfg(not(loom))]
 pub use trace::{GcOrTrace, Trace};
 
+#[cfg(not(loom))]
 pub use slot::{HeapSlot, SlotValue};
 
-#[cfg(feature = "barrier_count")]
+#[cfg(all(feature = "barrier_count", not(loom)))]
 pub use slot::barrier_count;
 
 pub use heap::{Heap, HeapStats, ObjectHeader};
@@ -55,3 +59,6 @@ pub(crate) use lxr_collector::LxrCollector;
 
 #[cfg(not(loom))]
 pub use safepoint::safepoint_flag;
+
+#[cfg(not(loom))]
+pub use array::HeapArray;

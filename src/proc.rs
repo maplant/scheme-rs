@@ -81,7 +81,7 @@ use crate::{
     cps::PrimOp,
     env::Local,
     exceptions::{Exception, raise},
-    gc::{Gc, HeapValue, Trace},
+    gc::{Gc, HeapValue, Trace, heap_array, heap_array_with_len},
     lists::{Pair, list_len, list_to_vec},
     ports::{BufferMode, Port, Transcoder},
     records::{Embeddable, Embedded},
@@ -92,12 +92,13 @@ use crate::{
     syntax::Span,
     value::Value,
 };
-use scheme_rs_gc::{park_self, should_park};
+use scheme_rs_gc::{HeapArray, park_self, should_park};
 use scheme_rs_macros::{bridge, maybe_async, maybe_await};
 use std::{
     any::Any,
     collections::HashMap,
     fmt,
+    iter::once,
     mem::{self, MaybeUninit},
     ops::DerefMut,
     ptr::NonNull,
@@ -362,7 +363,7 @@ impl From<AsyncBridgePtr> for FuncPtr {
 #[repr(align(16))]
 pub(crate) struct ProcedureInner {
     /// Environmental variables used by the procedure.
-    pub(crate) env: Box<[HeapValue]>, // Temporary, until we get the HeapArray
+    pub(crate) env: HeapArray<HeapValue>,
     /// Fuction pointer to the body of the procecure.
     #[trace(skip)]
     pub(crate) func: FuncPtr,
@@ -386,7 +387,7 @@ impl ProcedureInner {
         debug_info: Option<Arc<ProcDebugInfo>>,
     ) -> Self {
         Self {
-            env: env.into_iter().map(HeapValue::new).collect(),
+            env: heap_array(env.into_iter().map(HeapValue::new)),
             func,
             num_required_args,
             variadic,
@@ -1209,14 +1210,10 @@ impl<'a> ContBarrier<'a> {
     // will ever get very large.
 
     pub fn current_exception_handler(&self) -> Option<Procedure> {
-        self.state
-            .dyn_stack
-            .iter()
-            .rev()
-            .find_map(|elem| match elem {
-                DynStackElem::ExceptionHandler(proc) => Some(proc.clone()),
-                _ => None,
-            })
+        self.state.stack().iter().rev().find_map(|elem| match elem {
+            DynStackElem::ExceptionHandler(proc) => Some(proc.clone()),
+            _ => None,
+        })
     }
 
     pub fn current_input_port(&self) -> Port {
@@ -1232,7 +1229,7 @@ impl<'a> ContBarrier<'a> {
             )
         });
         self.state
-            .dyn_stack
+            .stack()
             .iter()
             .rev()
             .find_map(|elem| match elem {
@@ -1257,7 +1254,7 @@ impl<'a> ContBarrier<'a> {
             )
         });
         self.state
-            .dyn_stack
+            .stack()
             .iter()
             .rev()
             .find_map(|elem| match elem {
@@ -1268,23 +1265,23 @@ impl<'a> ContBarrier<'a> {
     }
 
     pub(crate) fn push_dyn_stack(&mut self, elem: DynStackElem) {
-        self.state.dyn_stack.push(elem);
+        self.state.push(elem);
     }
 
     pub(crate) fn pop_dyn_stack(&mut self) -> Option<DynStackElem> {
-        self.state.dyn_stack.pop()
+        self.state.pop()
     }
 
     pub(crate) fn dyn_stack_last(&self) -> Option<&DynStackElem> {
-        self.state.dyn_stack.last()
+        self.state.stack().last()
     }
 
     pub(crate) fn dyn_stack_len(&self) -> usize {
-        self.state.dyn_stack.len()
+        self.state.stack().len()
     }
 
     pub(crate) fn dyn_stack_is_empty(&self) -> bool {
-        self.state.dyn_stack.is_empty()
+        self.state.stack().is_empty()
     }
 
     /// Push a Rust continuation onto the current call stack.
@@ -1366,11 +1363,11 @@ pub struct CapturedContinuation {
 
 impl CapturedContinuation {
     pub(crate) fn dyn_stack_get(&self, idx: usize) -> Option<&DynStackElem> {
-        self.state.dyn_stack.get(idx)
+        self.state.stack().get(idx)
     }
 
     pub(crate) fn dyn_stack_len(&self) -> usize {
-        self.state.dyn_stack.len()
+        self.state.stack().len()
     }
 }
 
@@ -1387,21 +1384,40 @@ impl From<CapturedContinuation> for ContBarrier<'_> {
 
 #[derive(Clone, Default, Trace)]
 pub(crate) struct DynState {
-    dyn_stack: Vec<DynStackElem>,
+    dyn_stack: Option<HeapArray<DynStackElem>>,
 }
 
 impl DynState {
     /// Ports cross a spawn boundary; winders, handlers, and prompts do not.
     #[allow(dead_code)]
     fn spawn_snapshot(&self) -> DynState {
+        let kept: Vec<_> = self
+            .stack()
+            .iter()
+            .filter(|elem| elem.crosses_spawn())
+            .cloned()
+            .collect();
+
         DynState {
-            dyn_stack: self
-                .dyn_stack
-                .iter()
-                .filter(|elem| elem.crosses_spawn())
-                .cloned()
-                .collect(),
+            dyn_stack: (!kept.is_empty()).then(|| heap_array(kept)),
         }
+    }
+
+    fn stack(&self) -> &[DynStackElem] {
+        self.dyn_stack.as_deref().unwrap_or(&[])
+    }
+
+    fn push(&mut self, elem: DynStackElem) {
+        let stack = self.stack();
+        let new = heap_array_with_len(stack.len() + 1, stack.iter().cloned().chain(once(elem)));
+        self.dyn_stack = Some(new);
+    }
+
+    fn pop(&mut self) -> Option<DynStackElem> {
+        let (last, rest) = self.stack().split_last()?;
+        let last = last.clone();
+        self.dyn_stack = (!rest.is_empty()).then(|| heap_array(rest.iter().cloned()));
+        Some(last)
     }
 }
 
@@ -1646,7 +1662,7 @@ struct DelimitedContinuation {
 
 impl DelimitedContinuation {
     pub(crate) fn dyn_stack_get(&self, idx: usize) -> Option<&DynStackElem> {
-        self.state.dyn_stack.get(idx)
+        self.state.stack().get(idx)
     }
 }
 
@@ -1691,12 +1707,12 @@ fn unwind_to_prompt(env: [Value; 3], _args: Rest, barrier: &mut ContBarrier) -> 
                 let saved_barrier = saved_barrier
                     .try_to::<Embedded<CapturedContinuation>>()
                     .unwrap();
+                let saved = saved_barrier.as_ref().state.stack();
+                let rest = &saved[barrier.dyn_stack_len() + 1..];
                 let delimited = DelimitedContinuation {
                     id: saved_barrier.id,
                     state: DynState {
-                        dyn_stack: saved_barrier.as_ref().state.dyn_stack
-                            [barrier.dyn_stack_len() + 1..]
-                            .to_vec(),
+                        dyn_stack: (!rest.is_empty()).then(|| heap_array(rest.iter().cloned())),
                     },
                     delim_call_stack: saved_barrier.call_stack.delimit(&k),
                 };

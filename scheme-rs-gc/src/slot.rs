@@ -4,12 +4,11 @@ use std::{
     fmt::{self, Debug, Display, Formatter},
     mem::replace,
     ops::Deref,
-    sync::RwLock,
 };
 
 use crate::{
     HeapObject, Trace,
-    sync::{read, write},
+    sync::RwLock,
 };
 
 /// A value that can be stored in a `HeapSlot`.
@@ -35,14 +34,14 @@ pub struct HeapSlot<V: SlotValue> {
 /// Formats as the current value, so a slot prints the same as the value it holds.
 impl<V: SlotValue + Debug> Debug for HeapSlot<V> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        read(&self.value).fmt(f)
+        self.value.read().fmt(f)
     }
 }
 
 /// Displays as the current value.
 impl<V: SlotValue + Display> Display for HeapSlot<V> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        read(&self.value).fmt(f)
+        self.value.read().fmt(f)
     }
 }
 
@@ -71,39 +70,55 @@ impl<V: SlotValue> HeapSlot<V> {
     /// Takes the slot out of a published object. Logs a decrement for its
     /// value.
     pub fn retire(self) -> V {
-        let v = self.value.into_inner().unwrap_or_else(|p| p.into_inner());
+        let v = self.value.into_inner();
         log_decrement(&v);
         v
     }
 
     pub fn get(&self) -> V {
-        read(&self.value).clone()
+        self.value.read().clone()
     }
 
     pub fn read(&self) -> impl Deref<Target = V> + '_ {
-        read(&self.value)
+        self.value.read()
     }
 
     pub fn set(&self, v: V) {
         write_barrier(self);
-        *write(&self.value) = v;
+        *self.value.write() = v;
     }
 
     pub fn replace(&self, v: V) -> V {
         write_barrier(self);
-        replace(&mut *write(&self.value), v)
+        replace(&mut *self.value.write(), v)
+    }
+
+    pub fn compare_exchange(&self, desired: V, is_expected: impl FnOnce(&V) -> bool) -> V {
+        let mut lock = self.value.write();
+        if is_expected(&lock) {
+            write_barrier(self);
+            replace(&mut *lock, desired)
+        } else {
+            lock.clone()
+        }
+    }
+
+    pub fn swap(&self, new: V) -> V {
+        let mut lock = self.value.write();
+        write_barrier(self);
+        replace(&mut *lock, new)
     }
 }
 
 unsafe impl<V: SlotValue + Trace> Trace for HeapSlot<V> {
     unsafe fn visit_children(&self, visitor: &mut dyn FnMut(HeapObject)) {
         unsafe {
-            read(&self.value).visit_children(visitor);
+            self.value.read().visit_children(visitor);
         }
     }
 
     unsafe fn finalize(&mut self) {
-        let v = self.value.get_mut().unwrap_or_else(|p| p.into_inner());
+        let v = self.value.get_mut();
         unsafe { v.finalize() }
     }
 }

@@ -1,12 +1,14 @@
 #[cfg(not(loom))]
+pub(crate) use parking_lot::RwLock;
+#[cfg(not(loom))]
 pub(crate) use std::sync::{
-    Condvar, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard,
+    Condvar, Mutex, MutexGuard,
     atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
 };
 
 #[cfg(loom)]
 pub(crate) use loom::sync::{
-    Condvar, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard,
+    Condvar, Mutex, MutexGuard,
     atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
 };
 
@@ -25,12 +27,4 @@ pub(crate) fn wait_while<'a, T>(
         guard = cv.wait(guard).unwrap_or_else(|p| p.into_inner())
     }
     guard
-}
-
-pub(crate) fn read<T>(l: &RwLock<T>) -> RwLockReadGuard<'_, T> {
-    l.read().unwrap_or_else(|p| p.into_inner())
-}
-
-pub(crate) fn write<T>(l: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
-    l.write().unwrap_or_else(|p| p.into_inner())
 }

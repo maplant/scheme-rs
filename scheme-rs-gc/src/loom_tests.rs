@@ -11,18 +11,19 @@ use loom::{
 };
 
 use crate::{
-    Heap, Mutator, ObjectModel,
+    Heap, Mutator, ObjectHeader,
     region::{BLOCK_SIZE, LINE_SIZE},
     sync::lock,
 };
 
-struct Model;
+#[repr(transparent)]
+struct Model(Layout);
 
-unsafe impl ObjectModel for Model {
-    type Header = Layout;
+unsafe impl ObjectHeader for Model {
+    type HeapState = ();
 
-    fn layout(header: &Layout) -> Layout {
-        *header
+    fn layout(&self) -> Layout {
+        self.0
     }
 }
 

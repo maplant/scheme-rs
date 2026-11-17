@@ -27,8 +27,8 @@ use std::{
     sync::atomic::Ordering,
 };
 
-pub(crate) use heap::alloc_layout;
 use heap::{alloc, alloc_zeroed, collect_garbage_sync, unroot_obj};
+pub(crate) use heap::{alloc_layout, heap_array, heap_array_with_len};
 use scheme_rs_gc::{GcOrTrace, HEADER_SIZE, HeapSlot, VTable};
 use scheme_rs_macros::{maybe_async, maybe_await};
 #[cfg(feature = "tokio")]
@@ -245,22 +245,6 @@ impl<T: ?Sized + Eq> Eq for Gc<T> {}
 
 unsafe impl<T: ?Sized + Send> Send for Gc<T> {}
 unsafe impl<T: ?Sized + Sync> Sync for Gc<T> {}
-
-unsafe impl<T> arc_swap::RefCnt for Gc<T> {
-    type Base = T;
-
-    fn into_ptr(me: Self) -> *mut T {
-        Gc::into_raw(me)
-    }
-
-    fn as_ptr(me: &Self) -> *mut T {
-        Gc::as_ptr(me)
-    }
-
-    unsafe fn from_ptr(ptr: *const Self::Base) -> Self {
-        unsafe { Gc::from_raw(ptr as *mut T) }
-    }
-}
 
 fn inc_rc<T: ?Sized>(ptr: NonNull<T>) {
     unsafe {

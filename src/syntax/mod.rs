@@ -13,7 +13,7 @@ use crate::{
     symbols::Symbol,
     syntax::parse::ParseSyntaxError,
     value::{Expect1, UnpackedValue, Value},
-    vectors::TmpVecInner,
+    vectors::VecInner,
 };
 use scheme_rs_macros::{maybe_async, maybe_await};
 use std::{
@@ -149,7 +149,7 @@ impl Syntax {
             UnpackedValue::Record(rec) if let Some(syn) = rec.cast::<Syntax>() => {
                 syn.as_ref().clone()
             }
-            UnpackedValue::Record(rec) if let Some(vec) = rec.cast::<TmpVecInner>() => {
+            UnpackedValue::Record(rec) if let Some(vec) = rec.cast::<VecInner>() => {
                 Syntax::Vector {
                     vector: vec
                         .vec
@@ -201,7 +201,7 @@ impl Syntax {
                 }
             }
 
-            UnpackedValue::Record(rec) if let Some(vec) = rec.cast::<TmpVecInner>() => {
+            UnpackedValue::Record(rec) if let Some(vec) = rec.cast::<VecInner>() => {
                 Syntax::Vector {
                     vector: vec
                         .vec
@@ -238,7 +238,7 @@ impl Syntax {
                 let (car, cdr) = pair.into();
                 Value::cons(Self::syntax_to_datum(car), Self::syntax_to_datum(cdr))
             }
-            UnpackedValue::Record(rec) if let Some(vec) = rec.cast::<TmpVecInner>() => Value::from(
+            UnpackedValue::Record(rec) if let Some(vec) = rec.cast::<VecInner>() => Value::from(
                 vec.vec
                     .iter()
                     .map(HeapValue::get)

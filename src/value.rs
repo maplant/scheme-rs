@@ -96,7 +96,7 @@ use crate::{
     registry::bridge,
     symbols::Symbol,
     syntax::Syntax,
-    vectors::TmpVecInner,
+    vectors::VecInner,
 };
 use std::{
     collections::HashMap,
@@ -932,8 +932,8 @@ fn pair_eq(ht: &mut HashMap<Value, Value>, obj1: &Value, obj2: &Value, k: i64) -
 
 fn vector_eq(
     ht: &mut HashMap<Value, Value>,
-    vobj1: Embedded<TmpVecInner>,
-    vobj2: Embedded<TmpVecInner>,
+    vobj1: Embedded<VecInner>,
+    vobj2: Embedded<VecInner>,
     k: i64,
 ) -> Option<i64> {
     if vobj1.vec.len() != vobj2.vec.len() {
@@ -947,8 +947,8 @@ fn vector_eq(
 }
 
 fn record_equal(ht: &mut HashMap<Value, Value>, obj1: Record, obj2: Record, k: i64) -> Option<i64> {
-    if let Some(vobj1) = obj1.cast::<TmpVecInner>() {
-        obj2.cast::<TmpVecInner>()
+    if let Some(vobj1) = obj1.cast::<VecInner>() {
+        obj2.cast::<VecInner>()
             .and_then(|vobj2| vector_eq(ht, vobj1, vobj2, k))
     } else {
         (obj1.equal(&obj2)).then_some(k)
