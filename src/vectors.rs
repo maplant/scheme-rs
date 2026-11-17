@@ -6,7 +6,7 @@ use crate::{
     DynHasher,
     exceptions::Exception,
     fmt::Formatter,
-    gc::{HeapValue, Trace},
+    gc::{HeapValue, Trace, heap_array},
     lists::{List, heap_values_to_list, iter_list},
     records::{Embeddable, Embedded, Record, RecordTypeDescriptor},
     registry::bridge,
@@ -16,32 +16,29 @@ use indexmap::IndexSet;
 use parking_lot::{
     MappedRwLockReadGuard, MappedRwLockWriteGuard, RwLock, RwLockReadGuard, RwLockWriteGuard,
 };
+use scheme_rs_gc::HeapArray;
 use scheme_rs_macros::rtd;
 use std::{clone::Clone, fmt, hash::Hash, ops::Range};
 
+/// A vector's storage `S` and whether it is mutable.
 #[derive(Trace)]
 #[repr(align(16))]
-pub(crate) struct VectorInner<T: Trace> {
-    /// Inner vector.
-    pub(crate) vec: RwLock<Vec<T>>,
-    /// Whether or not the vector is mutable
+pub(crate) struct VectorInner<S: Trace> {
+    pub(crate) vec: S,
     pub(crate) mutable: bool,
 }
 
-/// TEMPORARY, later we will add a HeapArray, an immix allocated heap array.
-/// And convert the vector types to it.
-#[derive(Trace)]
-pub(crate) struct TmpVecInner {
-    pub(crate) vec: Box<[HeapValue]>,
-    pub(crate) mutable: bool,
-}
+pub(crate) type VecInner = VectorInner<HeapArray<HeapValue>>;
 
-unsafe impl Embeddable for TmpVecInner {
+// The bytes hold no GC references.
+pub(crate) type ByteVectorInner = VectorInner<RwLock<Vec<u8>>>;
+
+unsafe impl Embeddable for VecInner {
     fn rtd() -> RecordTypeDescriptor
     where
         Self: Sized,
     {
-        rtd!(ty: TmpVecInner, name: "vector", sealed: true, opaque: true)
+        rtd!(ty: VecInner, name: "vector", sealed: true, opaque: true)
     }
 
     fn fmt(&self, _record: &Record, fmt: &mut crate::fmt::Formatter<'_>) -> fmt::Result {
@@ -76,7 +73,7 @@ unsafe impl Embeddable for TmpVecInner {
 
 /// A vector of values
 #[derive(Clone, Trace)]
-pub struct Vector(pub(crate) Embedded<TmpVecInner>);
+pub struct Vector(pub(crate) Embedded<VecInner>);
 
 impl Vector {
     pub fn immutable(vec: Vec<Value>) -> Self {
@@ -84,8 +81,8 @@ impl Vector {
     }
 
     pub fn mutable(vec: Vec<Value>) -> Self {
-        Self(Embedded::new(TmpVecInner {
-            vec: vec.into_iter().map(HeapValue::new).collect(),
+        Self(Embedded::new(VecInner {
+            vec: heap_array(vec.into_iter().map(HeapValue::new)),
             mutable: true,
         }))
     }
@@ -119,8 +116,8 @@ impl Vector {
         self.0.vec.is_empty()
     }
 
-    pub(crate) fn from_slots(vec: Box<[HeapValue]>) -> Self {
-        Self(Embedded::new(TmpVecInner { vec, mutable: true }))
+    pub(crate) fn from_slots(vec: HeapArray<HeapValue>) -> Self {
+        Self(Embedded::new(VecInner { vec, mutable: true }))
     }
 }
 
@@ -148,8 +145,8 @@ impl TryFrom<&Value> for Vector {
 
 impl From<Vec<Value>> for Vector {
     fn from(vec: Vec<Value>) -> Self {
-        Self(Embedded::new(TmpVecInner {
-            vec: vec.into_iter().map(HeapValue::new).collect(),
+        Self(Embedded::new(VecInner {
+            vec: heap_array(vec.into_iter().map(HeapValue::new)),
             mutable: false,
         }))
     }
@@ -167,12 +164,12 @@ impl From<Vector> for Value {
     }
 }
 
-unsafe impl Embeddable for VectorInner<u8> {
+unsafe impl Embeddable for ByteVectorInner {
     fn rtd() -> RecordTypeDescriptor
     where
         Self: Sized,
     {
-        rtd!(ty: VectorInner<u8>, name: "bytevector", sealed: true, opaque: true)
+        rtd!(ty: ByteVectorInner, name: "bytevector", sealed: true, opaque: true)
     }
 
     fn fmt(&self, _record: &Record, fmt: &mut crate::fmt::Formatter<'_>) -> fmt::Result {
@@ -199,7 +196,7 @@ unsafe impl Embeddable for VectorInner<u8> {
 
 /// A vector of bytes
 #[derive(Clone, Trace)]
-pub struct ByteVector(pub(crate) Embedded<VectorInner<u8>>);
+pub struct ByteVector(pub(crate) Embedded<ByteVectorInner>);
 
 impl ByteVector {
     pub fn immutable(vec: Vec<u8>) -> Self {
@@ -207,7 +204,7 @@ impl ByteVector {
     }
 
     pub fn mutable(vec: Vec<u8>) -> Self {
-        Self(Embedded::new(VectorInner {
+        Self(Embedded::new(ByteVectorInner {
             vec: RwLock::new(vec),
             mutable: true,
         }))
@@ -259,7 +256,7 @@ impl ByteVector {
 
 impl From<Vec<u8>> for ByteVector {
     fn from(vec: Vec<u8>) -> Self {
-        Self(Embedded::new(VectorInner {
+        Self(Embedded::new(ByteVectorInner {
             vec: RwLock::new(vec),
             mutable: false,
         }))
@@ -318,7 +315,7 @@ impl From<ByteVector> for Value {
     }
 }
 
-pub(crate) fn write_vec(v: &TmpVecInner, f: &mut Formatter<'_>) -> Result<(), fmt::Error> {
+pub(crate) fn write_vec(v: &VecInner, f: &mut Formatter<'_>) -> Result<(), fmt::Error> {
     write!(f, "#(")?;
 
     for (i, value) in v.vec.iter().enumerate() {
@@ -331,7 +328,7 @@ pub(crate) fn write_vec(v: &TmpVecInner, f: &mut Formatter<'_>) -> Result<(), fm
     write!(f, ")")
 }
 
-pub(crate) fn write_bytevec(v: &VectorInner<u8>, f: &mut Formatter<'_>) -> Result<(), fmt::Error> {
+pub(crate) fn write_bytevec(v: &ByteVectorInner, f: &mut Formatter<'_>) -> Result<(), fmt::Error> {
     write!(f, "#vu8(")?;
 
     let bytes = v.vec.read();
@@ -393,8 +390,8 @@ impl Indexer for VectorIndexer {
     }
 
     fn get_range(vec: &Self::Collection, range: Range<usize>) -> Self::Collection {
-        Vector(Embedded::new(TmpVecInner {
-            vec: vec.0.vec[range].iter().cloned().collect(),
+        Vector(Embedded::new(VecInner {
+            vec: heap_array(vec.0.vec[range].iter().cloned()),
             mutable: true,
         }))
     }
@@ -424,7 +421,7 @@ pub fn vector_ref(vec: Vector, index: usize) -> Result<Value, Exception> {
         .vec
         .get(index)
         .map(HeapValue::get)
-        .ok_or(Exception::invalid_index(index, vec.0.vec.len()))
+        .ok_or_else(|| Exception::invalid_index(index, vec.0.vec.len()))
 }
 
 #[bridge(name = "vector-length", lib = "(rnrs base builtins (6))")]
@@ -525,7 +522,7 @@ pub fn vector_append(#[rest_args] args: Value) -> Result<Value, Exception> {
         let vec: Vector = arg.try_into()?;
         appended.extend(vec.0.vec.iter().cloned());
     }
-    Ok(Value::from(Vector::from_slots(appended.into_boxed_slice())))
+    Ok(Value::from(Vector::from_slots(heap_array(appended))))
 }
 
 #[bridge(name = "vector-fill!", lib = "(rnrs base builtins (6))")]
@@ -569,7 +566,7 @@ pub fn native_endianness() -> Symbol {
 
 #[bridge(name = "bytevector?", lib = "(rnrs bytevectors (6))")]
 pub fn bytevector_pred(arg: Value) -> bool {
-    arg.is_a::<Embedded<VectorInner<u8>>>()
+    arg.is_a::<Embedded<ByteVectorInner>>()
 }
 
 #[bridge(name = "make-bytevector", lib = "(rnrs bytevectors (6))")]

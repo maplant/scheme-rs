@@ -14,9 +14,9 @@ use std::{
 
 use parking_lot::Mutex;
 use scheme_rs_gc::{
-    CollectorAlreadyRunning, CollectorHandle, DefaultCollector, Header, Heap, HeapObject, Mutator,
-    VTable, collect_garbage_in, on_collector_thread, start_collector, unroot_in,
-    without_gc_watching,
+    CollectorAlreadyRunning, CollectorHandle, DefaultCollector, Header, Heap, HeapArray,
+    HeapObject, Mutator, Trace, VTable, collect_garbage_in, on_collector_thread, start_collector,
+    unroot_in, without_gc_watching,
 };
 
 const DEFAULT_HEAP_SIZE: usize = 512 * 1024 * 1024;
@@ -111,6 +111,24 @@ pub(crate) unsafe fn alloc_layout(layout: Layout) -> NonNull<u8> {
     // sweep that follows the one that found them.
     without_gc_watching(|| heap().wait_for_epochs(2));
     try_alloc().unwrap_or_else(|_| handle_alloc_error(layout))
+}
+
+pub(crate) fn heap_array<T: Trace + 'static, I>(items: I) -> HeapArray<T>
+where
+    I: IntoIterator<Item = T>,
+    I::IntoIter: ExactSizeIterator,
+{
+    let items = items.into_iter();
+    let data = unsafe { alloc_layout(HeapArray::<T>::layout(items.len())) };
+    unsafe { HeapArray::init_in(heap(), data, items) }
+}
+
+pub(crate) fn heap_array_with_len<T: Trace + 'static, I>(len: usize, items: I) -> HeapArray<T>
+where
+    I: Iterator<Item = T>,
+{
+    let data = unsafe { alloc_layout(HeapArray::<T>::layout(len)) };
+    unsafe { HeapArray::init_in_with_len(heap(), data, items, len) }
 }
 
 pub(crate) fn alloc<T>(data: T) -> NonNull<T> {
