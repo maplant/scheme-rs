@@ -17,7 +17,10 @@ use crate::{
         Value as CpsValue,
         analysis::{Escaping, FreeVariables, Liveness, closed_lambdas},
     },
-    proc::{Application, ContBarrier, FuncPtr, ProcDebugInfo, Procedure, ReturnAddress, UserPtr},
+    proc::{
+        Application, ContBarrier, FuncPtr, ProcDebugInfo, Procedure, ProcedureInner, ReturnAddress,
+        UserPtr,
+    },
     runtime::Runtime,
     value::{
         FALSE_VALUE, FIXNUM_MAX, FIXNUM_MIN, NULL_VALUE, TAG, TRUE_VALUE, Tag, UNDEFINED_VALUE,
@@ -92,7 +95,6 @@ pub(crate) struct RuntimeFunctions {
     make_user: FuncId,
     raise_wrong_num_args: FuncId,
     tail_callable: FuncId,
-    proc_env: FuncId,
     pop_env: FuncId,
     push_continuation: FuncId,
     call_continuation: FuncId,
@@ -299,7 +301,7 @@ impl Cps {
             .map(|val| {
                 let binding = &lambda_bindings[&val];
                 let proc = Procedure::with_debug_info(
-                    Vec::new(),
+                    [],
                     FuncPtr::User(UserPtr(NonNull::dangling())),
                     binding.args.num_required(),
                     binding.args.variadic,
@@ -2057,8 +2059,8 @@ impl ProcedureBundle {
         // Load environment:
         let proc_local = if is_user {
             // Load the environment from the self (proc) parameter:
-            let proc = builder.block_params(entry_block)[PROC_PARAM];
-            let proc = builder.ins().bor_imm_s(proc, Tag::Procedure as i64);
+            let proc_ptr = builder.block_params(entry_block)[PROC_PARAM];
+            let proc = builder.ins().bor_imm_s(proc_ptr, Tag::Procedure as i64);
             let proc_local = Local::gensym();
             live.bind(
                 proc_local,
@@ -2068,25 +2070,22 @@ impl ProcedureBundle {
                     IrValue::Owned(proc)
                 },
             );
-            if !self.env.is_empty() {
-                let proc_env = module.declare_func_in_func(runtime_funcs.proc_env, builder.func);
-                let call = builder.ins().call(proc_env, &[proc]);
-                let env_ptr = builder.inst_results(call)[0];
-                for (i, env_var) in self.env.iter().enumerate() {
-                    let var = builder.ins().load(
-                        types::I64,
-                        MemFlagsData::new(),
-                        env_ptr,
-                        (i * 8) as i32,
-                    );
-                    let var = if cells.contains(env_var) {
-                        // We cannot kill the cell
-                        IrValue::CellRef(var)
-                    } else {
-                        IrValue::Ref(var)
-                    };
-                    live.bind(*env_var, var);
-                }
+
+            let env_offset = ProcedureInner::env_offset();
+            for (i, env_var) in self.env.iter().enumerate() {
+                let var = builder.ins().load(
+                    types::I64,
+                    MemFlagsData::new(),
+                    proc_ptr,
+                    (env_offset + i * 8) as i32,
+                );
+                let var = if cells.contains(env_var) {
+                    // We cannot kill the cell
+                    IrValue::CellRef(var)
+                } else {
+                    IrValue::Ref(var)
+                };
+                live.bind(*env_var, var);
             }
 
             Some(proc_local)

@@ -501,18 +501,6 @@ unsafe extern "C" fn tail_callable(op: *const ()) -> Option<NonNull<u8>> {
     }
 }
 
-/// Borrow the environment pointer of a procedure value.
-#[runtime_fn]
-unsafe extern "C" fn proc_env(proc: *const ()) -> *const Value {
-    unsafe {
-        let proc = ManuallyDrop::new(Value::from_raw(proc));
-        let UnpackedValue::Procedure(proc) = &*proc.unpacked_ref() else {
-            unreachable!("proc_env called with a non-procedure");
-        };
-        proc.0.env.as_ptr()
-    }
-}
-
 /// Pop the top environment value off the call stack.
 #[runtime_fn]
 unsafe extern "C" fn pop_env(barrier: *mut ContBarrier) -> *const () {
@@ -760,17 +748,14 @@ unsafe extern "C" fn make_user(
 ) -> *const () {
     unsafe {
         // Collect the environment:
-        let env: Vec<_> = (0..num_envs)
-            .map(|i| Value::from_raw_inc_rc(env.add(i as usize).read()))
-            .collect();
-
-        let proc = Procedure(Gc::rooted(ProcedureInner::new(
-            env,
+        let proc = Procedure(ProcedureInner::new_rooted(
+            (0..num_envs).map(|i| Value::from_raw_inc_rc(env.add(i as usize).read())),
             FuncPtr::User(UserPtr(fn_ptr)),
             num_required_args as usize,
             variadic,
+            false,
             debug_info.as_ref(),
-        )));
+        ));
 
         Value::into_raw(Value::from(proc))
     }
@@ -785,7 +770,10 @@ unsafe extern "C" fn patch_env_slot(proc: *const (), slot_idx: u32, value: *cons
         let proc_gc = ManuallyDrop::new(Gc::from_raw(
             proc.map_addr(|raw| raw & !TAG) as *mut ProcedureInner
         ));
-        (&mut *Gc::as_ptr(&proc_gc)).env[slot_idx as usize] = Value::from_raw_inc_rc(value);
+        (&mut *Gc::as_ptr(&proc_gc))
+            .env_ptr_mut()
+            .add(slot_idx as usize)
+            .write(Value::from_raw_inc_rc(value));
     }
 }
 

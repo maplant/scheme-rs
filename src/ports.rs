@@ -3567,7 +3567,7 @@ fn close_port_and_call_k(env: [Value; 1], args: Rest, barrier: &mut ContBarrier)
     barrier.push_cont([args.0], call_k_with_env);
 
     Application::new(
-        Procedure::new(Vec::new(), bridge(close_port), 1, false),
+        Procedure::new([], bridge(close_port), 1, false),
         Args::pack([port]),
     )
 }

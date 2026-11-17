@@ -968,7 +968,7 @@ fn reraise_exception(_env: [Value; 0], _args: Rest, _barrier: &mut ContBarrier) 
     let exception = Value::from(NonContinuable::default());
 
     Application::new(
-        Procedure::new(Vec::new(), FuncPtr::Bridge(raise_builtin), 1, false),
+        Procedure::new([], FuncPtr::Bridge(raise_builtin), 1, false),
         Args::pack([exception]),
     )
 }

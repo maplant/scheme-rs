@@ -188,7 +188,7 @@ impl RegistryInner {
             lib.syms.insert(
                 Symbol::intern(bridge_fn.name),
                 Procedure::with_debug_info(
-                    Vec::new(),
+                    [],
                     match bridge_fn.wrapper {
                         Bridge::Sync(func) => FuncPtr::Bridge(func),
                         Bridge::Known(known) => FuncPtr::Known(known),

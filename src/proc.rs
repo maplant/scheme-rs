@@ -27,7 +27,7 @@
 //!
 //! # fn main() {
 //! let closure = Procedure::new(
-//!     vec![ Value::from(3.1415) ],
+//!     [ Value::from(3.1415) ],
 //!     closure as BridgePtr,
 //!     0,
 //!     false,
@@ -62,7 +62,7 @@
 //! # fn main() {
 //! let next_num = Procedure::new(
 //!     // Cells must be converted to values:
-//!     vec![ Cell::new(Value::from(3.1415)).into_value() ],
+//!     [ Cell::new(Value::from(3.1415)).into_value() ],
 //!     next_num as BridgePtr,
 //!     0,
 //!     false,
@@ -81,7 +81,7 @@ use crate::{
     cps::PrimOp,
     env::Local,
     exceptions::{Exception, raise},
-    gc::{Gc, Trace},
+    gc::{self, Gc, Trace},
     lists::{Pair, list_len, list_to_vec},
     ports::{BufferMode, Port, Transcoder},
     records::{Embeddable, Embedded},
@@ -92,14 +92,17 @@ use crate::{
     syntax::Span,
     value::Value,
 };
+use scheme_rs_gc::HeapObject;
 use scheme_rs_macros::{bridge, maybe_async, maybe_await};
 use std::{
+    alloc::Layout,
     any::Any,
     collections::HashMap,
     fmt,
     mem::{self, MaybeUninit},
     ops::DerefMut,
     ptr::NonNull,
+    slice,
     sync::{
         LazyLock,
         atomic::{AtomicUsize, Ordering},
@@ -357,13 +360,9 @@ impl From<AsyncBridgePtr> for FuncPtr {
     }
 }
 
-#[derive(Clone, Trace)]
-#[repr(align(16))]
+#[repr(C, align(16))]
 pub(crate) struct ProcedureInner {
-    /// Environmental variables used by the procedure.
-    pub(crate) env: Vec<Value>,
     /// Fuction pointer to the body of the procecure.
-    #[trace(skip)]
     pub(crate) func: FuncPtr,
     /// Number of required arguments to this procedure.
     pub(crate) num_required_args: usize,
@@ -373,25 +372,103 @@ pub(crate) struct ProcedureInner {
     pub(crate) is_variable_transformer: bool,
     /// Debug information for this function. Only applicable if the function is
     /// a user function, i.e. not a continuation.
-    #[trace(skip)]
     pub(crate) debug_info: Option<&'static ProcDebugInfo>,
+    /// Number of environmental variables used by the procedure.
+    pub(crate) num_envs: usize,
+    /// Pointer to the first environmental variable.
+    pub(crate) env: [Value; 0],
 }
 
 impl ProcedureInner {
-    pub(crate) fn new(
-        env: Vec<Value>,
+    /// Allocate a new rooted ProcedureInner.
+    pub(crate) fn new_rooted(
+        env: impl ExactSizeIterator<Item = Value>,
         func: FuncPtr,
         num_required_args: usize,
         variadic: bool,
+        is_variable_transformer: bool,
         debug_info: Option<&'static ProcDebugInfo>,
-    ) -> Self {
-        Self {
-            env,
-            func,
-            num_required_args,
-            variadic,
-            is_variable_transformer: false,
-            debug_info,
+    ) -> Gc<Self> {
+        let num_envs = env.len();
+
+        let (layout, env_offset) =
+            Layout::from_size_align(Self::env_offset(), mem::align_of::<Self>())
+                .unwrap()
+                .extend(Layout::array::<Value>(num_envs).unwrap())
+                .unwrap();
+
+        let layout = layout.pad_to_align();
+
+        let proc = unsafe {
+            let proc = HeapObject::alloc_layout(layout).cast::<Self>();
+
+            proc.write(Self {
+                func,
+                num_required_args,
+                variadic,
+                is_variable_transformer,
+                debug_info,
+                num_envs,
+                env: [],
+            });
+
+            let env_ptr = proc.byte_add(env_offset).cast::<Value>().as_ptr();
+
+            // Write the environment
+            let mut written = 0;
+            for (i, env) in env.enumerate().take(num_envs) {
+                env_ptr.add(i).write(env);
+                written += 1;
+            }
+
+            // Write undefineds if the iterator lied about its length and we
+            // came up short
+            while written < num_envs {
+                env_ptr.add(written).write(Value::undefined());
+                written += 1;
+            }
+
+            proc
+        };
+
+        Gc { ptr: proc }
+    }
+
+    pub(crate) fn env(&self) -> &[Value] {
+        unsafe { slice::from_raw_parts(self.env_ptr(), self.num_envs) }
+    }
+
+    pub(crate) fn env_mut(&mut self) -> &mut [Value] {
+        unsafe { slice::from_raw_parts_mut(self.env_ptr_mut(), self.num_envs) }
+    }
+
+    pub(crate) fn env_ptr(&self) -> *const Value {
+        &self.env as *const Value
+    }
+
+    pub(crate) fn env_ptr_mut(&mut self) -> *mut Value {
+        &mut self.env as *mut Value
+    }
+
+    pub(crate) const fn env_offset() -> usize {
+        mem::offset_of!(Self, env)
+    }
+}
+
+unsafe impl Trace for ProcedureInner {
+    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(HeapObject)) {
+        for env in self.env() {
+            unsafe {
+                env.visit_children(visitor);
+            }
+        }
+    }
+
+    unsafe fn finalize(&mut self) {
+        for env in self.env_mut() {
+            unsafe {
+                env.finalize();
+            }
         }
     }
 }
@@ -449,7 +526,7 @@ impl Procedure {
 
 impl fmt::Debug for ProcedureInner {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let Some(ref debug_info) = self.debug_info else {
+        let Some(debug_info) = self.debug_info else {
             write!(f, "(<lambda>")?;
             for i in 0..self.num_required_args {
                 write!(f, " ${i}")?;
@@ -488,7 +565,7 @@ impl Procedure {
     /// Creates a new procedure. `func` must be a [`BridgePtr`] or an
     /// `AsyncBridgePtr` if `async` is enabled.
     pub fn new(
-        env: Vec<Value>,
+        env: impl IntoIterator<IntoIter: ExactSizeIterator, Item = Value>,
         func: impl Into<FuncPtr>,
         num_required_args: usize,
         variadic: bool,
@@ -497,24 +574,48 @@ impl Procedure {
     }
 
     pub(crate) fn with_debug_info(
-        env: Vec<Value>,
+        env: impl IntoIterator<IntoIter: ExactSizeIterator, Item = Value>,
         func: FuncPtr,
         num_required_args: usize,
         variadic: bool,
         debug_info: Option<&'static ProcDebugInfo>,
     ) -> Self {
-        Self(Gc::new(ProcedureInner::new(
-            env,
+        let proc_inner = ProcedureInner::new_rooted(
+            env.into_iter(),
             func,
             num_required_args,
             variadic,
+            false,
             debug_info,
-        )))
+        );
+
+        unsafe {
+            gc::unroot(&proc_inner);
+        }
+
+        Self(proc_inner)
+    }
+
+    pub fn to_variable_transformer(&self) -> Self {
+        let proc_inner = ProcedureInner::new_rooted(
+            self.env().iter().cloned(),
+            self.0.func,
+            self.0.num_required_args,
+            self.0.variadic,
+            true,
+            self.0.debug_info,
+        );
+
+        unsafe {
+            gc::unroot(&proc_inner);
+        }
+
+        Self(proc_inner)
     }
 
     /// Borrow the environment slice of this procedure.
     pub fn env(&self) -> &[Value] {
-        &self.0.env
+        self.0.env()
     }
 
     /// Return the number of required arguments and whether or not this function
@@ -525,7 +626,7 @@ impl Procedure {
 
     /// Return the debug information associated with procedure, if it exists.
     pub fn get_debug_info(&self) -> Option<&'static ProcDebugInfo> {
-        self.0.debug_info.clone()
+        self.0.debug_info
     }
 
     pub fn is_variable_transformer(&self) -> bool {
@@ -1449,7 +1550,7 @@ pub fn print_trace(barrier: &mut ContBarrier) {
 )]
 pub fn call_with_current_continuation(proc: Procedure, barrier: &mut ContBarrier) -> Application {
     let escape_proc = Procedure::new(
-        vec![Value::from(barrier.save())],
+        [Value::from(barrier.save())],
         FuncPtr::Bridge(escape_proc),
         0,
         true,
@@ -1695,7 +1796,7 @@ fn unwind_to_prompt(env: [Value; 3], _args: Rest, barrier: &mut ContBarrier) -> 
                     delim_call_stack: saved_barrier.call_stack.delimit(&k),
                 };
                 let delimited_escape_proc = Procedure::new(
-                    vec![Value::from(delimited)],
+                    [Value::from(delimited)],
                     FuncPtr::Bridge(delimited_continuation),
                     0,
                     true,

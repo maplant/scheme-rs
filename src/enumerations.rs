@@ -102,7 +102,7 @@ pub fn enum_set_constructor(
     let set = enum_set;
     let universe = Value::from(set.enum_type.clone());
     let constructor = Procedure::new(
-        vec![universe],
+        [universe],
         FuncPtr::Bridge(enum_set_constructor_fn),
         1,
         false,

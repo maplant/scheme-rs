@@ -530,7 +530,7 @@ impl PrimOp {
             .map(|val| val.to_const())
             .collect::<Option<Vec<_>>>()?;
 
-        let proc = Procedure::new(Vec::new(), func_ptr, 0, true);
+        let proc = Procedure::new([], func_ptr, 0, true);
 
         #[cfg(not(feature = "async"))]
         let result = proc.call(&args, &mut ContBarrier::new());
