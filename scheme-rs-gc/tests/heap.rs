@@ -123,7 +123,7 @@ fn a_fully_freed_block_is_reused_before_a_fresh_one() {
 }
 
 #[test]
-#[should_panic(expected = "pointer is not in this heap")]
+#[should_panic(expected = "Pointer is not in this heap")]
 fn freeing_a_pointer_from_another_heap_panics() {
     let a = test_heap();
     let b = test_heap();

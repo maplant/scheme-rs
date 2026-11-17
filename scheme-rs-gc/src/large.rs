@@ -2,7 +2,9 @@
 
 use core::ptr::NonNull;
 use std::collections::BTreeMap;
+use std::slice;
 
+use crate::bitmap::last_set_at_or_before;
 use crate::region::BLOCK_SIZE;
 use crate::sync::{AtomicU64, Mutex, Ordering, lock};
 
@@ -57,15 +59,12 @@ impl LargeSpace {
         space
     }
 
-    pub(crate) fn page_addr_for_index(&self, page: usize) -> NonNull<u8> {
-        unsafe { self.first_page.add(page * PAGE) }
+    pub(crate) fn page_addr_for_index(&self, page: usize) -> usize {
+        unsafe { self.first_page.add(page * PAGE).as_ptr().addr() }
     }
 
-    pub(crate) fn page_of(&self, obj_addr: NonNull<u8>) -> Option<usize> {
-        let offset = obj_addr
-            .addr()
-            .get()
-            .wrapping_sub(self.first_page.addr().get());
+    pub(crate) fn page_of(&self, obj_addr: usize) -> Option<usize> {
+        let offset = obj_addr.wrapping_sub(self.first_page.addr().get());
         (offset < self.n_pages * PAGE).then_some(offset / PAGE)
     }
 
@@ -132,17 +131,14 @@ impl LargeSpace {
         self.bitmap_word_for(page).load(Ordering::Relaxed) & (1 << (page % 64)) != 0
     }
 
-    pub(crate) fn object_at_or_prior_to(&self, addr: NonNull<u8>) -> Option<NonNull<u8>> {
-        let page = self.page_of(addr)?;
-        let mut mask = u64::MAX >> (63 - page % 64);
-        for word in (0..=page / 64).rev() {
-            let bits = self.bitmap_word_for(word * 64).load(Ordering::Relaxed) & mask;
-            if bits != 0 {
-                return Some(self.object_at(word * 64 + 63 - bits.leading_zeros() as usize));
-            }
-            mask = u64::MAX;
-        }
-        None
+    fn bitmap(&self) -> &[AtomicU64] {
+        unsafe { slice::from_raw_parts(self.bitmap.as_ptr(), self.n_pages.div_ceil(64)) }
+    }
+
+    pub(crate) fn object_at_or_before(&self, addr: usize) -> Option<NonNull<u8>> {
+        let page_addr = self.page_of(addr)?;
+        let page = last_set_at_or_before(self.bitmap(), page_addr)?;
+        Some(self.object_at(page))
     }
 
     pub(crate) fn object_at(&self, page: usize) -> NonNull<u8> {
@@ -245,28 +241,28 @@ mod tests {
         space.mark_occupied(2);
         space.mark_occupied(5);
         assert_eq!(
-            space.object_at_or_prior_to(space.page_addr_for_index(2)),
-            Some(space.page_addr_for_index(2))
+            space.object_at_or_before(space.page_addr_for_index(2)),
+            NonNull::new(space.page_addr_for_index(2) as *mut u8)
         );
         assert_eq!(
-            space.object_at_or_prior_to(unsafe { space.page_addr_for_index(4).byte_add(100) }),
-            Some(space.page_addr_for_index(2))
+            space.object_at_or_before(space.page_addr_for_index(4) + 100),
+            NonNull::new(space.page_addr_for_index(2) as *mut u8)
         );
         assert_eq!(
-            space.object_at_or_prior_to(space.page_addr_for_index(5)),
-            Some(space.page_addr_for_index(5))
+            space.object_at_or_before(space.page_addr_for_index(5)),
+            NonNull::new(space.page_addr_for_index(5) as *mut u8)
         );
         assert_eq!(
-            space.object_at_or_prior_to(space.page_addr_for_index(1)),
+            space.object_at_or_before(space.page_addr_for_index(1)),
             None
         );
         space.mark_unoccupied(2);
         assert_eq!(
-            space.object_at_or_prior_to(space.page_addr_for_index(2)),
+            space.object_at_or_before(space.page_addr_for_index(2)),
             None
         );
         assert_eq!(
-            space.object_at_or_prior_to(space.page_addr_for_index(8)),
+            space.object_at_or_before(space.page_addr_for_index(8)),
             None
         );
     }
