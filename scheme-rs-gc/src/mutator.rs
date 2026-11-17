@@ -3,7 +3,8 @@ use core::{alloc::Layout, mem::take, ptr::NonNull};
 use allocator_api2::alloc::{AllocError, Allocator, Global};
 
 use crate::{
-    Heap, ObjectModel,
+    Heap,
+    heap::ObjectHeader,
     region::{ALL_LINES, GRANULE, LINE_SIZE, OwnedBlock, Region, is_large, take_hole},
     sync::Ordering,
 };
@@ -70,9 +71,9 @@ pub(crate) struct Bump {
 }
 
 impl Bump {
-    pub(crate) fn alloc<M: ObjectModel, A: Allocator>(
+    pub(crate) fn alloc<H: ObjectHeader, A: Allocator>(
         &mut self,
-        heap: &Heap<M, A>,
+        heap: &Heap<H, A>,
         layout: Layout,
     ) -> Result<NonNull<u8>, AllocError> {
         if is_large(layout) {
@@ -86,9 +87,9 @@ impl Bump {
         Ok(obj)
     }
 
-    fn alloc_small<M: ObjectModel, A: Allocator>(
+    fn alloc_small<H: ObjectHeader, A: Allocator>(
         &mut self,
-        heap: &Heap<M, A>,
+        heap: &Heap<H, A>,
         layout: Layout,
     ) -> Result<NonNull<u8>, AllocError> {
         loop {
@@ -110,9 +111,9 @@ impl Bump {
 
     /// Medium objects that do not fit the open hole go to a clean block, so
     /// the primary block's remaining holes are kept for small objects.
-    fn alloc_overflow<M: ObjectModel, A: Allocator>(
+    fn alloc_overflow<H: ObjectHeader, A: Allocator>(
         &mut self,
-        heap: &Heap<M, A>,
+        heap: &Heap<H, A>,
         layout: Layout,
     ) -> Result<NonNull<u8>, AllocError> {
         let obj = match self.overflow.bump(&heap.region, layout) {
@@ -131,7 +132,7 @@ impl Bump {
         Ok(obj)
     }
 
-    fn retire<M: ObjectModel, A: Allocator>(&mut self, heap: &Heap<M, A>, block: OwnedBlock) {
+    fn retire<H: ObjectHeader, A: Allocator>(&mut self, heap: &Heap<H, A>, block: OwnedBlock) {
         heap.retire(block);
         heap.bytes_allocated
             .fetch_add(take(&mut self.bytes), Ordering::Relaxed);
@@ -139,7 +140,7 @@ impl Bump {
             .fetch_add(take(&mut self.overflow_bytes), Ordering::Relaxed);
     }
 
-    pub(crate) fn retire_all<M: ObjectModel, A: Allocator>(&mut self, heap: &Heap<M, A>) {
+    pub(crate) fn retire_all<H: ObjectHeader, A: Allocator>(&mut self, heap: &Heap<H, A>) {
         for block in [self.primary.retire(), self.overflow.retire()]
             .into_iter()
             .flatten()
@@ -152,13 +153,13 @@ impl Bump {
 /// A handle for allocating in a `Heap`. Any number may exist; each owns the
 /// blocks it bumps into. It is `Send`, so it can follow a task between
 /// threads.
-pub struct Mutator<'h, M: ObjectModel, A: Allocator = Global> {
-    heap: &'h Heap<M, A>,
+pub struct Mutator<'h, H: ObjectHeader, A: Allocator = Global> {
+    heap: &'h Heap<H, A>,
     bump: Bump,
 }
 
-impl<'h, M: ObjectModel, A: Allocator> Mutator<'h, M, A> {
-    pub(crate) fn new(heap: &'h Heap<M, A>) -> Self {
+impl<'h, H: ObjectHeader, A: Allocator> Mutator<'h, H, A> {
+    pub(crate) fn new(heap: &'h Heap<H, A>) -> Self {
         Self {
             heap,
             bump: Bump::default(),
@@ -171,7 +172,7 @@ impl<'h, M: ObjectModel, A: Allocator> Mutator<'h, M, A> {
     }
 }
 
-impl<M: ObjectModel, A: Allocator> Drop for Mutator<'_, M, A> {
+impl<H: ObjectHeader, A: Allocator> Drop for Mutator<'_, H, A> {
     fn drop(&mut self) {
         self.bump.retire_all(self.heap);
     }
