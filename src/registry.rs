@@ -36,8 +36,7 @@ use parking_lot::RwLock;
 /// Define and register a Scheme procedure in Rust.
 pub use scheme_rs_macros::define;
 
-#[deprecated(since = "0.3.0", note = "use the `define` attribute instead")]
-pub use scheme_rs_macros::define as bridge;
+pub use scheme_rs_macros::bridge;
 
 /// Define and register a Scheme syntax transformer in Rust.
 pub use scheme_rs_macros::define_syntax;

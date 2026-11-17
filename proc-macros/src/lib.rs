@@ -93,6 +93,12 @@ pub fn define(args: TokenStream, item: TokenStream) -> TokenStream {
         .into()
 }
 
+#[deprecated(since = "0.3.0", note = "use the `define` attribute instead")]
+#[proc_macro_attribute]
+pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
+    define(args, item)
+}
+
 #[proc_macro_attribute]
 pub fn define_syntax(args: TokenStream, item: TokenStream) -> TokenStream {
     let mut name: Option<LitStr> = None;
@@ -780,6 +786,11 @@ fn derive_embeddable_inner(input: DeriveInput) -> Result<proc_macro2::TokenStrea
             .iter()
             .map(|pat| match pat {
                 Pat::Ident(PatIdent { ident, .. }) => Ok(ident),
+                Pat::Type(PatType { pat, .. })
+                    if let Pat::Ident(PatIdent { ident, .. }) = pat.as_ref() =>
+                {
+                    Ok(ident)
+                }
                 _ => Err(Error::new(pat.span(), "expected ident")),
             })
             .collect::<Result<Vec<_>>>()?;
