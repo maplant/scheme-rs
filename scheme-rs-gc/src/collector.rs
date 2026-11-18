@@ -1,5 +1,3 @@
-#![cfg(not(loom))]
-
 use std::{
     cell::Cell,
     thread::{JoinHandle, spawn},

@@ -1,5 +1,3 @@
-#![cfg(not(loom))]
-
 mod common;
 
 use core::{ptr::NonNull, slice::from_raw_parts};

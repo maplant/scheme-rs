@@ -1,5 +1,3 @@
-#![cfg(not(loom))]
-
 //! An implementation of the algorithm described in the paper Concurrent
 //! Cycle Collection in Reference Counted Systems by David F. Bacon and
 //! V.T. Rajan.

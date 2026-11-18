@@ -1,5 +1,3 @@
-#![cfg(not(loom))]
-
 use core::sync::atomic::{AtomicUsize, Ordering};
 use std::{alloc::Layout, any::TypeId};
 

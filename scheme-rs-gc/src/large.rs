@@ -148,7 +148,6 @@ impl LargeSpace {
 }
 
 #[cfg(test)]
-#[cfg(not(loom))]
 mod tests {
     use crate::large::BLOCK_SIZE;
     use crate::large::LargeSpace;

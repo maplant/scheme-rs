@@ -21,9 +21,6 @@ parking_lot = "0.12.5"
 rustc-hash = "2.1"
 tokio = { version = "1.47", features = ["sync"], optional = true }
 
-[target.'cfg(loom)'.dependencies]
-loom = "0.7"
-
 [dev-dependencies]
 criterion = "0.5"
 
@@ -33,9 +30,6 @@ cc = "1"
 [[bench]]
 name = "alloc"
 harness = false
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
 
 [features]
 lxr = []

@@ -1,4 +1,3 @@
-#![cfg(not(loom))]
 mod common;
 
 use common::*;
