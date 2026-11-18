@@ -1,5 +1,3 @@
-#![cfg(not(loom))]
-
 use std::{
     hint::black_box,
     panic::{AssertUnwindSafe, catch_unwind},

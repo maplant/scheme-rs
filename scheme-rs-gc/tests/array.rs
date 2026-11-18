@@ -1,5 +1,3 @@
-#![cfg(not(loom))]
-
 mod common;
 
 use std::sync::atomic::{AtomicUsize, Ordering};

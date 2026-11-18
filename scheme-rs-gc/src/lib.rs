@@ -1,13 +1,11 @@
 //! Immix line/block heap: the first step toward an LXR collector for scheme-rs.
 
-#[cfg(not(loom))]
 mod array;
 mod bitmap;
 mod collector;
 mod cycle_collector;
 mod gc_stack;
 mod heap;
-#[cfg(not(loom))]
 mod heap_object;
 mod large;
 #[cfg(feature = "lxr")]
@@ -16,27 +14,18 @@ mod mutator;
 mod reclaimer;
 mod region;
 mod safepoint;
-#[cfg(not(loom))]
 mod slot;
 mod sync;
-#[cfg(not(loom))]
 mod trace;
 
-#[cfg(all(test, loom))]
-mod loom_tests;
-
 pub use allocator_api2::alloc::{AllocError, Allocator, Global};
-#[cfg(not(loom))]
 pub use cycle_collector::{CycleCollector, CycleHeader, CycleList, collect_garbage_in, unroot_in};
-#[cfg(not(loom))]
 pub use heap_object::{HEADER_SIZE, Header, HeapObject, VTable};
-#[cfg(not(loom))]
 pub use trace::{GcOrTrace, Trace};
 
-#[cfg(not(loom))]
 pub use slot::{HeapSlot, SlotValue};
 
-#[cfg(all(feature = "barrier_count", not(loom)))]
+#[cfg(feature = "barrier_count")]
 pub use slot::barrier_count;
 
 pub use heap::{Heap, HeapStats, ObjectHeader};
@@ -48,7 +37,6 @@ pub use safepoint::{
     without_gc_watching,
 };
 
-#[cfg(not(loom))]
 pub use collector::{
     Collector, CollectorAlreadyRunning, CollectorHandle, DefaultCollector, on_collector_thread,
     start_collector,
@@ -57,8 +45,6 @@ pub use collector::{
 #[cfg(feature = "lxr")]
 pub(crate) use lxr_collector::LxrCollector;
 
-#[cfg(not(loom))]
 pub use safepoint::safepoint_flag;
 
-#[cfg(not(loom))]
 pub use array::HeapArray;

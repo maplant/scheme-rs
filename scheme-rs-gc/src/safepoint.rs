@@ -75,7 +75,6 @@ impl ThreadState {
     }
 }
 
-#[cfg(not(loom))]
 mod rt {
     use std::{
         collections::HashMap,
@@ -95,23 +94,6 @@ mod rt {
     // For JIT
     pub fn safepoint_flag() -> *const AtomicBool {
         &STOP
-    }
-}
-
-#[cfg(loom)]
-mod rt {
-    use std::{collections::HashMap, sync::Arc};
-
-    use super::ThreadState;
-    use crate::sync::{AtomicBool, Condvar, Mutex};
-
-    pub(super) use loom::{thread, thread::ThreadId as ThreadIndex, thread_local};
-
-    loom::lazy_static! {
-        pub(super) static ref THREADS: Mutex<HashMap<ThreadIndex, Arc<ThreadState>>> =
-            Mutex::new(HashMap::new());
-        pub(super) static ref STOP: AtomicBool = AtomicBool::new(false);
-        pub(super) static ref CHANGED: Condvar = Condvar::new();
     }
 }
 
@@ -149,7 +131,6 @@ pub fn should_park() -> bool {
     STOP.load(Ordering::Relaxed)
 }
 
-#[cfg(not(loom))]
 pub use rt::safepoint_flag;
 
 // Values must be created inside this block, otherwise they are invisible to

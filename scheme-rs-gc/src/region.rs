@@ -7,7 +7,6 @@ use core::{
 
 use allocator_api2::alloc::{AllocError, Allocator};
 
-// A static, so it cannot be a loom atomic; it only numbers heaps.
 #[cfg(debug_assertions)]
 use std::sync::atomic::AtomicU32;
 
@@ -327,12 +326,6 @@ impl<A: Allocator> Region<A> {
         self.clear_object_start(id, offset / GRANULE);
     }
 
-    #[cfg(all(test, loom))]
-    pub(crate) fn line_count(&self, token: &ReclaimerToken, id: BlockId, line: usize) -> u8 {
-        self.check_token(token);
-        self.line(id, line).load(Ordering::Relaxed)
-    }
-
     /// Lines with no live objects, for the block's holder.
     pub(crate) fn free_lines(&self, block: &OwnedBlock) -> u128 {
         self.check_owner(block);
@@ -416,7 +409,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(loom))]
     fn starts_are_found_from_interior_offsets() {
         use allocator_api2::alloc::Global;
         let (region, mut blocks) = Region::new_in(Global, BLOCK_SIZE).unwrap();

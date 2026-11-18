@@ -1,13 +1,5 @@
-#[cfg(not(loom))]
 pub(crate) use parking_lot::RwLock;
-#[cfg(not(loom))]
 pub(crate) use std::sync::{
-    Condvar, Mutex, MutexGuard,
-    atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
-};
-
-#[cfg(loom)]
-pub(crate) use loom::sync::{
     Condvar, Mutex, MutexGuard,
     atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
 };
