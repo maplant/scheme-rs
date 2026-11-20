@@ -413,7 +413,7 @@ fn bridge_inner(
                 arg4: ::scheme_rs::value::Value,
                 rest: ::scheme_rs::value::Value,
                 barrier: &'a mut ::scheme_rs::proc::ContBarrier,
-            ) -> futures::future::BoxFuture<'a, scheme_rs::proc::Application> {
+            ) -> futures::future::BoxFuture<'a, ::scheme_rs::proc::Application> {
                 use ::scheme_rs::proc::IntoApplication;
 
                 #bridge
@@ -444,8 +444,7 @@ fn bridge_inner(
                 arg4: ::scheme_rs::value::Value,
                 rest: ::scheme_rs::value::Value,
                 barrier: &mut ::scheme_rs::proc::ContBarrier<'_>,
-                out: &mut ::std::mem::MaybeUninit<::scheme_rs::proc::Application>,
-            ) {
+            ) -> ::scheme_rs::proc::Application {
                 use ::scheme_rs::proc::IntoApplication;
 
                 #bridge
@@ -453,18 +452,14 @@ fn bridge_inner(
                 #[allow(unused)]
                 let env: &[::scheme_rs::value::Value] = proc.env();
 
-                let app = (move || -> ::scheme_rs::proc::Application {
-                    #[allow(unused)]
-                    const NUM_ARGS: usize = #num_args;
-                    #[allow(unused)]
-                    const NUM_REQUIRED: usize = #num_required;
-                    #[allow(unused)]
-                    #(#bindings)*
+                #[allow(unused)]
+                const NUM_ARGS: usize = #num_args;
+                #[allow(unused)]
+                const NUM_REQUIRED: usize = #num_required;
+                #[allow(unused)]
+                #(#bindings)*
 
-                    __inner__(#(#args,)*).into_application(barrier)
-                })();
-
-                out.write(app);
+                __inner__(#(#args,)*).into_application(barrier)
             }
         }
     };

@@ -132,8 +132,7 @@ pub type BridgePtr = extern "C" fn(
     arg4: Value,
     argn: Value,
     barrier: &mut ContBarrier<'_>,
-    out: &mut MaybeUninit<Application>,
-);
+) -> Application;
 
 /// A function pointer to an async Rust bridge function.
 #[cfg(feature = "async")]
@@ -479,9 +478,7 @@ fn apply_bridge(
     barrier: &mut ContBarrier,
 ) -> Application {
     let Args([arg1, arg2, arg3, arg4, argn]) = args;
-    let mut app = std::mem::MaybeUninit::<Application>::uninit();
-    (func)(proc, arg1, arg2, arg3, arg4, argn, barrier, &mut app);
-    unsafe { app.assume_init() }
+    (func)(proc, arg1, arg2, arg3, arg4, argn, barrier)
 }
 
 impl Procedure {
@@ -1167,6 +1164,15 @@ pub struct ContBarrier<'a> {
     pub(crate) call_stack: StackRecord,
     /// The active installed mutable parameters
     params: HashMap<Symbol, Param<'a>>,
+    /// The application returned from the evaluation
+    ///
+    /// # Safety:
+    ///
+    /// `out` will be uninitialized unless we have immediately returned from a
+    /// JIT function, in which case it will contain a value. All of the places
+    /// in which that occurs are on the scheme-rs side and we immediately take
+    /// the value afterwards.
+    pub(crate) out: MaybeUninit<Application>,
 }
 
 static NEXT_BARRIER_ID: AtomicUsize = AtomicUsize::new(0);
@@ -1178,12 +1184,18 @@ impl<'a> ContBarrier<'a> {
             state: DynState::default(),
             call_stack: StackRecord::alloc(None),
             params: HashMap::new(),
+            out: MaybeUninit::uninit(),
         };
 
         // The call stack always contains a top-level halt continuation:
         this.push_cont([], halt);
 
         this
+    }
+
+    #[inline]
+    pub fn apply(&mut self, app: Application) {
+        self.out.write(app);
     }
 
     pub fn save(&mut self) -> CapturedContinuation {
@@ -1449,6 +1461,7 @@ impl From<CapturedContinuation> for ContBarrier<'_> {
             state: value.state,
             call_stack: StackRecord::alloc(Some(value.call_stack)),
             params: HashMap::default(),
+            out: MaybeUninit::uninit(),
         }
     }
 }
