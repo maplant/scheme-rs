@@ -64,9 +64,7 @@ use crate::{
 };
 use by_address::ByAddress;
 use scheme_rs_macros::runtime_fn;
-use std::{
-    collections::HashMap, convert::Infallible, fmt, mem::MaybeUninit, ops::Range, sync::Arc,
-};
+use std::{collections::HashMap, convert::Infallible, fmt, ops::Range, sync::Arc};
 
 /// A macro for easily creating new condition types.
 pub use scheme_rs_macros::define_condition_type;
@@ -925,14 +923,12 @@ pub fn raise(raised: Value, barrier: &mut ContBarrier) -> Application {
 }
 
 #[runtime_fn]
-unsafe extern "C" fn raise_rt(
-    raised: *const (),
-    barrier: *mut ContBarrier,
-    out: *mut MaybeUninit<Application>,
-) {
+unsafe extern "C" fn raise_rt(raised: *const (), barrier: *mut ContBarrier) {
     unsafe {
         let raised = Value::from_raw(raised);
-        (*out).write(raise(raised, barrier.as_mut().unwrap_unchecked()));
+        let barrier = barrier.as_mut().unwrap_unchecked();
+        let app = raise(raised, barrier);
+        barrier.apply(app);
     }
 }
 

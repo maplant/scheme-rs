@@ -33,13 +33,7 @@ use crate::{
 use cranelift_jit::{ArenaMemoryProvider, JITModule};
 use parking_lot::{Mutex, MutexGuard, RwLock};
 use scheme_rs_macros::{maybe_async, maybe_await, runtime_fn};
-use std::{
-    collections::HashSet,
-    mem::{ManuallyDrop, MaybeUninit},
-    path::Path,
-    ptr::NonNull,
-    sync::LazyLock,
-};
+use std::{collections::HashSet, mem::ManuallyDrop, path::Path, ptr::NonNull, sync::LazyLock};
 
 /// Scheme-rs core runtime
 ///
@@ -183,10 +177,9 @@ impl Runtime {
         args: Args,
         barrier: &mut ContBarrier,
     ) -> Application {
-        let mut out = MaybeUninit::uninit();
         let Args([arg1, arg2, arg3, arg4, argn]) = args;
-        (self.0.jit_cont_entry_fn)(jit, arg1, arg2, arg3, arg4, argn, barrier, &mut out);
-        unsafe { out.assume_init() }
+        (self.0.jit_cont_entry_fn)(jit, arg1, arg2, arg3, arg4, argn, barrier);
+        unsafe { barrier.out.assume_init_read() }
     }
 
     pub(crate) fn enter_jit_user(
@@ -196,10 +189,9 @@ impl Runtime {
         args: Args,
         barrier: &mut ContBarrier,
     ) -> Application {
-        let mut out = MaybeUninit::uninit();
         let Args([arg1, arg2, arg3, arg4, argn]) = args;
-        (self.0.jit_user_entry_fn)(jit, proc, arg1, arg2, arg3, arg4, argn, barrier, &mut out);
-        unsafe { out.assume_init() }
+        (self.0.jit_user_entry_fn)(jit, proc, arg1, arg2, arg3, arg4, argn, barrier);
+        unsafe { barrier.out.assume_init_read() }
     }
 
     pub fn source_cache(&self) -> MutexGuard<'_, SourceCache> {
@@ -342,6 +334,9 @@ fn make_jit_module() -> JITModule {
         .set("log2_min_function_alignment", "4")
         .unwrap();
 
+    // Enable pinned registers for the continuation barrier:
+    flag_builder.set("enable_pinned_reg", "true").unwrap();
+
     // Cranelift's tail call implementation requires frame pointers:
     flag_builder.set("preserve_frame_pointers", "true").unwrap();
 
@@ -458,7 +453,6 @@ unsafe extern "C" fn apply(
     arg4: *const (),
     argn: *const (),
     barrier: *mut ContBarrier,
-    out: *mut MaybeUninit<Application>,
 ) {
     unsafe {
         let args = Args([
@@ -469,19 +463,18 @@ unsafe extern "C" fn apply(
             Value::from_raw(argn),
         ]);
 
+        let barrier = barrier.as_mut().unwrap_unchecked();
+
         let op = match Value::from_raw_inc_rc(op).unpack() {
             UnpackedValue::Procedure(op) => op,
             x => {
-                let raised = raise(
-                    Exception::invalid_operator(&x.type_name()).into(),
-                    barrier.as_mut().unwrap_unchecked(),
-                );
-                (*out).write(raised);
+                let raised = raise(Exception::invalid_operator(&x.type_name()).into(), barrier);
+                barrier.apply(raised);
                 return;
             }
         };
 
-        (*out).write(Application::new(op, args));
+        barrier.apply(Application::new(op, args));
     }
 }
 
@@ -517,7 +510,6 @@ unsafe extern "C" fn raise_wrong_num_args(
     argn: *const (),
     num_required: u32,
     barrier: *mut ContBarrier,
-    out: *mut MaybeUninit<Application>,
 ) {
     unsafe {
         let args = Args([
@@ -528,10 +520,12 @@ unsafe extern "C" fn raise_wrong_num_args(
             Value::from_raw(argn),
         ]);
         let provided = args.len();
-        (*out).write(raise(
+        let barrier = barrier.as_mut().unwrap_unchecked();
+        let app = raise(
             Exception::wrong_num_of_args(num_required as usize, provided).into(),
-            barrier.as_mut().unwrap_unchecked(),
-        ));
+            barrier,
+        );
+        barrier.apply(app);
     }
 }
 
@@ -585,10 +579,13 @@ unsafe extern "C" fn set_continuation_mark(
 
 /// Create a boxed application that simply returns its arguments
 #[runtime_fn]
-pub(crate) unsafe extern "C" fn halt(args: *const (), out: *mut MaybeUninit<Application>) {
+pub(crate) unsafe extern "C" fn halt(args: *const (), barrier: *mut ContBarrier) {
     unsafe {
         let args = ManuallyDrop::new(Value::from_raw(args));
-        (*out).write(Application::halt_ok(Args::from_list((*args).clone())));
+        barrier
+            .as_mut()
+            .unwrap_unchecked()
+            .apply(Application::halt_ok(Args::from_list((*args).clone())));
     }
 }
 
@@ -699,7 +696,7 @@ unsafe extern "C" fn push_continuation(
     barrier: *mut ContBarrier,
 ) {
     unsafe {
-        let barrier = barrier.as_mut().unwrap();
+        let barrier = barrier.as_mut().unwrap_unchecked();
         for i in 0..num_envs {
             barrier
                 .call_stack
@@ -718,15 +715,11 @@ unsafe extern "C" fn call_continuation(
     arg4: Value,
     argn: Value,
     barrier: *mut ContBarrier<'_>,
-    out: *mut MaybeUninit<Application>,
 ) {
     unsafe {
-        (*out).write(
-            barrier
-                .as_mut()
-                .unwrap()
-                .call_cont(Args([arg1, arg2, arg3, arg4, argn])),
-        );
+        let barrier = barrier.as_mut().unwrap_unchecked();
+        let app = barrier.call_cont(Args([arg1, arg2, arg3, arg4, argn]));
+        barrier.apply(app)
     }
 }
 
