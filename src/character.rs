@@ -1,4 +1,4 @@
-use crate::{Either, exceptions::Exception, lists::iter_list, registry::bridge, value::Value};
+use crate::{Either, exceptions::Exception, lists::iter_list, registry::define, value::Value};
 use unicode_categories::UnicodeCategories;
 
 mod unicode;
@@ -17,12 +17,12 @@ pub(crate) fn char_switch_case<I: Iterator<Item = char> + ExactSizeIterator>(
     }
 }
 
-#[bridge(name = "char->integer", lib = "(rnrs base builtins (6))")]
+#[define(name = "char->integer", lib = "(rnrs base builtins (6))")]
 pub fn char_to_integer(ch: char) -> u32 {
     ch.into()
 }
 
-#[bridge(name = "integer->char", lib = "(rnrs base builtins (6))")]
+#[define(name = "integer->char", lib = "(rnrs base builtins (6))")]
 pub fn integer_to_char(int: usize) -> Value {
     if let Ok(int) = <usize as TryInto<u32>>::try_into(int)
         && let Some(ch) = char::from_u32(int)
@@ -41,7 +41,7 @@ macro_rules! impl_char_operator {
         $function_name:ident,
         $cmp_function:ident)),* $(,)?
     ) => {
-        $(#[bridge(name = $bridge_name, lib = "(rnrs base builtins (6))")]
+        $(#[define(name = $bridge_name, lib = "(rnrs base builtins (6))")]
         pub fn $function_name(req_lhs: Value, req_rhs: Value, #[rest_args] opt_chars: Value) -> Result<bool, Exception> {
             let mut prev: char = req_lhs.clone().try_into()?;
             for next in [req_rhs.clone()].into_iter().chain(iter_list(&opt_chars)) {
@@ -71,7 +71,7 @@ macro_rules! impl_char_ci_operator {
         $function_name:ident,
         $cmp_function:ident)),* $(,)?
     ) => {
-        $(#[bridge(name = $bridge_name, lib = "(rnrs base builtins (6))")]
+        $(#[define(name = $bridge_name, lib = "(rnrs base builtins (6))")]
         pub fn $function_name(req_lhs: Value, req_rhs: Value, #[rest_args] opt_chars: Value) -> Result<bool, Exception> {
             let foldcase = |ch: Value| -> Result<char, Exception> {
                 let ch: char = ch.try_into()?;
@@ -101,7 +101,7 @@ impl_char_ci_operator![
 
 macro_rules! impl_char_predicate {
     ($(($bridge_name:literal, $function_name:ident, $predicate:ident)),* $(,)?) => {
-        $(#[bridge(name = $bridge_name, lib = "(rnrs base builtins (6))")]
+        $(#[define(name = $bridge_name, lib = "(rnrs base builtins (6))")]
         pub fn $function_name(ch: char) -> bool {
             ch.$predicate()
         })*
@@ -116,14 +116,14 @@ impl_char_predicate![
     ("char-lower?", char_is_lowercase, is_lowercase),
 ];
 
-#[bridge(name = "digit-value", lib = "(rnrs base builtins (6))")]
+#[define(name = "digit-value", lib = "(rnrs base builtins (6))")]
 pub fn digit_value(ch: char) -> Value {
     digit_to_num(ch).map_or_else(|| Value::from(false), Value::from)
 }
 
 macro_rules! impl_char_case_converter {
     ($(($bridge_name:literal, $function_name:ident, $converter:expr_2021)),* $(,)?) => {
-        $(#[bridge(name = $bridge_name, lib = "(rnrs base builtins (6))")]
+        $(#[define(name = $bridge_name, lib = "(rnrs base builtins (6))")]
         pub fn $function_name(ch: char) -> char {
             char_switch_case(ch, $converter).left_or(ch)
         })*
@@ -135,7 +135,7 @@ impl_char_case_converter![
     ("char-downcase", char_downcase, char::to_lowercase),
 ];
 
-#[bridge(name = "char-foldcase", lib = "(rnrs base builtins (6))")]
+#[define(name = "char-foldcase", lib = "(rnrs base builtins (6))")]
 pub fn char_foldcase(ch: char) -> char {
     char_switch_case(ch, to_foldcase).left_or(ch)
 }

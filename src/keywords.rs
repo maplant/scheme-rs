@@ -1,10 +1,15 @@
-use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex};
+use std::{
+    collections::HashMap,
+    sync::{LazyLock, Mutex},
+};
 
-use scheme_rs_macros::{Trace, bridge};
-
-use crate::records::Embedded;
-use crate::{records::Embeddable, symbols::Symbol, value::Value};
+use crate::{
+    gc::Trace,
+    records::{Embeddable, Embedded},
+    registry::define,
+    symbols::Symbol,
+    value::Value,
+};
 
 #[derive(Debug, Clone, Trace, Embeddable)]
 #[scheme(name = "keyword", sealed = true, opaque = true)]
@@ -24,17 +29,17 @@ impl Keyword {
     }
 }
 
-#[bridge(name = "keyword?", lib = "(srfi :88)")]
+#[define(name = "keyword?", lib = "(srfi :88)")]
 pub fn keyword_pred(obj: Value) -> bool {
     obj.cast::<Embedded<Keyword>>().is_some()
 }
 
-#[bridge(name = "keyword->string", lib = "(srfi :88)")]
+#[define(name = "keyword->string", lib = "(srfi :88)")]
 pub fn keyword_to_string(kw: Embedded<Keyword>) -> String {
     kw.0.to_str().to_string()
 }
 
-#[bridge(name = "string->keyword", lib = "(srfi :88)")]
+#[define(name = "string->keyword", lib = "(srfi :88)")]
 pub fn string_to_keyword(s: Embedded<String>) -> Value {
     Keyword::intern(&s)
 }

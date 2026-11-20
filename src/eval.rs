@@ -10,14 +10,14 @@ use crate::{
     exceptions::Exception,
     proc::{Application, Args, ContBarrier},
     records::Embedded,
-    registry::bridge,
+    registry::define,
     runtime::Runtime,
     syntax::{Span, Syntax},
     value::Value,
 };
 
 #[maybe_async]
-#[bridge(name = "eval", lib = "(rnrs eval (6))")]
+#[define(name = "eval", lib = "(rnrs eval (6))")]
 pub fn eval(
     expression: Value,
     environment: Embedded<Environment>,
@@ -33,7 +33,7 @@ pub fn eval(
 }
 
 #[maybe_async]
-#[bridge(name = "environment", lib = "(rnrs eval (6))")]
+#[define(name = "environment", lib = "(rnrs eval (6))")]
 pub fn environment(
     #[rest_args] import_spec: Value,
     barrier: &mut ContBarrier<'_>,

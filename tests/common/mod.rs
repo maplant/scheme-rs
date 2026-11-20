@@ -1,8 +1,8 @@
 //! Scaffolding for R*RS specification tests
 
-use scheme_rs::{exceptions::Exception, registry::bridge, value::Value};
+use scheme_rs::{exceptions::Exception, registry::define, value::Value};
 
-#[bridge(name = "assert-equal?", lib = "(test)")]
+#[define(name = "assert-equal?", lib = "(test)")]
 fn test_assert(arg1: Value, arg2: Value) -> Result<(), Exception> {
     if !arg1.equal(&arg2) {
         Err(Exception::error(format!(
