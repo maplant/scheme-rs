@@ -347,7 +347,6 @@ fn bridge_inner(
             known_ret_type,
             &name.map_or(default_name, |name| name.value()),
             &lib.unwrap().value(),
-            num_args,
             visibility,
             wrapper_name,
             bridge
@@ -482,8 +481,6 @@ fn bridge_inner(
                 ::scheme_rs::registry::BridgeFn::new(
                     #name,
                     #lib,
-                    #num_required,
-                    #reg_variadic,
                     ::scheme_rs::registry::Bridge::#bridge_ty(#wrapper_name),
                     #is_keyword,
                     ::scheme_rs::registry::BridgeFnDebugInfo::new(
@@ -492,6 +489,7 @@ fn bridge_inner(
                         ::std::column!(),
                         0,
                         &[ #( #arg_names, )* ],
+                        #reg_variadic,
                         #docs,
                     )
                 )
@@ -641,7 +639,6 @@ fn codegen_known_bridge(
     ret_type: KnownReturnType,
     name: &str,
     lib: &str,
-    num_args: usize,
     visibility: Visibility,
     wrapper_name: Ident,
     args: Vec<Ident>,
@@ -704,8 +701,6 @@ fn codegen_known_bridge(
             ::scheme_rs::registry::BridgeFn::new(
                 #name,
                 #lib,
-                #num_args,
-                false,
                 ::scheme_rs::registry::Bridge::Known(::scheme_rs::proc::KnownFunc::#known_type(
                     #wrapper_name
                 )),
@@ -716,6 +711,7 @@ fn codegen_known_bridge(
                     ::std::column!(),
                     0,
                     &[ #( #arg_names, )* ],
+                    false,
                     #docs,
                 )
             )

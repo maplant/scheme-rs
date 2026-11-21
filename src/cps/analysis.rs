@@ -272,7 +272,7 @@ impl Escaping {
                 for binding in bindings {
                     self.scan(&binding.body, procs);
                     // Variadic functions escape (for now):
-                    if binding.args.variadic {
+                    if binding.args.is_variadic {
                         self.escaping.insert(binding.val);
                     }
                 }

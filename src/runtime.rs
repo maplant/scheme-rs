@@ -38,7 +38,7 @@ use std::{
     mem::{ManuallyDrop, MaybeUninit},
     path::Path,
     ptr::NonNull,
-    sync::{Arc, LazyLock},
+    sync::LazyLock,
 };
 
 /// Scheme-rs core runtime
@@ -286,18 +286,6 @@ impl RuntimeInner {
     }
 }
 
-#[derive(Trace, Clone, Debug, Default)]
-pub(crate) struct DebugInfo {
-    /// Stored user function debug information:
-    stored_func_info: Vec<Arc<ProcDebugInfo>>,
-}
-
-impl DebugInfo {
-    pub fn store_func_info(&mut self, debug_info: Arc<ProcDebugInfo>) {
-        self.stored_func_info.push(debug_info);
-    }
-}
-
 #[cfg(not(feature = "async"))]
 type CompletionTx = std::sync::mpsc::SyncSender<ReturnAddress>;
 #[cfg(not(feature = "async"))]
@@ -391,18 +379,13 @@ fn compilation_task(mut module: JITModule, mut compilation_queue_rx: Compilation
 
     let runtime_funcs = runtime_funcs_builder.build().unwrap();
 
-    // By storing all of the debug information in the same lifetime as the
-    // Context, we can directly put pointers referencing the debug information
-    // in our JIT compiled functions:
-    let mut debug_info = DebugInfo::default();
-
     while let Some(task) = recv_compilation_task(&mut compilation_queue_rx) {
         let CompilationTask {
             completion_tx,
             compilation_unit,
         } = task;
 
-        let proc = compilation_unit.compile(&runtime_funcs, &mut module, &mut debug_info);
+        let proc = compilation_unit.compile(&runtime_funcs, &mut module);
 
         let _ = completion_tx.send(proc);
     }
@@ -435,16 +418,6 @@ impl RuntimeFn {
 }
 
 inventory::collect!(RuntimeFn);
-
-unsafe fn arc_from_ptr<T>(ptr: *const T) -> Option<Arc<T>> {
-    unsafe {
-        if ptr.is_null() {
-            return None;
-        }
-        Arc::increment_strong_count(ptr);
-        Some(Arc::from_raw(ptr))
-    }
-}
 
 /// Allocate a new Gc with a value of undefined
 #[runtime_fn]
@@ -525,18 +498,6 @@ unsafe extern "C" fn tail_callable(op: *const ()) -> Option<NonNull<u8>> {
         } else {
             None
         }
-    }
-}
-
-/// Borrow the environment pointer of a procedure value.
-#[runtime_fn]
-unsafe extern "C" fn proc_env(proc: *const ()) -> *const Value {
-    unsafe {
-        let proc = ManuallyDrop::new(Value::from_raw(proc));
-        let UnpackedValue::Procedure(proc) = &*proc.unpacked_ref() else {
-            unreachable!("proc_env called with a non-procedure");
-        };
-        proc.0.env.as_ptr()
     }
 }
 
@@ -781,23 +742,16 @@ unsafe extern "C" fn make_user(
     fn_ptr: NonNull<u8>,
     env: *const *const (),
     num_envs: u32,
-    num_required_args: u32,
-    variadic: bool,
     debug_info: *const ProcDebugInfo,
 ) -> *const () {
     unsafe {
         // Collect the environment:
-        let env: Vec<_> = (0..num_envs)
-            .map(|i| Value::from_raw_inc_rc(env.add(i as usize).read()))
-            .collect();
-
-        let proc = Procedure(Gc::rooted(ProcedureInner::new(
-            env,
+        let proc = Procedure(ProcedureInner::new_rooted(
+            (0..num_envs).map(|i| Value::from_raw_inc_rc(env.add(i as usize).read())),
             FuncPtr::User(UserPtr(fn_ptr)),
-            num_required_args as usize,
-            variadic,
-            arc_from_ptr(debug_info),
-        )));
+            false,
+            debug_info.as_ref(),
+        ));
 
         Value::into_raw(Value::from(proc))
     }
@@ -812,7 +766,10 @@ unsafe extern "C" fn patch_env_slot(proc: *const (), slot_idx: u32, value: *cons
         let proc_gc = ManuallyDrop::new(Gc::from_raw(
             proc.map_addr(|raw| raw & !TAG) as *mut ProcedureInner
         ));
-        (&mut *Gc::as_ptr(&proc_gc)).env[slot_idx as usize] = Value::from_raw_inc_rc(value);
+        (&mut *Gc::as_ptr(&proc_gc))
+            .env_ptr_mut()
+            .add(slot_idx as usize)
+            .write(Value::from_raw_inc_rc(value));
     }
 }
 

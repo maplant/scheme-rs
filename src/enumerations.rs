@@ -101,12 +101,7 @@ pub fn enum_set_constructor(
 ) -> Result<Application, Exception> {
     let set = enum_set;
     let universe = Value::from(set.enum_type.clone());
-    let constructor = Procedure::new(
-        vec![universe],
-        FuncPtr::Bridge(enum_set_constructor_fn),
-        1,
-        false,
-    );
+    let constructor = Procedure::new([universe], FuncPtr::Bridge(enum_set_constructor_fn));
     Ok(barrier.call_cont(Args::pack([Value::from(constructor)])))
 }
 

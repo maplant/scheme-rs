@@ -3568,10 +3568,7 @@ fn close_port_and_call_k(env: [Value; 1], args: Rest, barrier: &mut ContBarrier)
     // outer continuation once the port has been closed.
     barrier.push_cont([args.0], call_k_with_env);
 
-    Application::new(
-        Procedure::new(Vec::new(), bridge(close_port), 1, false),
-        Args::pack([port]),
-    )
+    Application::new(Procedure::new([], bridge(close_port)), Args::pack([port]))
 }
 
 fn call_k_with_env(env: [Value; 1], _args: Rest, barrier: &mut ContBarrier) -> Application {

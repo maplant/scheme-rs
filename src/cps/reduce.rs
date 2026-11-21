@@ -149,7 +149,7 @@ impl Cps {
                     (None, applied.as_slice())
                 };
 
-                if args.variadic {
+                if args.is_variadic {
                     let (req, var) = applied.split_at(args.num_required());
                     let var_args = Local::gensym();
                     Cps::with_dest(
@@ -213,7 +213,7 @@ impl Cps {
                 let body = binding.body.eta_reduction(uses, modified);
                 let mut cexpr = cexpr.eta_reduction(uses, modified);
 
-                if !binding.args.variadic
+                if !binding.args.is_variadic
                     && binding.args.continuation.is_none()
                     && let Inst::App(k, app_args) = &body.inst
                     && *k != Value::from(binding.val)
@@ -530,7 +530,7 @@ impl PrimOp {
             .map(|val| val.to_const())
             .collect::<Option<Vec<_>>>()?;
 
-        let proc = Procedure::new(Vec::new(), func_ptr, 0, true);
+        let proc = Procedure::new([], func_ptr);
 
         #[cfg(not(feature = "async"))]
         let result = proc.call(&args, &mut ContBarrier::new());
