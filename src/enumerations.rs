@@ -3,7 +3,6 @@
 use std::fmt;
 
 use indexmap::IndexSet;
-use scheme_rs_macros::bridge;
 
 use crate::{
     exceptions::Exception,
@@ -12,6 +11,7 @@ use crate::{
     lists::List,
     proc::{Application, Args, ContBarrier, FuncPtr, Procedure},
     records::{Embeddable, Embedded, Record},
+    registry::define,
     symbols::Symbol,
     value::Value,
 };
@@ -72,7 +72,7 @@ impl EnumerationSet {
     }
 }
 
-#[bridge(name = "make-enumeration", lib = "(rnrs enums (6))")]
+#[define(name = "make-enumeration", lib = "(rnrs enums (6))")]
 pub fn make_enumeration(symbols: List) -> Result<EnumerationSet, Exception> {
     let symbols = symbols
         .into_iter()
@@ -84,7 +84,7 @@ pub fn make_enumeration(symbols: List) -> Result<EnumerationSet, Exception> {
     })
 }
 
-#[bridge(name = "enum-set-universe", lib = "(rnrs enums (6))")]
+#[define(name = "enum-set-universe", lib = "(rnrs enums (6))")]
 pub fn enum_set_universe(enum_set: Embedded<EnumerationSet>) -> EnumerationSet {
     EnumerationSet {
         enum_type: Embedded::new(EnumerationType {
@@ -94,7 +94,7 @@ pub fn enum_set_universe(enum_set: Embedded<EnumerationSet>) -> EnumerationSet {
     }
 }
 
-#[bridge(name = "enum-set-constructor", lib = "(rnrs enums (6))")]
+#[define(name = "enum-set-constructor", lib = "(rnrs enums (6))")]
 pub fn enum_set_constructor(
     enum_set: Embedded<EnumerationSet>,
     barrier: &mut ContBarrier,
@@ -105,7 +105,7 @@ pub fn enum_set_constructor(
     Ok(barrier.call_cont(Args::pack([Value::from(constructor)])))
 }
 
-#[bridge]
+#[define]
 fn enum_set_constructor_fn(
     #[env] enum_type: Embedded<EnumerationType>,
     symbols: List,
@@ -128,7 +128,7 @@ fn enum_set_constructor_fn(
     Ok(barrier.call_cont(Args::pack([Value::from(enum_set)])))
 }
 
-#[bridge(name = "enum-set->list", lib = "(rnrs enums (6))")]
+#[define(name = "enum-set->list", lib = "(rnrs enums (6))")]
 pub fn enum_set_to_list(enum_set: Embedded<EnumerationSet>) -> List {
     let mut set = enum_set
         .set
@@ -142,12 +142,12 @@ pub fn enum_set_to_list(enum_set: Embedded<EnumerationSet>) -> List {
     set.into_iter().map(|(_, sym)| sym).collect()
 }
 
-#[bridge(name = "enum-set-member?", lib = "(rnrs enums (6))")]
+#[define(name = "enum-set-member?", lib = "(rnrs enums (6))")]
 pub fn enum_set_member_pred(symbol: Symbol, enum_set: Embedded<EnumerationSet>) -> bool {
     enum_set.set.contains(&symbol)
 }
 
-#[bridge(name = "enum-set-subset?", lib = "(rnrs enums (6))")]
+#[define(name = "enum-set-subset?", lib = "(rnrs enums (6))")]
 pub fn enum_set_subset_pred(
     enum_set1: Embedded<EnumerationSet>,
     enum_set2: Embedded<EnumerationSet>,
@@ -159,7 +159,7 @@ pub fn enum_set_subset_pred(
         && enum_set1.set.is_subset(&enum_set2.set)
 }
 
-#[bridge(name = "enum-set=?", lib = "(rnrs enums (6))")]
+#[define(name = "enum-set=?", lib = "(rnrs enums (6))")]
 pub fn enum_set_equal(
     enum_set1: Embedded<EnumerationSet>,
     enum_set2: Embedded<EnumerationSet>,
@@ -167,7 +167,7 @@ pub fn enum_set_equal(
     enum_set1.enum_type.symbols == enum_set2.enum_type.symbols && enum_set1.set == enum_set2.set
 }
 
-#[bridge(name = "enum-set-union", lib = "(rnrs enums (6))")]
+#[define(name = "enum-set-union", lib = "(rnrs enums (6))")]
 pub fn enum_set_union(
     enum_set1: Embedded<EnumerationSet>,
     enum_set2: Embedded<EnumerationSet>,
@@ -186,7 +186,7 @@ pub fn enum_set_union(
     })
 }
 
-#[bridge(name = "enum-set-intersection", lib = "(rnrs enums (6))")]
+#[define(name = "enum-set-intersection", lib = "(rnrs enums (6))")]
 pub fn enum_set_intersection(
     enum_set1: Embedded<EnumerationSet>,
     enum_set2: Embedded<EnumerationSet>,
@@ -205,7 +205,7 @@ pub fn enum_set_intersection(
     })
 }
 
-#[bridge(name = "enum-set-difference", lib = "(rnrs enums (6))")]
+#[define(name = "enum-set-difference", lib = "(rnrs enums (6))")]
 pub fn enum_set_difference(
     enum_set1: Embedded<EnumerationSet>,
     enum_set2: Embedded<EnumerationSet>,
@@ -224,7 +224,7 @@ pub fn enum_set_difference(
     })
 }
 
-#[bridge(name = "enum-set-complement", lib = "(rnrs enums (6))")]
+#[define(name = "enum-set-complement", lib = "(rnrs enums (6))")]
 pub fn enum_set_complement(enum_set: Embedded<EnumerationSet>) -> EnumerationSet {
     let complement = enum_set
         .enum_type
@@ -238,7 +238,7 @@ pub fn enum_set_complement(enum_set: Embedded<EnumerationSet>) -> EnumerationSet
     }
 }
 
-#[bridge(name = "enum-set-projection", lib = "(rnrs enums (6))")]
+#[define(name = "enum-set-projection", lib = "(rnrs enums (6))")]
 pub fn enum_set_projection(
     enum_set1: Embedded<EnumerationSet>,
     enum_set2: Embedded<EnumerationSet>,

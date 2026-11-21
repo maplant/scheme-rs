@@ -93,7 +93,7 @@ use crate::{
     num::{ComplexNumber, Number, NumberInner, NumberRepr, SimpleNumber},
     proc::{ContBarrier, Procedure, ProcedureInner, ReturnAddress},
     records::{Embeddable, Embedded, Record, RecordInner},
-    registry::bridge,
+    registry::define,
     symbols::Symbol,
     syntax::Syntax,
     vectors::VectorInner,
@@ -1305,57 +1305,57 @@ where
     }
 }
 
-#[bridge(name = "not", lib = "(rnrs base builtins (6))")]
+#[define(name = "not", lib = "(rnrs base builtins (6))")]
 pub fn not(a: Value, _: &mut ContBarrier) -> bool {
     a.0 as usize == FALSE_VALUE
 }
 
-#[bridge(name = "eq?", lib = "(rnrs base builtins (6))")]
+#[define(name = "eq?", lib = "(rnrs base builtins (6))")]
 pub fn eq(a: Value, b: Value) -> bool {
     a.eq(&b)
 }
 
-#[bridge(name = "eqv?", lib = "(rnrs base builtins (6))")]
+#[define(name = "eqv?", lib = "(rnrs base builtins (6))")]
 pub fn eqv(a: Value, b: Value) -> bool {
     a.eqv(&b)
 }
 
-#[bridge(name = "equal?", lib = "(rnrs base builtins (6))")]
+#[define(name = "equal?", lib = "(rnrs base builtins (6))")]
 pub fn equal_pred(a: Value, b: Value) -> bool {
     a.equal(&b)
 }
 
-#[bridge(name = "boolean?", lib = "(rnrs base builtins (6))")]
+#[define(name = "boolean?", lib = "(rnrs base builtins (6))")]
 pub fn boolean_pred(arg: Value) -> bool {
     arg.type_of() == ValueType::Boolean
 }
 
-#[bridge(name = "boolean=?", lib = "(rnrs base builtins (6))")]
+#[define(name = "boolean=?", lib = "(rnrs base builtins (6))")]
 pub fn boolean_eq_pred(a: Value, #[rest_args] args: Value) -> bool {
     a.type_of() == ValueType::Boolean && lists::iter_list(&args).all(|arg| arg == a)
 }
 
-#[bridge(name = "symbol?", lib = "(rnrs base builtins (6))")]
+#[define(name = "symbol?", lib = "(rnrs base builtins (6))")]
 pub fn symbol_pred(arg: Value) -> bool {
     arg.type_of() == ValueType::Symbol
 }
 
-#[bridge(name = "char?", lib = "(rnrs base builtins (6))")]
+#[define(name = "char?", lib = "(rnrs base builtins (6))")]
 pub fn char_pred(arg: Value) -> bool {
     arg.type_of() == ValueType::Character
 }
 
-#[bridge(name = "null?", lib = "(rnrs base builtins (6))")]
+#[define(name = "null?", lib = "(rnrs base builtins (6))")]
 pub fn null_pred(arg: Value, _: &mut ContBarrier) -> bool {
     arg.type_of() == ValueType::Null
 }
 
-#[bridge(name = "pair?", lib = "(rnrs base builtins (6))")]
+#[define(name = "pair?", lib = "(rnrs base builtins (6))")]
 pub fn pair_pred(arg: Value, _: &mut ContBarrier) -> bool {
     arg.type_of() == ValueType::Pair
 }
 
-#[bridge(name = "procedure?", lib = "(rnrs base builtins (6))")]
+#[define(name = "procedure?", lib = "(rnrs base builtins (6))")]
 pub fn procedure_pred(arg: Value) -> bool {
     arg.type_of() == ValueType::Procedure
 }

@@ -7,9 +7,8 @@ use std::{
 
 use indexmap::IndexSet;
 use rand::distr::{Alphabetic, SampleString};
-use scheme_rs_macros::{Trace, bridge};
 
-use crate::{exceptions::Exception, records::Embedded, value::Value};
+use crate::{exceptions::Exception, gc::Trace, records::Embedded, registry::define, value::Value};
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Trace)]
 pub struct Symbol(pub(crate) u32);
@@ -69,7 +68,7 @@ impl From<&str> for Symbol {
     }
 }
 
-#[bridge(name = "symbol=?", lib = "(rnrs base builtins (6))")]
+#[define(name = "symbol=?", lib = "(rnrs base builtins (6))")]
 pub fn symbol_equal_pred(
     symbol1: Symbol,
     symbol2: Symbol,
@@ -87,17 +86,17 @@ pub fn symbol_equal_pred(
     Ok(true)
 }
 
-#[bridge(name = "string->symbol", lib = "(rnrs base builtins (6))")]
+#[define(name = "string->symbol", lib = "(rnrs base builtins (6))")]
 pub fn string_to_symbol(s: Embedded<String>) -> Symbol {
     Symbol::intern(&s)
 }
 
-#[bridge(name = "symbol->string", lib = "(rnrs base builtins (6))")]
+#[define(name = "symbol->string", lib = "(rnrs base builtins (6))")]
 pub fn symbol_to_string(sym: Symbol) -> String {
     sym.to_str().to_string()
 }
 
-#[bridge(name = "gensym", lib = "(rnrs base builtins (6))")]
+#[define(name = "gensym", lib = "(rnrs base builtins (6))")]
 pub fn gensym() -> Symbol {
     Symbol::gensym()
 }

@@ -9,7 +9,7 @@ use crate::{
     ports::Port,
     proc::{ContBarrier, Procedure},
     records::{Embeddable, Embedded, Record},
-    registry::bridge,
+    registry::define,
     symbols::Symbol,
     syntax::parse::ParseSyntaxError,
     value::{Expect1, UnpackedValue, Value},
@@ -658,33 +658,33 @@ impl TryFrom<Value> for Identifier {
     }
 }
 
-#[bridge(name = "syntax->datum", lib = "(rnrs syntax-case builtins (6))")]
+#[define(name = "syntax->datum", lib = "(rnrs syntax-case builtins (6))")]
 pub fn syntax_to_datum(value: Value) -> Value {
     // This is quite slow and could be improved
     Syntax::syntax_to_datum(value)
 }
 
-#[bridge(name = "datum->syntax", lib = "(rnrs syntax-case builtins (6))")]
+#[define(name = "datum->syntax", lib = "(rnrs syntax-case builtins (6))")]
 pub fn datum_to_syntax(template_id: Identifier, datum: Value) -> Syntax {
     Syntax::datum_to_syntax(&template_id.scopes, datum, &Span::default())
 }
 
-#[bridge(name = "identifier?", lib = "(rnrs syntax-case builtins (6))")]
+#[define(name = "identifier?", lib = "(rnrs syntax-case builtins (6))")]
 pub fn identifier_pred(obj: Value) -> bool {
     obj.cast::<Identifier>().is_some()
 }
 
-#[bridge(name = "bound-identifier=?", lib = "(rnrs syntax-case builtins (6))")]
+#[define(name = "bound-identifier=?", lib = "(rnrs syntax-case builtins (6))")]
 pub fn bound_identifier_eq_pred(id1: Identifier, id2: Identifier) -> bool {
     id1 == id2
 }
 
-#[bridge(name = "free-identifier=?", lib = "(rnrs syntax-case builtins (6))")]
+#[define(name = "free-identifier=?", lib = "(rnrs syntax-case builtins (6))")]
 pub fn free_identifier_eq_pred(id1: Identifier, id2: Identifier) -> bool {
     id1.free_identifier_equal(&id2)
 }
 
-#[bridge(name = "generate-temporaries", lib = "(rnrs syntax-case builtins (6))")]
+#[define(name = "generate-temporaries", lib = "(rnrs syntax-case builtins (6))")]
 pub fn generate_temporaries(list: Value) -> Result<Value, Exception> {
     let length = if let Syntax::List { list, .. } = Syntax::wrap(list.clone(), &Span::default())
         && list.last().unwrap().is_null()
@@ -709,7 +709,7 @@ pub fn generate_temporaries(list: Value) -> Result<Value, Exception> {
     Ok(temporaries)
 }
 
-#[bridge(name = "syntax-violation", lib = "(rnrs base builtins (6))")]
+#[define(name = "syntax-violation", lib = "(rnrs base builtins (6))")]
 pub fn syntax_violation(
     who: Value,
     message: Value,

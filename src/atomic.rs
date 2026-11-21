@@ -1,11 +1,12 @@
 use arc_swap::ArcSwapAny;
-use scheme_rs_macros::bridge;
 
 use crate::{
     gc::{Gc, HeapObject, Trace},
     records::{Embeddable, Embedded},
+    registry::define,
     value::Value,
 };
+use std::ptr;
 
 #[derive(Debug, Embeddable)]
 #[scheme(name = "%atomic-box", opaque = true, sealed = true)]
@@ -22,41 +23,41 @@ unsafe impl Trace for AtomicBox {
 
     unsafe fn finalize(&mut self) {
         unsafe {
-            std::ptr::drop_in_place(self as *mut Self);
+            ptr::drop_in_place(self as *mut Self);
         }
     }
 }
 
-#[bridge(name = "atomic-box?", lib = "(srfi :230)")]
+#[define(name = "atomic-box?", lib = "(srfi :230)")]
 pub fn atomic_box_p(obj: Value) -> bool {
     obj.cast::<Embedded<AtomicBox>>().is_some()
 }
 
-#[bridge(name = "make-atomic-box", lib = "(srfi :230)")]
+#[define(name = "make-atomic-box", lib = "(srfi :230)")]
 pub fn make_atomic_box(val: Value) -> AtomicBox {
     AtomicBox {
         inner: ArcSwapAny::new(Gc::new(val.clone())),
     }
 }
 
-#[bridge(name = "atomic-box-ref", lib = "(srfi :230)")]
+#[define(name = "atomic-box-ref", lib = "(srfi :230)")]
 pub fn atomic_box_ref(ab: Embedded<AtomicBox>) -> Value {
     let guard = ab.inner.load();
     Value::clone(&guard)
 }
 
-#[bridge(name = "atomic-box-set!", lib = "(srfi :230)")]
+#[define(name = "atomic-box-set!", lib = "(srfi :230)")]
 pub fn atomic_box_set(ab: Embedded<AtomicBox>, new_val: Value) {
     ab.inner.store(Gc::new(new_val));
 }
 
-#[bridge(name = "atomic-box-swap!", lib = "(srfi :230)")]
+#[define(name = "atomic-box-swap!", lib = "(srfi :230)")]
 pub fn atomic_box_swap(ab: Embedded<AtomicBox>, new_val: Value) -> Value {
     let old = ab.inner.swap(Gc::new(new_val));
     Value::clone(&old)
 }
 
-#[bridge(name = "atomic-box-compare-and-swap!", lib = "(srfi :230)")]
+#[define(name = "atomic-box-compare-and-swap!", lib = "(srfi :230)")]
 pub fn atomic_box_compare_and_swap(
     ab: Embedded<AtomicBox>,
     expected: Value,

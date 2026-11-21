@@ -26,14 +26,21 @@ pub use inventory;
 
 #[cfg(feature = "async")]
 use async_lock::RwLock;
+
 #[cfg(feature = "async")]
 use futures::future::BoxFuture;
+
 #[cfg(not(feature = "async"))]
 use parking_lot::RwLock;
-/// Define and register a Scheme function in Rust.
+
+/// Define and register a Scheme procedure in Rust.
+pub use scheme_rs_macros::define;
+
 pub use scheme_rs_macros::bridge;
-/// Define and register a Scheme function in Rust written in continuation
-/// passing style.
+
+/// Define and register a Scheme syntax transformer in Rust.
+pub use scheme_rs_macros::define_syntax;
+
 use scheme_rs_macros::{maybe_async, maybe_await};
 
 pub(crate) mod error {
@@ -74,6 +81,7 @@ pub struct BridgeFn {
     name: &'static str,
     lib_name: &'static str,
     wrapper: Bridge,
+    is_keyword: bool,
     debug_info: BridgeFnDebugInfo,
 }
 
@@ -82,12 +90,14 @@ impl BridgeFn {
         name: &'static str,
         lib_name: &'static str,
         wrapper: Bridge,
+        is_keyword: bool,
         debug_info: BridgeFnDebugInfo,
     ) -> Self {
         Self {
             name,
             lib_name,
             wrapper,
+            is_keyword,
             debug_info,
         }
     }
@@ -170,8 +180,9 @@ impl RegistryInner {
     ) -> Result<(), Exception> {
         struct Lib {
             version: Version,
-            syms: HashMap<Symbol, Procedure>,
+            syms: HashMap<Symbol, (Procedure, bool)>,
         }
+
         let mut new_libs = HashMap::<Vec<Symbol>, Lib>::default();
 
         for bridge_fn in bridges {
@@ -184,15 +195,18 @@ impl RegistryInner {
 
             lib.syms.insert(
                 Symbol::intern(bridge_fn.name),
-                Procedure::with_debug_info(
-                    [],
-                    match bridge_fn.wrapper {
-                        Bridge::Sync(func) => FuncPtr::Bridge(func),
-                        Bridge::Known(known) => FuncPtr::Known(known),
-                        #[cfg(feature = "async")]
-                        Bridge::Async(func) => FuncPtr::AsyncBridge(func),
-                    },
-                    Some(debug_info),
+                (
+                    Procedure::with_debug_info(
+                        [],
+                        match bridge_fn.wrapper {
+                            Bridge::Sync(func) => FuncPtr::Bridge(func),
+                            Bridge::Known(known) => FuncPtr::Known(known),
+                            #[cfg(feature = "async")]
+                            Bridge::Async(func) => FuncPtr::AsyncBridge(func),
+                        },
+                        Some(debug_info),
+                    ),
+                    bridge_fn.is_keyword,
                 ),
             );
         }
@@ -203,12 +217,13 @@ impl RegistryInner {
             let exports = lib
                 .syms
                 .into_iter()
-                .map(|(name, proc)| {
+                .map(|(name, (proc, is_keyword))| {
                     let binding = Binding::new();
                     add_binding(Identifier::from_symbol(name, scope), binding);
                     (
                         name,
                         proc,
+                        is_keyword,
                         Export {
                             binding,
                             origin: None,
@@ -216,6 +231,7 @@ impl RegistryInner {
                     )
                 })
                 .collect::<Vec<_>>();
+
             let tle = TopLevelEnvironment(Gc::new(TopLevelEnvironmentInner {
                 kind: TopLevelKind::Libary {
                     name: LibraryName {
@@ -227,22 +243,25 @@ impl RegistryInner {
                 imports: RwLock::new(HashMap::default()),
                 exports: exports
                     .iter()
-                    .map(|(name, _, export)| (*name, export.clone()))
+                    .map(|(name, _, _, export)| (*name, export.clone()))
                     .collect(),
                 state: RwLock::new(LibraryState::BridgesDefined),
                 scope,
             }));
 
-            for (name, proc, export) in exports {
-                TOP_LEVEL_BINDINGS.lock().insert(
-                    export.binding,
+            for (name, proc, is_keyword, export) in exports {
+                let binding = if is_keyword {
+                    TopLevelBinding::Keyword(proc)
+                } else {
                     TopLevelBinding::Global(Global::new(
                         name,
                         Cell::new(Value::from(proc)),
                         false,
                         tle.clone(),
-                    )),
-                );
+                    ))
+                };
+
+                TOP_LEVEL_BINDINGS.lock().insert(export.binding, binding);
             }
 
             self.libs.insert(name, tle);

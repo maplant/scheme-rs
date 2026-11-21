@@ -13,7 +13,7 @@ use crate::{
     gc::Trace,
     proc::{ContBarrier, Procedure},
     records::{Embeddable, Embedded},
-    registry::bridge,
+    registry::define,
     symbols::Symbol,
     value::{Expect1, Value},
 };
@@ -390,7 +390,7 @@ impl TryFrom<&Value> for HashTable {
     }
 }
 
-#[bridge(name = "make-hashtable", lib = "(rnrs hashtables builtins (6))")]
+#[define(name = "make-hashtable", lib = "(rnrs hashtables builtins (6))")]
 pub fn make_hashtable(
     hash_function: Value,
     equiv: Value,
@@ -406,39 +406,39 @@ pub fn make_hashtable(
     Ok(Value::from(hashtable))
 }
 
-#[bridge(name = "hashtable?", lib = "(rnrs hashtables builtins (6))")]
+#[define(name = "hashtable?", lib = "(rnrs hashtables builtins (6))")]
 pub fn hashtable_pred(obj: Value) -> bool {
     obj.is_a::<Embedded<HashTableInner>>()
 }
 
-#[bridge(name = "hashtable-size", lib = "(rnrs hashtables builtins (6))")]
+#[define(name = "hashtable-size", lib = "(rnrs hashtables builtins (6))")]
 pub fn hashtable_size(hashtable: HashTable) -> usize {
     hashtable.size()
 }
 
-#[bridge(name = "hashtable-ref", lib = "(rnrs hashtables builtins (6))")]
+#[define(name = "hashtable-ref", lib = "(rnrs hashtables builtins (6))")]
 pub fn hashtable_ref(hashtable: HashTable, key: Value, default: Value) -> Result<Value, Exception> {
     hashtable.get(&key, &default)
 }
 
-#[bridge(name = "hashtable-set!", lib = "(rnrs hashtables builtins (6))")]
+#[define(name = "hashtable-set!", lib = "(rnrs hashtables builtins (6))")]
 pub fn hashtable_set_bang(hashtable: HashTable, key: Value, obj: Value) -> Result<(), Exception> {
     hashtable.set(&key, &obj)?;
     Ok(())
 }
 
-#[bridge(name = "hashtable-delete!", lib = "(rnrs hashtables builtins (6))")]
+#[define(name = "hashtable-delete!", lib = "(rnrs hashtables builtins (6))")]
 pub fn hashtable_delete_bang(hashtable: HashTable, key: Value) -> Result<(), Exception> {
     hashtable.delete(&key)?;
     Ok(())
 }
 
-#[bridge(name = "hashtable-contains?", lib = "(rnrs hashtables builtins (6))")]
+#[define(name = "hashtable-contains?", lib = "(rnrs hashtables builtins (6))")]
 pub fn hashtable_contains_pred(hashtable: HashTable, key: Value) -> Result<bool, Exception> {
     Ok(hashtable.contains(&key)?)
 }
 
-#[bridge(name = "hashtable-update!", lib = "(rnrs hashtables builtins (6))")]
+#[define(name = "hashtable-update!", lib = "(rnrs hashtables builtins (6))")]
 pub fn hashtable_update_bang(
     hashtable: HashTable,
     key: Value,
@@ -449,14 +449,14 @@ pub fn hashtable_update_bang(
     Ok(())
 }
 
-#[bridge(name = "hashtable-copy", lib = "(rnrs hashtables builtins (6))")]
+#[define(name = "hashtable-copy", lib = "(rnrs hashtables builtins (6))")]
 pub fn hashtable_copy(hashtable: HashTable, mutable: Option<bool>) -> Result<Value, Exception> {
     let mutable = mutable.unwrap_or(false);
     let new_hashtable = hashtable.copy(mutable);
     Ok(Value::from(new_hashtable))
 }
 
-#[bridge(name = "hashtable-clear!", lib = "(rnrs hashtables builtins (6))")]
+#[define(name = "hashtable-clear!", lib = "(rnrs hashtables builtins (6))")]
 pub fn hashtable_clear_bang(hashtable: HashTable, k: Option<usize>) -> Result<(), Exception> {
     hashtable.clear()?;
 
@@ -472,18 +472,18 @@ pub fn hashtable_clear_bang(hashtable: HashTable, k: Option<usize>) -> Result<()
     Ok(())
 }
 
-#[bridge(name = "hashtable-keys", lib = "(rnrs hashtables builtins (6))")]
+#[define(name = "hashtable-keys", lib = "(rnrs hashtables builtins (6))")]
 pub fn hashtable_keys(hashtable: HashTable) -> Vec<Value> {
     hashtable.keys()
 }
 
-#[bridge(name = "hashtable-entries", lib = "(rnrs hashtables builtins (6))")]
+#[define(name = "hashtable-entries", lib = "(rnrs hashtables builtins (6))")]
 pub fn hashtable_entries(hashtable: HashTable) -> (Vec<Value>, Vec<Value>) {
     let (keys, values) = hashtable.entries();
     (keys, values)
 }
 
-#[bridge(
+#[define(
     name = "hashtable-equivalence-function",
     lib = "(rnrs hashtables builtins (6))"
 )]
@@ -491,7 +491,7 @@ pub fn hashtable_equivalence_function(hashtable: HashTable) -> Procedure {
     hashtable.0.eq.clone()
 }
 
-#[bridge(
+#[define(
     name = "hashtable-hash-function",
     lib = "(rnrs hashtables builtins (6))"
 )]
@@ -499,40 +499,40 @@ pub fn hashtable_hash_function(hashtable: HashTable) -> Procedure {
     hashtable.0.hash.clone()
 }
 
-#[bridge(name = "hashtable-mutable?", lib = "(rnrs hashtables builtins (6))")]
+#[define(name = "hashtable-mutable?", lib = "(rnrs hashtables builtins (6))")]
 pub fn hashtable_mutable_pred(hashtable: HashTable) -> bool {
     hashtable.0.mutable
 }
 
-#[bridge(name = "eq-hash", lib = "(rnrs hashtables builtins (6))")]
+#[define(name = "eq-hash", lib = "(rnrs hashtables builtins (6))")]
 pub fn eq_hash(obj: Value) -> u64 {
     let mut hasher = DefaultHasher::new();
     obj.eq_hash(&mut hasher);
     hasher.finish()
 }
 
-#[bridge(name = "eqv-hash", lib = "(rnrs hashtables builtins (6))")]
+#[define(name = "eqv-hash", lib = "(rnrs hashtables builtins (6))")]
 pub fn eqv_hash(obj: Value) -> u64 {
     let mut hasher = DefaultHasher::new();
     obj.eqv_hash(&mut hasher);
     hasher.finish()
 }
 
-#[bridge(name = "equal-hash", lib = "(rnrs hashtables builtins (6))")]
+#[define(name = "equal-hash", lib = "(rnrs hashtables builtins (6))")]
 pub fn equal_hash(obj: Value) -> u64 {
     let mut hasher = DefaultHasher::new();
     obj.equal_hash(&mut IndexSet::default(), &mut hasher);
     hasher.finish()
 }
 
-#[bridge(name = "string-hash", lib = "(rnrs hashtables builtins (6))")]
+#[define(name = "string-hash", lib = "(rnrs hashtables builtins (6))")]
 pub fn string_hash(string: Embedded<String>) -> u64 {
     let mut hasher = DefaultHasher::new();
     string.hash(&mut hasher);
     hasher.finish()
 }
 
-#[bridge(name = "string-ci-hash", lib = "(rnrs hashtables builtins (6))")]
+#[define(name = "string-ci-hash", lib = "(rnrs hashtables builtins (6))")]
 pub fn string_ci_hash(string: Embedded<String>) -> u64 {
     let mut hasher = DefaultHasher::new();
     // I hope this is okay, otherwise we have to collect the chars to a vec
@@ -543,7 +543,7 @@ pub fn string_ci_hash(string: Embedded<String>) -> u64 {
     hasher.finish()
 }
 
-#[bridge(name = "symbol-hash", lib = "(rnrs hashtables builtins (6))")]
+#[define(name = "symbol-hash", lib = "(rnrs hashtables builtins (6))")]
 pub fn symbol_hash(symbol: Symbol) -> u64 {
     let mut hasher = DefaultHasher::new();
     symbol.hash(&mut hasher);

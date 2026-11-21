@@ -227,7 +227,7 @@ use crate::{
     gc::{self, Gc, HeapObject, Trace},
     lists::{append_list, iter_list, split_list},
     proc::{Application, Args, ContBarrier, FuncPtr, Procedure},
-    registry::bridge,
+    registry::define,
     symbols::Symbol,
     value::{Cell, UnpackedValue, Value},
     vectors::Vector,
@@ -317,6 +317,10 @@ unsafe impl Embeddable for RecordTypeDescriptorInner {
 
         RTD.clone()
     }
+
+    fn fmt(&self, _record: &Record, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
 }
 
 impl RecordTypeDescriptorInner {
@@ -376,6 +380,38 @@ impl RecordTypeDescriptor {
 
     pub fn num_fields(&self) -> usize {
         self.0.fields.len() + self.0.num_inherited_fields
+    }
+
+    pub fn is_rust_root(&self) -> bool {
+        self.embedded_vtable
+            .is_some_and(|vt| Embedded::ptr_eq(&self.0, &(vt.rtd)().0))
+    }
+
+    pub fn constructor_chain_parent(&self) -> Option<RecordTypeDescriptor> {
+        if self.is_rust_root() {
+            None
+        } else {
+            self.inherits
+                .last()
+                .map(|p| RecordTypeDescriptor(p.0.clone()))
+        }
+    }
+
+    fn sub_constructor_arity(&self) -> usize {
+        if let Some(rust_constructor) = &self.embedded_constructor
+            && self.is_rust_root()
+        {
+            rust_constructor.num_args
+        } else {
+            self.fields.len()
+        }
+    }
+
+    fn constructor_arity(&self) -> usize {
+        self.sub_constructor_arity()
+            + self
+                .constructor_chain_parent()
+                .map_or(0, |p| p.constructor_arity())
     }
 }
 
@@ -790,8 +826,14 @@ pub unsafe trait Embeddable: Trace + Any + Send + Sync {
         Err(Exception::error(format!("invalid record field: {k}")))
     }
 
-    fn fmt(&self, _record: &Record, _fmt: &mut Formatter<'_>) -> fmt::Result {
-        Ok(())
+    fn fmt(&self, record: &Record, f: &mut Formatter<'_>) -> fmt::Result {
+        let mut fmt_record = f.fmt_record(record.rtd().name);
+
+        for (name, field) in record.iter_all_fields() {
+            fmt_record.entry(name, &field)?;
+        }
+
+        fmt_record.finish()
     }
 
     fn eq(&self, rhs: &Record) -> bool
@@ -1057,11 +1099,15 @@ where
 pub struct RustParentConstructor {
     #[trace(skip)]
     constructor: ParentConstructor,
+    num_args: usize,
 }
 
 impl RustParentConstructor {
-    pub fn new(constructor: ParentConstructor) -> Self {
-        Self { constructor }
+    pub fn new(constructor: ParentConstructor, num_args: usize) -> Self {
+        Self {
+            constructor,
+            num_args,
+        }
     }
 }
 
@@ -1084,7 +1130,7 @@ type NonGenerativeStore =
 
 static NONGENERATIVE: NonGenerativeStore = LazyLock::new(|| Arc::new(Mutex::new(HashMap::new())));
 
-#[bridge(
+#[define(
     name = "make-record-type-descriptor",
     lib = "(rnrs records procedural (6))"
 )]
@@ -1154,7 +1200,7 @@ pub fn make_record_type_descriptor(
     Ok(rtd)
 }
 
-#[bridge(
+#[define(
     name = "record-type-descriptor?",
     lib = "(rnrs records procedural (6))"
 )]
@@ -1171,10 +1217,10 @@ pub struct RecordConstructorDescriptor {
     protocol: Procedure,
 }
 
-fn make_default_record_constructor_descriptor(
+pub fn make_default_record_constructor_descriptor(
     rtd: RecordTypeDescriptor,
 ) -> Embedded<RecordConstructorDescriptor> {
-    let parent = rtd.inherits.last().map(|parent| {
+    let parent = rtd.constructor_chain_parent().map(|parent| {
         make_default_record_constructor_descriptor(RecordTypeDescriptor(parent.0.clone()))
     });
     let protocol = Procedure::new(
@@ -1188,7 +1234,7 @@ fn make_default_record_constructor_descriptor(
     })
 }
 
-#[bridge(
+#[define(
     name = "make-record-constructor-descriptor",
     lib = "(rnrs records procedural (6))"
 )]
@@ -1205,20 +1251,17 @@ pub fn make_record_constructor_descriptor(
     }
 
     let parent_rcd = if parent_rcd.is_true() {
-        let Some(parent_rtd) = rtd.inherits.last() else {
-            return Err(Exception::error("rtd is a base type"));
+        let Some(parent_rtd) = rtd.constructor_chain_parent() else {
+            return Err(Exception::error("rtd is a base type or a Rust struct"));
         };
         let parent_rcd = parent_rcd.try_to::<Embedded<RecordConstructorDescriptor>>()?;
         if !Embedded::ptr_eq(&parent_rcd.rtd.0, &parent_rtd.0) {
             return Err(Exception::error("parent rtd does not match parent rcd"));
         }
         Some(parent_rcd)
-    } else if !rtd.is_base_record_type() {
-        Some(make_default_record_constructor_descriptor(
-            RecordTypeDescriptor(rtd.inherits.last().unwrap().0.clone()),
-        ))
     } else {
-        None
+        rtd.constructor_chain_parent()
+            .map(make_default_record_constructor_descriptor)
     };
 
     let protocol = if protocol.is_true() {
@@ -1237,7 +1280,7 @@ pub fn make_record_constructor_descriptor(
     })
 }
 
-#[bridge(name = "record-constructor", lib = "(rnrs records procedural (6))")]
+#[define(name = "record-constructor", lib = "(rnrs records procedural (6))")]
 pub fn record_constructor(
     rcd: Embedded<RecordConstructorDescriptor>,
     barrier: &mut ContBarrier,
@@ -1285,7 +1328,7 @@ fn chain_protocols(env: [Value; 1], constructor: Value, barrier: &mut ContBarrie
     Application::new(curr_protocol, Args::pack([constructor]))
 }
 
-#[bridge]
+#[define]
 fn chain_constructors(
     #[env] rtds: Vector,
     #[env] collected: Value,
@@ -1315,7 +1358,7 @@ fn chain_constructors(
     Ok(barrier.call_cont(Args::pack([Value::from(next_proc)])))
 }
 
-#[bridge]
+#[define]
 fn constructor(
     #[env] rtd: RecordTypeDescriptor,
     #[env] collected: Value,
@@ -1330,7 +1373,7 @@ fn constructor(
     let (embedded_vtable_and_writer, fields) =
         if let Some(embedded_constructor) = rtd.embedded_constructor {
             let embedded_vtable = rtd.embedded_vtable.unwrap();
-            let remaining_fields = fields.split_off(embedded_vtable.embedded_fields);
+            let remaining_fields = fields.split_off(embedded_constructor.num_args);
             // Call the rust constructor for the embedded type
             let writer = (embedded_constructor.constructor)(&fields)?;
             (Some((embedded_vtable, writer)), remaining_fields)
@@ -1395,7 +1438,7 @@ fn constructor(
     Ok(barrier.call_cont(Args::pack([Value::from(record)])))
 }
 
-#[bridge]
+#[define]
 fn default_protocol(
     #[env] rtd: RecordTypeDescriptor,
     ctor: Value,
@@ -1409,7 +1452,7 @@ fn default_protocol(
     Ok(barrier.call_cont(Args::pack([Value::from(constructor)])))
 }
 
-#[bridge]
+#[define]
 fn default_protocol_constructor(
     #[env] constructor: Procedure,
     #[env] rtd: RecordTypeDescriptor,
@@ -1417,8 +1460,8 @@ fn default_protocol_constructor(
     barrier: &mut ContBarrier,
 ) -> Result<Application, Exception> {
     let mut args = args;
-    if let Some(parent) = rtd.inherits.last() {
-        let (parent_args, remaining) = split_list(args, parent.num_fields())?;
+    if let Some(parent) = rtd.constructor_chain_parent() {
+        let (parent_args, remaining) = split_list(args, parent.constructor_arity())?;
         args = parent_args;
         barrier.push_cont([remaining], call_constructor_continuation);
     }
@@ -1435,7 +1478,7 @@ fn call_constructor_continuation(
     Application::new(constructor, Args::from_list(args))
 }
 
-#[bridge]
+#[define]
 fn record_predicate_fn(
     #[env] rtd: RecordTypeDescriptor,
     val: Value,
@@ -1444,13 +1487,13 @@ fn record_predicate_fn(
     Ok(barrier.call_cont(Args::pack([Value::from(is_subtype_of(&val, rtd)?)])))
 }
 
-#[bridge(name = "record-predicate", lib = "(rnrs records procedural (6))")]
+#[define(name = "record-predicate", lib = "(rnrs records procedural (6))")]
 pub fn record_predicate(rtd: Value) -> Procedure {
     // TODO: Check if RTD is a record type.
     Procedure::new([rtd.clone()], FuncPtr::Bridge(record_predicate_fn))
 }
 
-#[bridge]
+#[define]
 fn record_accessor_fn(
     #[env] rtd: RecordTypeDescriptor,
     #[env] local_idx: Value,
@@ -1486,7 +1529,7 @@ fn record_accessor_fn(
     Ok(barrier.call_cont(Args::pack([val])))
 }
 
-#[bridge(name = "record-accessor", lib = "(rnrs records procedural (6))")]
+#[define(name = "record-accessor", lib = "(rnrs records procedural (6))")]
 pub fn record_accessor(rtd: RecordTypeDescriptor, idx: usize) -> Result<Procedure, Exception> {
     if idx >= rtd.fields.len() {
         return Err(Exception::error(format!(
@@ -1502,7 +1545,7 @@ pub fn record_accessor(rtd: RecordTypeDescriptor, idx: usize) -> Result<Procedur
     ))
 }
 
-#[bridge(
+#[define(
     name = "record-accessor-absolute",
     lib = "(rnrs records procedural (6))"
 )]
@@ -1537,7 +1580,7 @@ pub fn record_accessor_absolute(
     ))
 }
 
-#[bridge]
+#[define]
 fn record_mutator_fn(
     #[env] rtd: RecordTypeDescriptor,
     #[env] local_idx: Value,
@@ -1570,7 +1613,7 @@ fn record_mutator_fn(
     Ok(barrier.call_cont(Args::pack([])))
 }
 
-#[bridge(name = "record-mutator", lib = "(rnrs records procedural (6))")]
+#[define(name = "record-mutator", lib = "(rnrs records procedural (6))")]
 pub fn record_mutator(rtd: RecordTypeDescriptor, idx: usize) -> Result<Procedure, Exception> {
     if idx >= rtd.fields.len() {
         return Err(Exception::error(format!(
@@ -1587,7 +1630,7 @@ pub fn record_mutator(rtd: RecordTypeDescriptor, idx: usize) -> Result<Procedure
     ))
 }
 
-#[bridge(
+#[define(
     name = "record-mutator-absolute",
     lib = "(rnrs records procedural (6))"
 )]
@@ -1633,7 +1676,7 @@ pub fn record_mutator_absolute(
     ))
 }
 
-#[bridge(
+#[define(
     name = "record-field-absolute-index",
     lib = "(rnrs records procedural (6))"
 )]
@@ -1657,12 +1700,12 @@ pub fn record_field_absolute_index(
 
 // Inspection library:
 
-#[bridge(name = "record?", lib = "(rnrs records inspection (6))")]
+#[define(name = "record?", lib = "(rnrs records inspection (6))")]
 pub fn record_pred(obj: Value) -> bool {
     obj.cast::<Record>().is_some_and(|rec| !rec.rtd().opaque)
 }
 
-#[bridge(name = "record-rtd", lib = "(rnrs records inspection (6))")]
+#[define(name = "record-rtd", lib = "(rnrs records inspection (6))")]
 pub fn record_rtd(record: Value) -> Result<RecordTypeDescriptor, Exception> {
     match &*record.unpacked_ref() {
         UnpackedValue::Record(rec) if !rec.rtd().opaque => Ok(rec.rtd().clone()),
@@ -1672,12 +1715,12 @@ pub fn record_rtd(record: Value) -> Result<RecordTypeDescriptor, Exception> {
     }
 }
 
-#[bridge(name = "record-type-name", lib = "(rnrs records inspection (6))")]
+#[define(name = "record-type-name", lib = "(rnrs records inspection (6))")]
 pub fn record_type_name(rtd: RecordTypeDescriptor) -> Symbol {
     rtd.name
 }
 
-#[bridge(name = "record-type-parent", lib = "(rnrs records inspection (6))")]
+#[define(name = "record-type-parent", lib = "(rnrs records inspection (6))")]
 pub fn record_type_parent(rtd: RecordTypeDescriptor) -> Value {
     if let Some(parent) = rtd.inherits.last() {
         Value::from(parent.0.clone())
@@ -1686,7 +1729,7 @@ pub fn record_type_parent(rtd: RecordTypeDescriptor) -> Value {
     }
 }
 
-#[bridge(name = "record-type-uid", lib = "(rnrs records inspection (6))")]
+#[define(name = "record-type-uid", lib = "(rnrs records inspection (6))")]
 pub fn record_type_uid(rtd: RecordTypeDescriptor) -> Value {
     if let Some(uid) = rtd.uid {
         Value::from(uid)
@@ -1695,7 +1738,7 @@ pub fn record_type_uid(rtd: RecordTypeDescriptor) -> Value {
     }
 }
 
-#[bridge(
+#[define(
     name = "record-type-generative?",
     lib = "(rnrs records inspection (6))"
 )]
@@ -1703,17 +1746,17 @@ pub fn record_type_generative_pred(rtd: RecordTypeDescriptor) -> bool {
     rtd.uid.is_none()
 }
 
-#[bridge(name = "record-type-sealed?", lib = "(rnrs records inspection (6))")]
+#[define(name = "record-type-sealed?", lib = "(rnrs records inspection (6))")]
 pub fn record_type_sealed_pred(rtd: RecordTypeDescriptor) -> bool {
     rtd.sealed
 }
 
-#[bridge(name = "record-type-opaque?", lib = "(rnrs records inspection (6))")]
+#[define(name = "record-type-opaque?", lib = "(rnrs records inspection (6))")]
 pub fn record_type_opaque_pred(rtd: RecordTypeDescriptor) -> bool {
     rtd.opaque
 }
 
-#[bridge(
+#[define(
     name = "record-type-field-names",
     lib = "(rnrs records inspection (6))"
 )]
@@ -1726,7 +1769,7 @@ pub fn record_type_field_names(rtd: RecordTypeDescriptor) -> Value {
     Value::from(fields)
 }
 
-#[bridge(
+#[define(
     name = "record-type-all-field-names",
     lib = "(rnrs records inspection (6))"
 )]
@@ -1741,7 +1784,7 @@ pub fn record_type_all_field_names(rtd: RecordTypeDescriptor) -> Value {
     Value::from(fields)
 }
 
-#[bridge(name = "record-field-mutable?", lib = "(rnrs records inspection (6))")]
+#[define(name = "record-field-mutable?", lib = "(rnrs records inspection (6))")]
 pub fn record_field_mutable_pred(rtd: RecordTypeDescriptor, k: usize) -> Result<bool, Exception> {
     if k >= rtd.fields.len() {
         return Err(Exception::invalid_index(k, rtd.fields.len()));

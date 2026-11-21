@@ -6,13 +6,13 @@ use std::{
 };
 
 use parking_lot::Mutex;
-use scheme_rs_macros::bridge;
 
 use crate::{
     exceptions::Exception,
     gc::{Gc, Trace},
     proc::{Application, Args, ContBarrier, Procedure},
     records::{Embeddable, Embedded},
+    registry::define,
     value::Value,
 };
 
@@ -24,7 +24,7 @@ pub struct JoinHandle {
     result: Gc<Mutex<Result<Vec<Value>, Exception>>>,
 }
 
-#[bridge(name = "spawn", lib = "(threads (1))")]
+#[define(name = "spawn", lib = "(threads (1))")]
 pub fn spawn(thunk: Procedure) -> JoinHandle {
     let cell = Gc::new(Mutex::new(Ok(Vec::new())));
     let cell_cloned = cell.clone();
@@ -45,7 +45,7 @@ pub fn spawn(thunk: Procedure) -> JoinHandle {
     JoinHandle { id, result: cell }
 }
 
-#[bridge(name = "join", lib = "(threads (1))")]
+#[define(name = "join", lib = "(threads (1))")]
 pub fn join(
     handle: Embedded<JoinHandle>,
     barrier: &mut ContBarrier,
@@ -60,13 +60,13 @@ pub fn join(
     }
 }
 
-#[bridge(name = "sleep", lib = "(threads (1))")]
+#[define(name = "sleep", lib = "(threads (1))")]
 pub fn sleep(ms: u64) -> Result<(), Exception> {
     thread::sleep(Duration::from_millis(ms));
     Ok(())
 }
 
-#[bridge(name = "join-handle?", lib = "(threads (1))")]
+#[define(name = "join-handle?", lib = "(threads (1))")]
 pub fn join_handle_pred(obj: Value) -> bool {
     obj.is_a::<Embedded<JoinHandle>>()
 }
