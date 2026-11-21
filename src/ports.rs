@@ -8,7 +8,7 @@
 
 use memchr::{memchr, memmem};
 use rustyline::Editor;
-use scheme_rs_macros::{bridge, define_condition_type, maybe_async, maybe_await};
+use scheme_rs_macros::{maybe_async, maybe_await};
 use std::{
     any::Any,
     borrow::Cow,
@@ -22,11 +22,13 @@ use std::{
 use crate::{
     Either,
     enumerations::{EnumerationSet, EnumerationType},
+    exceptions::define_condition_type,
     exceptions::{Assertion, Error, Exception},
     fmt::Formatter,
     gc::Trace,
     proc::{Application, Args, ContBarrier, DynStackElem, FuncPtr, Procedure, Rest, pop_dyn_stack},
     records::{Embeddable, Embedded, Record},
+    registry::define,
     symbols::Symbol,
     syntax::{
         Span, Syntax,
@@ -270,12 +272,12 @@ impl Transcoder {
     }
 }
 
-#[bridge(name = "native-transcoder", lib = "(rnrs io builtins (6))")]
+#[define(name = "native-transcoder", lib = "(rnrs io builtins (6))")]
 pub fn native_transcoder() -> Value {
     Value::from(Transcoder::native())
 }
 
-#[bridge(name = "make-transcoder", lib = "(rnrs io builtins (6))")]
+#[define(name = "make-transcoder", lib = "(rnrs io builtins (6))")]
 pub fn make_transcoder(
     codec: Embedded<Codec>,
     eol_style: Option<Symbol>,
@@ -296,17 +298,17 @@ pub fn make_transcoder(
     }))
 }
 
-#[bridge(name = "transcoder-codec", lib = "(rnrs io builtins (6))")]
+#[define(name = "transcoder-codec", lib = "(rnrs io builtins (6))")]
 pub fn transcoder_codec(transcoder: Embedded<Transcoder>) -> Value {
     transcoder.codec.to_value()
 }
 
-#[bridge(name = "transcoder-eol-style", lib = "(rnrs io builtins (6))")]
+#[define(name = "transcoder-eol-style", lib = "(rnrs io builtins (6))")]
 pub fn transcoder_eol_style(transcoder: Embedded<Transcoder>) -> Symbol {
     transcoder.eol_type.to_sym()
 }
 
-#[bridge(
+#[define(
     name = "transcoder-error-handling-mode",
     lib = "(rnrs io builtins (6))"
 )]
@@ -326,17 +328,17 @@ static LATIN_1_CODEC: LazyLock<Embedded<Codec>> = LazyLock::new(|| Embedded::new
 static UTF_8_CODEC: LazyLock<Embedded<Codec>> = LazyLock::new(|| Embedded::new(Codec::Utf8));
 static UTF_16_CODEC: LazyLock<Embedded<Codec>> = LazyLock::new(|| Embedded::new(Codec::Utf16));
 
-#[bridge(name = "latin-1-codec", lib = "(rnrs io builtins (6))")]
+#[define(name = "latin-1-codec", lib = "(rnrs io builtins (6))")]
 pub fn latin_1_codec() -> Value {
     Value::from(LATIN_1_CODEC.clone())
 }
 
-#[bridge(name = "utf-8-codec", lib = "(rnrs io builtins (6))")]
+#[define(name = "utf-8-codec", lib = "(rnrs io builtins (6))")]
 pub fn utf_8_codec() -> Value {
     Value::from(UTF_8_CODEC.clone())
 }
 
-#[bridge(name = "utf-16-codec", lib = "(rnrs io builtins (6))")]
+#[define(name = "utf-16-codec", lib = "(rnrs io builtins (6))")]
 pub fn utf_16_codec() -> Value {
     Value::from(UTF_16_CODEC.clone())
 }
@@ -2855,27 +2857,27 @@ fn map_io_error_to_condition(filename: &str, err: std::io::Error) -> Exception {
     }
 }
 
-#[bridge(name = "default-file-options", lib = "(rnrs io builtins (6))")]
+#[define(name = "default-file-options", lib = "(rnrs io builtins (6))")]
 pub fn default_file_options_scm() -> Value {
     Value::from(default_file_options())
 }
 
-#[bridge(name = "eof-object", lib = "(rnrs io builtins (6))")]
+#[define(name = "eof-object", lib = "(rnrs io builtins (6))")]
 pub fn eof_object() -> Value {
     EOF_OBJECT.clone()
 }
 
-#[bridge(name = "eof-object?", lib = "(rnrs io builtins (6))")]
+#[define(name = "eof-object?", lib = "(rnrs io builtins (6))")]
 pub fn eof_object_pred(val: Value) -> bool {
     val.is_a::<Embedded<EofObject>>()
 }
 
-#[bridge(name = "port?", lib = "(rnrs io builtins (6))")]
+#[define(name = "port?", lib = "(rnrs io builtins (6))")]
 pub fn port_pred(obj: Value) -> bool {
     obj.is_a::<Embedded<PortInner>>()
 }
 
-#[bridge(name = "port-transcoder", lib = "(rnrs io builtins (6))")]
+#[define(name = "port-transcoder", lib = "(rnrs io builtins (6))")]
 pub fn port_transcoder(port: Port) -> Value {
     if let Some(transcoder) = port.transcoder() {
         Value::from(transcoder)
@@ -2884,18 +2886,18 @@ pub fn port_transcoder(port: Port) -> Value {
     }
 }
 
-#[bridge(name = "textual-port?", lib = "(rnrs io builtins (6))")]
+#[define(name = "textual-port?", lib = "(rnrs io builtins (6))")]
 pub fn textual_port_pred(port: Port) -> bool {
     port.is_textual_port()
 }
 
-#[bridge(name = "binary-port?", lib = "(rnrs io builtins (6))")]
+#[define(name = "binary-port?", lib = "(rnrs io builtins (6))")]
 pub fn binary_port_pred(port: Port) -> bool {
     !port.is_textual_port()
 }
 
 #[maybe_async]
-#[bridge(name = "transcoded-port", lib = "(rnrs io builtins (6))")]
+#[define(name = "transcoded-port", lib = "(rnrs io builtins (6))")]
 pub fn transcoded_port(port: Port, transcoder: Embedded<Transcoder>) -> Result<Port, Exception> {
     if port.is_textual_port() {
         return Err(Exception::error("not a binary port"));
@@ -2938,31 +2940,31 @@ pub fn transcoded_port(port: Port, transcoder: Embedded<Transcoder>) -> Result<P
     })))
 }
 
-#[bridge(name = "port-has-port-position?", lib = "(rnrs io builtins (6))")]
+#[define(name = "port-has-port-position?", lib = "(rnrs io builtins (6))")]
 pub fn port_has_port_position_pred(port: Port) -> bool {
     port.has_port_position()
 }
 
 #[maybe_async]
-#[bridge(name = "port-position", lib = "(rnrs io builtins (6))")]
+#[define(name = "port-position", lib = "(rnrs io builtins (6))")]
 pub fn port_position(port: Port) -> Result<u64, Exception> {
     maybe_await!(port.get_pos())
 }
 
-#[bridge(name = "port-has-set-port-position!?", lib = "(rnrs io builtins (6))")]
+#[define(name = "port-has-set-port-position!?", lib = "(rnrs io builtins (6))")]
 pub fn port_has_set_port_position_bang_pred(port: Port) -> bool {
     port.has_set_port_position()
 }
 
 #[maybe_async]
-#[bridge(name = "set-port-position!", lib = "(rnrs io builtins (6))")]
+#[define(name = "set-port-position!", lib = "(rnrs io builtins (6))")]
 pub fn set_port_position_bang(port: Port, pos: u64) -> Result<(), Exception> {
     maybe_await!(port.set_pos(pos))?;
     Ok(())
 }
 
 #[maybe_async]
-#[bridge(name = "close-port", lib = "(rnrs io builtins (6))")]
+#[define(name = "close-port", lib = "(rnrs io builtins (6))")]
 pub fn close_port(port: Port, _barrier: &mut ContBarrier<'_>) -> Result<(), Exception> {
     #[cfg(not(feature = "async"))]
     let mut data = port.0.data.lock().unwrap();
@@ -2977,13 +2979,13 @@ pub fn close_port(port: Port, _barrier: &mut ContBarrier<'_>) -> Result<(), Exce
 
 // TODO: call-with-port
 
-#[bridge(name = "input-port?", lib = "(rnrs io builtins (6))")]
+#[define(name = "input-port?", lib = "(rnrs io builtins (6))")]
 pub fn input_port_pred(obj: Value) -> bool {
     obj.cast::<Port>().is_some_and(|port| port.is_input_port())
 }
 
 #[maybe_async]
-#[bridge(name = "port-eof?", lib = "(rnrs io builtins (6))")]
+#[define(name = "port-eof?", lib = "(rnrs io builtins (6))")]
 pub fn port_eof_pred(port: Port) -> Result<bool, Exception> {
     #[cfg(not(feature = "async"))]
     let mut data = port.0.data.lock().unwrap();
@@ -2995,7 +2997,7 @@ pub fn port_eof_pred(port: Port) -> Result<bool, Exception> {
 }
 
 #[maybe_async]
-#[bridge(name = "open-file-input-port", lib = "(rnrs io builtins (6))")]
+#[define(name = "open-file-input-port", lib = "(rnrs io builtins (6))")]
 pub fn open_file_input_port(
     filename: Value,
     file_options: Option<Embedded<EnumerationSet>>,
@@ -3011,7 +3013,7 @@ pub fn open_file_input_port(
     ))
 }
 
-#[bridge(name = "make-custom-binary-input-port", lib = "(rnrs io builtins (6))")]
+#[define(name = "make-custom-binary-input-port", lib = "(rnrs io builtins (6))")]
 pub fn make_custom_binary_input_port(
     id: Value,
     read: Procedure,
@@ -3052,7 +3054,7 @@ pub fn make_custom_binary_input_port(
     ))
 }
 
-#[bridge(name = "standard-input-port", lib = "(rnrs io builtins (6))")]
+#[define(name = "standard-input-port", lib = "(rnrs io builtins (6))")]
 pub fn standard_input_port() -> Port {
     Port::new(
         "<stdin>",
@@ -3065,17 +3067,17 @@ pub fn standard_input_port() -> Port {
     )
 }
 
-#[bridge(name = "current-input-port", lib = "(rnrs base builtins (6))")]
+#[define(name = "current-input-port", lib = "(rnrs base builtins (6))")]
 pub fn current_input_port(barrier: &mut ContBarrier) -> Port {
     barrier.current_input_port()
 }
 
-#[bridge(name = "current-output-port", lib = "(rnrs base builtins (6))")]
+#[define(name = "current-output-port", lib = "(rnrs base builtins (6))")]
 pub fn current_output_port(barrier: &mut ContBarrier) -> Port {
     barrier.current_output_port()
 }
 
-#[bridge(name = "current-error-port", lib = "(rnrs base builtins (6))")]
+#[define(name = "current-error-port", lib = "(rnrs base builtins (6))")]
 pub fn current_error_port() -> Port {
     Port::new(
         "<stderr>",
@@ -3091,7 +3093,7 @@ pub fn current_error_port() -> Port {
 // 8.2.8. Binary input
 
 #[maybe_async]
-#[bridge(name = "get-u8", lib = "(rnrs io builtins (6))")]
+#[define(name = "get-u8", lib = "(rnrs io builtins (6))")]
 pub fn get_u8(port: Port) -> Result<Value, Exception> {
     if let Some(byte) = maybe_await!(port.get_u8())? {
         Ok(Value::from(byte))
@@ -3101,7 +3103,7 @@ pub fn get_u8(port: Port) -> Result<Value, Exception> {
 }
 
 #[maybe_async]
-#[bridge(name = "lookahead-u8", lib = "(rnrs io builtins (6))")]
+#[define(name = "lookahead-u8", lib = "(rnrs io builtins (6))")]
 pub fn lookahead_u8(port: Port) -> Result<Value, Exception> {
     if let Some(byte) = maybe_await!(port.lookahead_u8())? {
         Ok(Value::from(byte))
@@ -3113,7 +3115,7 @@ pub fn lookahead_u8(port: Port) -> Result<Value, Exception> {
 // 8.2.9. Textual input
 
 #[maybe_async]
-#[bridge(name = "get-char", lib = "(rnrs io builtins (6))")]
+#[define(name = "get-char", lib = "(rnrs io builtins (6))")]
 pub fn get_char(textual_input_port: Port) -> Result<Value, Exception> {
     if let Some(chr) = maybe_await!(textual_input_port.get_char())? {
         Ok(Value::from(chr))
@@ -3123,7 +3125,7 @@ pub fn get_char(textual_input_port: Port) -> Result<Value, Exception> {
 }
 
 #[maybe_async]
-#[bridge(name = "lookahead-char", lib = "(rnrs io builtins (6))")]
+#[define(name = "lookahead-char", lib = "(rnrs io builtins (6))")]
 pub fn lookahead_char(textual_input_port: Port) -> Result<Value, Exception> {
     if let Some(chr) = maybe_await!(textual_input_port.lookahead_char())? {
         Ok(Value::from(chr))
@@ -3133,7 +3135,7 @@ pub fn lookahead_char(textual_input_port: Port) -> Result<Value, Exception> {
 }
 
 #[maybe_async]
-#[bridge(name = "get-string-n", lib = "(rnrs io builtins (6))")]
+#[define(name = "get-string-n", lib = "(rnrs io builtins (6))")]
 pub fn get_string_n(textual_input_port: Port, n: usize) -> Result<Value, Exception> {
     if let Some(s) = maybe_await!(textual_input_port.get_string_n(n))? {
         Ok(Value::from(s))
@@ -3143,7 +3145,7 @@ pub fn get_string_n(textual_input_port: Port, n: usize) -> Result<Value, Excepti
 }
 
 #[maybe_async]
-#[bridge(name = "get-line", lib = "(rnrs io builtins (6))")]
+#[define(name = "get-line", lib = "(rnrs io builtins (6))")]
 pub fn get_line(textual_input_port: Port) -> Result<Value, Exception> {
     if let Some(line) = maybe_await!(textual_input_port.get_line())? {
         Ok(Value::from(line))
@@ -3153,7 +3155,7 @@ pub fn get_line(textual_input_port: Port) -> Result<Value, Exception> {
 }
 
 #[maybe_async]
-#[bridge(name = "get-string-all", lib = "(rnrs io builtins (6))")]
+#[define(name = "get-string-all", lib = "(rnrs io builtins (6))")]
 pub fn get_string_all(textual_input_port: Port) -> Result<Value, Exception> {
     if let Some(s) = maybe_await!(textual_input_port.get_string_all())? {
         Ok(Value::from(s))
@@ -3163,7 +3165,7 @@ pub fn get_string_all(textual_input_port: Port) -> Result<Value, Exception> {
 }
 
 #[maybe_async]
-#[bridge(name = "get-datum", lib = "(rnrs io builtins (6))")]
+#[define(name = "get-datum", lib = "(rnrs io builtins (6))")]
 pub fn get_datum(textual_input_port: Port) -> Result<Value, Exception> {
     if let Some((syntax, _)) = maybe_await!(textual_input_port.get_sexpr(Span::default()))? {
         Ok(Value::datum_from_syntax(&syntax))
@@ -3174,7 +3176,7 @@ pub fn get_datum(textual_input_port: Port) -> Result<Value, Exception> {
 
 // 8.2.10. Output ports
 
-#[bridge(name = "standard-output-port", lib = "(rnrs io builtins (6))")]
+#[define(name = "standard-output-port", lib = "(rnrs io builtins (6))")]
 pub fn standard_output_port() -> Port {
     Port::new(
         "<stdout>",
@@ -3189,25 +3191,25 @@ pub fn standard_output_port() -> Port {
 
 // 8.2.10. Output ports
 
-#[bridge(name = "output-port?", lib = "(rnrs io builtins (6))")]
+#[define(name = "output-port?", lib = "(rnrs io builtins (6))")]
 pub fn output_port_pred(obj: Value) -> bool {
     obj.cast::<Port>().is_some_and(|port| port.is_output_port())
 }
 
 #[maybe_async]
-#[bridge(name = "flush-output-port", lib = "(rnrs io builtins (6))")]
+#[define(name = "flush-output-port", lib = "(rnrs io builtins (6))")]
 pub fn flush_output_port(port: Port) -> Result<(), Exception> {
     maybe_await!(port.flush())?;
     Ok(())
 }
 
-#[bridge(name = "output-port-buffer-mode", lib = "(rnrs io builtins (6))")]
+#[define(name = "output-port-buffer-mode", lib = "(rnrs io builtins (6))")]
 pub fn output_port_buffer_mode(output_port: Port) -> Symbol {
     output_port.buffer_mode().to_sym()
 }
 
 #[maybe_async]
-#[bridge(name = "open-file-output-port", lib = "(rnrs io builtins (6))")]
+#[define(name = "open-file-output-port", lib = "(rnrs io builtins (6))")]
 pub fn open_file_output_port(
     filename: Value,
     file_options: Option<Embedded<EnumerationSet>>,
@@ -3223,7 +3225,7 @@ pub fn open_file_output_port(
     ))
 }
 
-#[bridge(
+#[define(
     name = "make-custom-binary-output-port",
     lib = "(rnrs io builtins (6))"
 )]
@@ -3270,14 +3272,14 @@ pub fn make_custom_binary_output_port(
 // 8.2.11. Binary output
 
 #[maybe_async]
-#[bridge(name = "put-u8", lib = "(rnrs io builtins (6))")]
+#[define(name = "put-u8", lib = "(rnrs io builtins (6))")]
 pub fn put_u8(port: Port, octet: u8) -> Result<(), Exception> {
     maybe_await!(port.put_u8(octet))?;
     Ok(())
 }
 
 #[cfg(not(feature = "async"))]
-#[bridge(name = "put-bytevector", lib = "(rnrs io builtins (6))")]
+#[define(name = "put-bytevector", lib = "(rnrs io builtins (6))")]
 pub fn put_bytevector(
     port: Port,
     bytevector: ByteVector,
@@ -3305,7 +3307,7 @@ pub fn put_bytevector(
 }
 
 #[cfg(feature = "async")]
-#[bridge(name = "put-bytevector", lib = "(rnrs io builtins (6))")]
+#[define(name = "put-bytevector", lib = "(rnrs io builtins (6))")]
 pub async fn put_bytevector(
     port: Port,
     bytevector: ByteVector,
@@ -3338,14 +3340,14 @@ pub async fn put_bytevector(
 // 8.2.12. Textual output
 
 #[maybe_async]
-#[bridge(name = "put-char", lib = "(rnrs io builtins (6))")]
+#[define(name = "put-char", lib = "(rnrs io builtins (6))")]
 pub fn put_char(port: Port, chr: char) -> Result<(), Exception> {
     maybe_await!(port.put_char(chr))?;
     Ok(())
 }
 
 #[cfg(not(feature = "async"))]
-#[bridge(name = "put-string", lib = "(rnrs io builtins (6))")]
+#[define(name = "put-string", lib = "(rnrs io builtins (6))")]
 pub fn put_string(
     port: Port,
     string: Embedded<String>,
@@ -3373,7 +3375,7 @@ pub fn put_string(
 }
 
 #[cfg(feature = "async")]
-#[bridge(name = "put-string", lib = "(rnrs io builtins (6))")]
+#[define(name = "put-string", lib = "(rnrs io builtins (6))")]
 pub async fn put_string(
     port: Port,
     string: Embedded<String>,
@@ -3403,7 +3405,7 @@ pub async fn put_string(
 }
 
 #[maybe_async]
-#[bridge(name = "put-datum", lib = "(rnrs io builtins (6))")]
+#[define(name = "put-datum", lib = "(rnrs io builtins (6))")]
 pub fn put_datum(port: Port, datum: Value) -> Result<(), Exception> {
     let str_rep = format!("{datum:?}");
     maybe_await!(port.put_str(&str_rep))?;
@@ -3413,7 +3415,7 @@ pub fn put_datum(port: Port, datum: Value) -> Result<(), Exception> {
 // 8.2.13. Input/output ports
 
 #[maybe_async]
-#[bridge(name = "open-file-input/output-port", lib = "(rnrs io builtins (6))")]
+#[define(name = "open-file-input/output-port", lib = "(rnrs io builtins (6))")]
 pub fn open_file_input_output_port(
     filename: Value,
     file_options: Option<Embedded<EnumerationSet>>,
@@ -3429,7 +3431,7 @@ pub fn open_file_input_output_port(
     ))
 }
 
-#[bridge(
+#[define(
     name = "make-custom-binary-input/output-port",
     lib = "(rnrs io builtins (6))"
 )]
@@ -3480,7 +3482,7 @@ pub fn make_custom_binary_input_output_port(
 // eof-object? already defined
 
 #[maybe_async]
-#[bridge(name = "call-with-input-file", lib = "(rnrs io simple builtins (6))")]
+#[define(name = "call-with-input-file", lib = "(rnrs io simple builtins (6))")]
 pub fn call_with_input_file(
     filename: Value,
     proc: Procedure,
@@ -3514,7 +3516,7 @@ pub fn call_with_input_file(
 }
 
 #[maybe_async]
-#[bridge(name = "call-with-output-file", lib = "(rnrs io simple builtins (6))")]
+#[define(name = "call-with-output-file", lib = "(rnrs io simple builtins (6))")]
 pub fn call_with_output_file(
     filename: Value,
     proc: Procedure,
@@ -3578,7 +3580,7 @@ fn call_k_with_env(env: [Value; 1], _args: Rest, barrier: &mut ContBarrier) -> A
 // output-port? already defined
 
 #[maybe_async]
-#[bridge(name = "with-input-from-file", lib = "(rnrs io simple builtins (6))")]
+#[define(name = "with-input-from-file", lib = "(rnrs io simple builtins (6))")]
 pub fn with_input_from_file(
     filename: Value,
     thunk: Procedure,
@@ -3620,7 +3622,7 @@ pub fn with_input_from_file(
 }
 
 #[maybe_async]
-#[bridge(name = "with-output-to-file", lib = "(rnrs io simple builtins (6))")]
+#[define(name = "with-output-to-file", lib = "(rnrs io simple builtins (6))")]
 pub fn with_output_to_file(
     filename: Value,
     thunk: Procedure,
@@ -3665,20 +3667,20 @@ pub fn with_output_to_file(
 }
 
 #[maybe_async]
-#[bridge(name = "open-input-file", lib = "(rnrs io simple builtins (6))")]
+#[define(name = "open-input-file", lib = "(rnrs io simple builtins (6))")]
 pub fn open_input_file(filename: Value) -> Result<Port, Exception> {
     // TODO: This needs to be a text port
     maybe_await!(open_file_port(&filename, None, None, None, PortKind::Read))
 }
 
 #[maybe_async]
-#[bridge(name = "open-output-file", lib = "(rnrs io simple builtins (6))")]
+#[define(name = "open-output-file", lib = "(rnrs io simple builtins (6))")]
 pub fn open_output_file(filename: Value) -> Result<Port, Exception> {
     maybe_await!(open_file_port(&filename, None, None, None, PortKind::Write))
 }
 
 #[maybe_async]
-#[bridge(name = "read-char", lib = "(rnrs io simple builtins (6))")]
+#[define(name = "read-char", lib = "(rnrs io simple builtins (6))")]
 pub fn read_char(
     input_port: Option<Port>,
     barrier: &mut ContBarrier<'_>,
@@ -3698,7 +3700,7 @@ pub fn read_char(
 }
 
 #[maybe_async]
-#[bridge(name = "peek-char", lib = "(rnrs io simple builtins (6))")]
+#[define(name = "peek-char", lib = "(rnrs io simple builtins (6))")]
 pub fn peek_char(
     input_port: Option<Port>,
     barrier: &mut ContBarrier<'_>,
@@ -3718,7 +3720,7 @@ pub fn peek_char(
 }
 
 #[maybe_async]
-#[bridge(name = "read", lib = "(rnrs io simple builtins (6))")]
+#[define(name = "read", lib = "(rnrs io simple builtins (6))")]
 pub fn read(
     input_port: Option<Port>,
     barrier: &mut ContBarrier<'_>,
@@ -3738,7 +3740,7 @@ pub fn read(
 }
 
 #[maybe_async]
-#[bridge(name = "write-char", lib = "(rnrs io simple builtins (6))")]
+#[define(name = "write-char", lib = "(rnrs io simple builtins (6))")]
 pub fn write_char(
     chr: char,
     output_port: Option<Port>,
@@ -3755,7 +3757,7 @@ pub fn write_char(
 }
 
 #[maybe_async]
-#[bridge(name = "newline", lib = "(rnrs io simple builtins (6))")]
+#[define(name = "newline", lib = "(rnrs io simple builtins (6))")]
 pub fn newline(
     output_port: Option<Port>,
     barrier: &mut ContBarrier<'_>,
@@ -3771,7 +3773,7 @@ pub fn newline(
 }
 
 #[maybe_async]
-#[bridge(name = "display", lib = "(rnrs io simple builtins (6))")]
+#[define(name = "display", lib = "(rnrs io simple builtins (6))")]
 pub fn display(
     obj: Value,
     output_port: Option<Port>,
@@ -3789,7 +3791,7 @@ pub fn display(
 }
 
 #[maybe_async]
-#[bridge(name = "write", lib = "(rnrs io simple builtins (6))")]
+#[define(name = "write", lib = "(rnrs io simple builtins (6))")]
 pub fn write(
     obj: Value,
     output_port: Option<Port>,
@@ -3809,7 +3811,7 @@ pub fn write(
 // 9. File System
 
 #[maybe_async]
-#[bridge(name = "file-exists?", lib = "(rnrs files (6))")]
+#[define(name = "file-exists?", lib = "(rnrs files (6))")]
 pub fn file_exists_pred(filename: Value) -> Result<bool, Exception> {
     #[cfg(not(feature = "async"))]
     let try_exists = Path::try_exists;
@@ -3824,7 +3826,7 @@ pub fn file_exists_pred(filename: Value) -> Result<bool, Exception> {
 }
 
 #[maybe_async]
-#[bridge(name = "delete-file", lib = "(rnrs files (6))")]
+#[define(name = "delete-file", lib = "(rnrs files (6))")]
 pub fn delete_file(filename: Value) -> Result<(), Exception> {
     #[cfg(not(feature = "async"))]
     use std::fs::remove_file;

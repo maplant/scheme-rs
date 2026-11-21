@@ -56,7 +56,7 @@ use crate::{
     ports::{IoDecodingError, IoEncodingError, IoError, IoReadError, IoWriteError},
     proc::{Application, Args, ContBarrier, DynStackElem, FuncPtr, Procedure, Rest},
     records::{Embeddable, Embedded, RecordTypeDescriptor},
-    registry::bridge,
+    registry::define,
     runtime::Runtime,
     syntax::{Identifier, Span, Syntax, parse::ParseSyntaxError},
     value::{UnpackedValue, Value},
@@ -434,7 +434,7 @@ impl SimpleCondition {
     }
 }
 
-#[bridge(name = "condition?", lib = "(rnrs conditions (6))")]
+#[define(name = "condition?", lib = "(rnrs conditions (6))")]
 pub fn condition_pred(obj: Value) -> bool {
     obj.cast::<Embedded<SimpleCondition>>().is_some()
         || obj.cast::<Embedded<CompoundCondition>>().is_some()
@@ -864,7 +864,7 @@ where
     }
 }
 
-#[bridge(name = "condition", lib = "(rnrs conditions (6))")]
+#[define(name = "condition", lib = "(rnrs conditions (6))")]
 pub fn condition(#[rest_args] conditions: Value) -> Result<Value, Exception> {
     // TODO: Check if this is a condition
     if let Some(pair) = conditions.cast::<Pair>()
@@ -877,14 +877,14 @@ pub fn condition(#[rest_args] conditions: Value) -> Result<Value, Exception> {
     )))
 }
 
-#[bridge(name = "simple-conditions", lib = "(rnrs conditions (6))")]
+#[define(name = "simple-conditions", lib = "(rnrs conditions (6))")]
 pub fn simple_conditions(condition: Value) -> Result<Value, Exception> {
     Ok(slice_to_list(
         &Exception(condition.clone()).simple_conditions()?,
     ))
 }
 
-#[bridge(name = "with-exception-handler", lib = "(rnrs exceptions (6))")]
+#[define(name = "with-exception-handler", lib = "(rnrs exceptions (6))")]
 pub fn with_exception_handler(
     handler: Procedure,
     thunk: Procedure,
@@ -903,7 +903,7 @@ pub fn with_exception_handler(
 }
 
 #[doc(hidden)]
-#[bridge(name = "raise", lib = "(rnrs exceptions (6))")]
+#[define(name = "raise", lib = "(rnrs exceptions (6))")]
 pub fn raise_builtin(obj: Value, barrier: &mut ContBarrier) -> Application {
     raise(obj.clone(), barrier)
 }
@@ -976,7 +976,7 @@ fn reraise_exception(_env: [Value; 0], _args: Rest, _barrier: &mut ContBarrier) 
 /// Raises an exception to the current exception handler and continues with the
 /// value returned by the handler.
 #[doc(hidden)]
-#[bridge(name = "raise-continuable", lib = "(rnrs exceptions (6))")]
+#[define(name = "raise-continuable", lib = "(rnrs exceptions (6))")]
 pub fn raise_continuable(
     condition: Value,
     barrier: &mut ContBarrier,
@@ -988,7 +988,7 @@ pub fn raise_continuable(
     Ok(Application::new(handler, Args::pack([condition.clone()])))
 }
 
-#[bridge(name = "error", lib = "(rnrs base builtins (6))")]
+#[define(name = "error", lib = "(rnrs base builtins (6))")]
 pub fn error(who: Value, message: Value, #[rest_args] irritants: Value) -> Result<(), Exception> {
     let mut conditions = Vec::new();
     if who.is_true() {
@@ -1001,7 +1001,7 @@ pub fn error(who: Value, message: Value, #[rest_args] irritants: Value) -> Resul
     )))))
 }
 
-#[bridge(name = "assertion-violation", lib = "(rnrs base builtins (6))")]
+#[define(name = "assertion-violation", lib = "(rnrs base builtins (6))")]
 pub fn assertion_violation(
     who: Value,
     message: Value,

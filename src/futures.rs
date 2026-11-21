@@ -4,7 +4,7 @@ use futures::{
     FutureExt,
     future::{BoxFuture, Shared},
 };
-use scheme_rs_macros::bridge;
+use scheme_rs_macros::define;
 
 use tokio::{
     net::{TcpListener, TcpStream},
@@ -33,20 +33,20 @@ unsafe impl Embeddable for Future {
     }
 }
 
-#[bridge(name = "future", lib = "(async)")]
+#[define(name = "future", lib = "(async)")]
 pub async fn make_future(proc: Procedure) -> Future {
     async move { proc.call(&[], &mut ContBarrier::new()).await }
         .boxed()
         .shared()
 }
 
-#[bridge(name = "spawn", lib = "(async)")]
+#[define(name = "spawn", lib = "(async)")]
 pub async fn spawn(task: Procedure) -> Future {
     let task = tokio::task::spawn(async move { task.call(&[], &mut ContBarrier::new()).await });
     async move { task.await.unwrap() }.boxed().shared()
 }
 
-#[bridge(name = "await", lib = "(async)")]
+#[define(name = "await", lib = "(async)")]
 pub async fn await_future(
     future: Embedded<Future>,
     barrier: &mut ContBarrier<'_>,
@@ -65,7 +65,7 @@ unsafe impl Embeddable for Arc<TcpListener> {
     }
 }
 
-#[bridge(name = "bind-tcp", lib = "(async)")]
+#[define(name = "bind-tcp", lib = "(async)")]
 pub async fn bind_tcp(addr: Embedded<String>) -> Result<Arc<TcpListener>, Exception> {
     let listener = TcpListener::bind(&*addr)
         .await
@@ -84,7 +84,7 @@ unsafe impl Embeddable for Arc<Mutex<TcpStream>> {
     }
 }
 
-#[bridge(name = "accept", lib = "(async)")]
+#[define(name = "accept", lib = "(async)")]
 pub async fn accept(listener: Embedded<Arc<TcpListener>>) -> Result<(Port, String), Exception> {
     let (socket, addr) = listener
         .accept()
@@ -95,7 +95,7 @@ pub async fn accept(listener: Embedded<Arc<TcpListener>>) -> Result<(Port, Strin
     Ok((socket, addr))
 }
 
-#[bridge(name = "sleep", lib = "(async)")]
+#[define(name = "sleep", lib = "(async)")]
 pub async fn sleep_ms(ms: u64) -> Result<(), Exception> {
     sleep(Duration::from_millis(ms)).await;
     Ok(())

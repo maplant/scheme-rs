@@ -10,14 +10,14 @@
 //!
 //! Generally procedures are created in Scheme contexts. However, it is
 //! occasionally desirable to create a closure in Rust contexts. This can be
-//! done with a `bridge` function taking `#[env]` parameters and a call to
+//! done with a bridge function taking `#[env]` parameters and a call to
 //! [`Procedure::new`]. The `#[env]` parameters are converted from the vector
 //! passed to the `new` function:
 //!
 //! ```
 //! # use scheme_rs::{proc::{Procedure, BridgePtr, Application, ContBarrier, Args},
-//! # registry::bridge, value::Value, exceptions::Exception};
-//! #[bridge]
+//! # registry::define, value::Value, exceptions::Exception};
+//! #[define]
 //! fn closure(
 //!     #[env] captured: Value,
 //!     barrier: &mut ContBarrier,
@@ -39,11 +39,11 @@
 //! ```
 //! # use scheme_rs::{
 //! #     proc::{Procedure, BridgePtr, Application, ContBarrier, Args},
-//! #     registry::bridge, value::{Value, Cell},
+//! #     registry::define, value::{Value, Cell},
 //! #     exceptions::Exception,
 //! #     num::Number,
 //! # };
-//! #[bridge]
+//! #[define]
 //! fn next_num(
 //!     #[env] cell: Cell,
 //!     barrier: &mut ContBarrier,
@@ -89,7 +89,7 @@ use crate::{
     value::Value,
 };
 use scheme_rs_gc::HeapObject;
-use scheme_rs_macros::{bridge, maybe_async, maybe_await};
+use scheme_rs_macros::{define, maybe_async, maybe_await};
 use std::{
     alloc::Layout,
     any::Any,
@@ -1123,7 +1123,7 @@ impl ProcDebugInfo {
     }
 }
 
-#[bridge(name = "apply", lib = "(rnrs base builtins (6))")]
+#[define(name = "apply", lib = "(rnrs base builtins (6))")]
 pub fn apply(proc: Procedure, #[rest_args] args: Value) -> Result<Application, Exception> {
     Ok(Application::new(proc, Args::from_list(splice_last(args)?)))
 }
@@ -1503,7 +1503,7 @@ pub(crate) fn pop_dyn_stack(
 
 /*
 #[cfg(feature = "continuation-marks")]
-#[bridge(name = "print-trace", lib = "(scheme-rs tracing (6))")]
+#[define(name = "print-trace", lib = "(scheme-rs tracing (6))")]
 pub fn print_trace(barrier: &mut ContBarrier) {
     println!(
         "trace: {:#?}",
@@ -1517,7 +1517,7 @@ pub fn print_trace(barrier: &mut ContBarrier) {
 // Call with current continuation
 //
 
-#[bridge(
+#[define(
     name = "call-with-current-continuation",
     lib = "(rnrs base builtins (6))"
 )]
@@ -1529,7 +1529,7 @@ pub fn call_with_current_continuation(proc: Procedure, barrier: &mut ContBarrier
 
 /// Prepare the continuation for call/cc. Clones the continuation environment
 /// and creates a closure that calls the appropriate winders.
-#[bridge]
+#[define]
 fn escape_proc(
     #[env] new_program_state: Embedded<CapturedContinuation>,
     #[rest_args] args: Value,
@@ -1612,7 +1612,7 @@ fn wind(env: [Value; 3], _args: Rest, barrier: &mut ContBarrier) -> Application 
     barrier.call_cont(Args::from_list(args))
 }
 
-#[bridge(name = "call-with-values", lib = "(rnrs base builtins (6))")]
+#[define(name = "call-with-values", lib = "(rnrs base builtins (6))")]
 pub fn call_with_values(
     producer: Procedure,
     consumer: Procedure,
@@ -1643,7 +1643,7 @@ pub(crate) struct Winder {
     pub(crate) out_thunk: Procedure,
 }
 
-#[bridge(name = "dynamic-wind", lib = "(rnrs base builtins (6))")]
+#[define(name = "dynamic-wind", lib = "(rnrs base builtins (6))")]
 pub fn dynamic_wind(
     in_thunk: Procedure,
     body_thunk: Procedure,
@@ -1713,7 +1713,7 @@ impl DelimitedContinuation {
     }
 }
 
-#[bridge(name = "call-with-prompt", lib = "(prompts)")]
+#[define(name = "call-with-prompt", lib = "(prompts)")]
 pub fn call_with_prompt(
     tag: Symbol,
     thunk: Procedure,
@@ -1726,7 +1726,7 @@ pub fn call_with_prompt(
     Application::new(thunk, Args::pack([]))
 }
 
-#[bridge(name = "abort-to-prompt", lib = "(prompts)")]
+#[define(name = "abort-to-prompt", lib = "(prompts)")]
 pub fn abort_to_prompt(
     tag: Symbol,
     #[rest_args] rest_args: Value,
@@ -1780,7 +1780,7 @@ fn unwind_to_prompt(env: [Value; 3], _args: Rest, barrier: &mut ContBarrier) -> 
     }
 }
 
-#[bridge]
+#[define]
 fn delimited_continuation(
     #[env] new_program_state: Embedded<DelimitedContinuation>,
     #[rest_args] rest_args: Value,

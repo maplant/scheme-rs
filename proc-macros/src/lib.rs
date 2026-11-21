@@ -1,3 +1,5 @@
+use std::mem;
+
 use heck::ToKebabCase;
 use proc_macro::{self, TokenStream};
 use proc_macro2::{Literal, Span};
@@ -13,10 +15,10 @@ use syn::{
     spanned::Spanned,
 };
 
-/// The `bridge` proc macro allows one to register Scheme procedures written in
+/// The `define` proc macro allows one to register Scheme procedures written in
 /// Rust.
 ///
-/// Rust functions registered with `bridge` must have the following syntax:
+/// Rust functions registered with `define` must have the following syntax:
 /// `async? fn(#[rest_arg]? arg: T, ...) -> R`
 ///
 /// The types of the arguments can be any `T` for which `T: TryFrom<Value>`, or
@@ -35,13 +37,16 @@ use syn::{
 ///
 /// Bridge functions can be async if the `async` feature flag is enabled.
 ///
-/// The `bridge` proc macro takes two arguments: `def` which specifies the
+/// The `define` proc macro takes two arguments: `name` which specifies the
 /// scheme procedure name and `lib` which specifies the library to register the
 /// procedure to. At time of variable resolution, if the library has no scheme
 /// code associated with it, all bridge functions registered to that library
 /// will be assumed to be public. More control can be given by associating
 /// scheme code with the library, in that case bridge functions will need to be
 /// made public by putting them in the `export` spec.
+///
+/// The `name` argument can be omitted from the definition and the function's
+/// name will automatically be converted to kebab case and used as the name.
 ///
 /// # Capturing the environment
 ///
@@ -60,13 +65,13 @@ use syn::{
 /// treated as no return value rather than the empty list in this context).
 ///
 /// ```rust,ignore
-/// #[bridge(name = "length", lib = "(list-length (1))")]
+/// #[define(name = "length", lib = "(list-length (1))")]
 /// pub fn length(arg: List) -> usize {
 ///     arg.len()
 /// }
 /// ```
 #[proc_macro_attribute]
-pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
+pub fn define(args: TokenStream, item: TokenStream) -> TokenStream {
     let mut name: Option<LitStr> = None;
     let mut lib: Option<LitStr> = None;
     let bridge_attr_parser = syn::meta::parser(|meta| {
@@ -77,16 +82,56 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
             lib = Some(meta.value()?.parse()?);
             Ok(())
         } else {
-            Err(meta.error("unsupported bridge property"))
+            Err(meta.error("unsupported define property"))
         }
     });
 
     parse_macro_input!(args with bridge_attr_parser);
 
-    let mut bridge = parse_macro_input!(item as ItemFn);
+    bridge_inner(name, lib, parse_macro_input!(item as ItemFn), false)
+        .unwrap_or_else(Error::into_compile_error)
+        .into()
+}
+
+#[deprecated(since = "0.3.0", note = "use the `define` attribute instead")]
+#[proc_macro_attribute]
+pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
+    define(args, item)
+}
+
+#[proc_macro_attribute]
+pub fn define_syntax(args: TokenStream, item: TokenStream) -> TokenStream {
+    let mut name: Option<LitStr> = None;
+    let mut lib: Option<LitStr> = None;
+    let bridge_attr_parser = syn::meta::parser(|meta| {
+        if meta.path.is_ident("name") {
+            name = Some(meta.value()?.parse()?);
+            Ok(())
+        } else if meta.path.is_ident("lib") {
+            lib = Some(meta.value()?.parse()?);
+            Ok(())
+        } else {
+            Err(meta.error("unsupported define_syntax property"))
+        }
+    });
+
+    parse_macro_input!(args with bridge_attr_parser);
+
+    bridge_inner(name, lib, parse_macro_input!(item as ItemFn), true)
+        .unwrap_or_else(Error::into_compile_error)
+        .into()
+}
+
+fn bridge_inner(
+    name: Option<LitStr>,
+    lib: Option<LitStr>,
+    mut bridge: ItemFn,
+    is_keyword: bool,
+) -> Result<proc_macro2::TokenStream> {
     let docs = doc_string(&bridge.attrs);
 
-    let wrapper_name = std::mem::replace(
+    let default_name = bridge.sig.ident.to_string().to_kebab_case();
+    let wrapper_name = mem::replace(
         &mut bridge.sig.ident,
         Ident::new("__inner__", Span::call_site()),
     );
@@ -102,11 +147,16 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
     let mut num_required = 0usize;
     let mut num_optional = 0usize;
 
+    if is_keyword && bridge.sig.inputs.len() != 1 {
+        return Err(Error::new(
+            bridge.sig.inputs.span(),
+            "define_syntax transformers must take one argument",
+        ));
+    }
+
     for arg in bridge.sig.inputs.iter_mut() {
         let FnArg::Typed(arg) = arg else {
-            return Error::new(arg.span(), "methods cannot be bridge functions")
-                .into_compile_error()
-                .into();
+            return Err(Error::new(arg.span(), "methods cannot be bridge functions"));
         };
 
         let mut is_env_var = false;
@@ -139,12 +189,10 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
 
         if is_cont_barrier(arg) {
             if has_cont_barrier {
-                return Error::new(
+                return Err(Error::new(
                     arg.span(),
                     "cannot have multiple continuation barrier arguments",
-                )
-                .into_compile_error()
-                .into();
+                ));
             }
 
             has_cont_barrier = true;
@@ -153,30 +201,24 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
         }
 
         if is_variadic && !is_rest_args {
-            return Error::new(
+            return Err(Error::new(
                 arg.span(),
                 "regular arguments must come before the #[rest_args] argument",
-            )
-            .into_compile_error()
-            .into();
+            ));
         }
 
         if is_optional && (is_env_var || is_rest_args) {
-            return Error::new(
+            return Err(Error::new(
                 arg.span(),
                 "env and #[rest_args] arguments cannot have type Option<T>",
-            )
-            .into_compile_error()
-            .into();
+            ));
         }
 
         if num_optional > 0 && !is_optional && !is_rest_args {
-            return Error::new(
+            return Err(Error::new(
                 arg.span(),
                 "required arguments must come before optional (Option<T>) arguments",
-            )
-            .into_compile_error()
-            .into();
+            ));
         }
 
         arg_names.push(
@@ -272,34 +314,22 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
 
     let visibility = bridge.vis.clone();
 
-    if name.is_none() && env_var_idx == 0 {
-        return Error::new(Span::call_site(), "name attribute is required")
-            .into_compile_error()
-            .into();
-    };
-
     if name.is_some() && env_var_idx > 0 {
-        return Error::new(
+        return Err(Error::new(
             Span::call_site(),
             "name attribute is not allowed with env arguments",
-        )
-        .into_compile_error()
-        .into();
+        ));
     }
 
     if lib.is_none() && env_var_idx == 0 {
-        return Error::new(Span::call_site(), "lib attribute is required")
-            .into_compile_error()
-            .into();
+        return Err(Error::new(Span::call_site(), "lib attribute is required"));
     }
 
     if lib.is_some() && env_var_idx > 0 {
-        return Error::new(
+        return Err(Error::new(
             Span::call_site(),
             "lib attribute is not allowed with env arguments",
-        )
-        .into_compile_error()
-        .into();
+        ));
     }
 
     if bridge.sig.asyncness.is_none()
@@ -312,10 +342,10 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
         && env_var_idx == 0
         && let Some(known_ret_type) = is_return_type_known(&bridge.sig.output)
     {
-        return codegen_known_bridge(
+        return Ok(codegen_known_bridge(
             &bridge,
             known_ret_type,
-            &name.unwrap().value(),
+            &name.map_or(default_name, |name| name.value()),
             &lib.unwrap().value(),
             visibility,
             wrapper_name,
@@ -335,8 +365,9 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                 })
                 .collect(),
             arg_names,
+            is_keyword,
             docs,
-        );
+        ));
     }
 
     if !is_variadic {
@@ -438,9 +469,8 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
         }
     };
 
-    let registration = if let Some(name) = name
-        && let Some(lib) = lib
-    {
+    let registration = if let Some(lib) = lib {
+        let name = name.unwrap_or_else(|| LitStr::new(&default_name, Span::call_site()));
         let bridge_ty = if bridge.sig.asyncness.is_some() {
             quote!(Async)
         } else {
@@ -452,6 +482,7 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
                     #name,
                     #lib,
                     ::scheme_rs::registry::Bridge::#bridge_ty(#wrapper_name),
+                    #is_keyword,
                     ::scheme_rs::registry::BridgeFnDebugInfo::new(
                         ::std::file!(),
                         ::std::line!(),
@@ -468,11 +499,10 @@ pub fn bridge(args: TokenStream, item: TokenStream) -> TokenStream {
         quote!()
     };
 
-    quote! {
+    Ok(quote! {
         #func
         #registration
-    }
-    .into()
+    })
 }
 
 fn convert_arg(expr: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
@@ -613,8 +643,9 @@ fn codegen_known_bridge(
     wrapper_name: Ident,
     args: Vec<Ident>,
     arg_names: Vec<String>,
+    is_keyword: bool,
     docs: String,
-) -> TokenStream {
+) -> proc_macro2::TokenStream {
     let call_inner = quote!(
         __inner__(
             #(
@@ -673,6 +704,7 @@ fn codegen_known_bridge(
                 ::scheme_rs::registry::Bridge::Known(::scheme_rs::proc::KnownFunc::#known_type(
                     #wrapper_name
                 )),
+                #is_keyword,
                 ::scheme_rs::registry::BridgeFnDebugInfo::new(
                     ::std::file!(),
                     ::std::line!(),
@@ -685,7 +717,6 @@ fn codegen_known_bridge(
             )
         }
     }
-    .into()
 }
 
 fn doc_string(attrs: &[Attribute]) -> String {
@@ -729,9 +760,72 @@ fn derive_embeddable_inner(input: DeriveInput) -> Result<proc_macro2::TokenStrea
 
     let options = EmbeddableOptions::parse(&input.attrs)?;
 
-    let name = options.name.unwrap_or_else(|| {
-        LitStr::new(&input.ident.to_string().to_kebab_case(), Span::call_site())
-    });
+    let default_name = input.ident.to_string().to_kebab_case();
+
+    let name = options
+        .name
+        .unwrap_or_else(|| LitStr::new(&default_name, Span::call_site()));
+
+    let automatic_defns = if let Some(lib) = &options.lib
+        && let Some(constructor) = &options.constructor
+    {
+        let predicate_name = options
+            .predicate_name
+            .unwrap_or_else(|| LitStr::new(&format!("{}?", name.value()), Span::call_site()));
+
+        let constructor_name = options
+            .constructor_name
+            .unwrap_or_else(|| LitStr::new(&format!("make-{}", name.value()), Span::call_site()));
+
+        let constructor_args = constructor
+            .inputs
+            .iter()
+            .map(|pat| match pat {
+                Pat::Ident(PatIdent { ident, .. }) => Ok(ident),
+                Pat::Type(PatType { pat, .. })
+                    if let Pat::Ident(PatIdent { ident, .. }) = pat.as_ref() =>
+                {
+                    Ok(ident)
+                }
+                _ => Err(Error::new(pat.span(), "expected ident")),
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        quote! {
+            #[::scheme_rs::registry::define(name = #predicate_name, lib = #lib)]
+            pub fn predicate_fn(val: ::scheme_rs::value::Value) -> bool {
+                val.is_a::<::scheme_rs::records::Embedded<#ty>>()
+            }
+
+            #[::scheme_rs::registry::define(name = #constructor_name, lib = #lib)]
+            pub fn constructor_fn(
+                #( #constructor_args: ::scheme_rs::value::Value, )*
+            ) -> ::scheme_rs::Result<::scheme_rs::records::Embedded<#ty>> {
+                let constructor: fn(#(  #constructor_args: ::scheme_rs::value::Value,  )*) -> ::scheme_rs::Result<#ty> = #constructor;
+                (constructor)(#(#constructor_args,)*).map(::scheme_rs::records::Embedded::new)
+            }
+
+            #[::scheme_rs::registry::define_syntax(name = #name, lib = #lib)]
+            pub fn record(
+                input: ::scheme_rs::records::Embedded<::scheme_rs::syntax::Syntax>
+            ) -> ::scheme_rs::Result<::scheme_rs::syntax::Syntax> {
+                match input.as_list() {
+                    Some([_, ::scheme_rs::syntax::Syntax::Identifier { ident, .. }, end]) if ident == "rtd" && end.is_null() => {
+                        Ok(::scheme_rs::syntax::Syntax::wrap(this_rtd().into(), input.span()))
+                    }
+                    Some([_, ::scheme_rs::syntax::Syntax::Identifier { ident, .. }, end]) if ident == "rcd" && end.is_null() => {
+                        Ok(::scheme_rs::syntax::Syntax::wrap(
+                            ::scheme_rs::records::make_default_record_constructor_descriptor(this_rtd()).into(),
+                            input.span(),
+                        ))
+                    }
+                    _ => Err(::scheme_rs::exceptions::Exception::syntax(input.as_ref().clone(), None)),
+                }
+            }
+        }
+    } else {
+        quote!()
+    };
 
     let opaque = options.opaque.map(|opaque| quote!(opaque: #opaque,));
     let sealed = options.sealed.map(|sealed| quote!(sealed: #sealed,));
@@ -750,7 +844,9 @@ fn derive_embeddable_inner(input: DeriveInput) -> Result<proc_macro2::TokenStrea
             .map(|field| {
                 let options = EmbeddableFieldOptions::parse(&field.attrs)?;
                 Ok(EmbeddableFields {
-                    ident: field.ident.clone().expect("todo: tuple structs"),
+                    ident: field.ident.clone().ok_or_else(|| {
+                        Error::new(field.span(), "tuple structs are currently not supported")
+                    })?,
                     ty: field.ty.clone(),
                     options,
                 })
@@ -926,6 +1022,8 @@ fn derive_embeddable_inner(input: DeriveInput) -> Result<proc_macro2::TokenStrea
                 )
             }
 
+            #automatic_defns
+
             #[automatically_derived]
             unsafe impl ::scheme_rs::records::Embeddable for #ty {
                 fn rtd() -> ::scheme_rs::records::RecordTypeDescriptor {
@@ -967,10 +1065,12 @@ fn derive_embeddable_inner(input: DeriveInput) -> Result<proc_macro2::TokenStrea
 #[derive(Default)]
 struct EmbeddableOptions {
     name: Option<LitStr>,
+    predicate_name: Option<LitStr>,
+    constructor_name: Option<LitStr>,
     opaque: Option<LitBool>,
     sealed: Option<LitBool>,
     uid: Option<LitStr>,
-    constructor: Option<Expr>,
+    constructor: Option<ExprClosure>,
     lib: Option<LitStr>,
     fmt: Option<Expr>,
     fmt_fields: Option<Expr>,
@@ -1005,6 +1105,8 @@ impl EmbeddableOptions {
                     }
 
                     attribute!(name);
+                    attribute!(predicate_name);
+                    attribute!(constructor_name);
                     attribute!(opaque);
                     attribute!(sealed);
                     attribute!(uid);
@@ -1750,18 +1852,21 @@ pub fn rtd(tokens: TokenStream) -> TokenStream {
             let inputs = 0..num_inputs;
             let types = inputs.clone().map(|_| quote!(::scheme_rs::value::Value));
             quote!(Some({
-                ::scheme_rs::records::RustParentConstructor::new(|vals| {
-                    if vals.len() != #num_inputs {
-                        return Err(::scheme_rs::exceptions::Exception::wrong_num_of_args(#num_inputs, vals.len()));
-                    }
-                    let constructor: fn(#(#types,)*) -> ::scheme_rs::Result<_> = #constructor;
-                    let value = (constructor)(#(vals[#inputs].clone(),)*)?;
-                    Ok(Box::new(move |dst: *mut ()| {
-                        unsafe {
-                            dst.cast::<#ty>().write(value);
+                ::scheme_rs::records::RustParentConstructor::new(
+                    |vals| {
+                        if vals.len() != #num_inputs {
+                            return Err(::scheme_rs::exceptions::Exception::wrong_num_of_args(#num_inputs, vals.len()));
                         }
-                    }))
-                })
+                        let constructor: fn(#(#types,)*) -> ::scheme_rs::Result<_> = #constructor;
+                        let value = (constructor)(#(vals[#inputs].clone(),)*)?;
+                        Ok(Box::new(move |dst: *mut ()| {
+                            unsafe {
+                                dst.cast::<#ty>().write(value);
+                            }
+                        }))
+                    },
+                    #num_inputs
+                )
             }))
         }
         None => quote!(None),
@@ -1776,7 +1881,7 @@ pub fn rtd(tokens: TokenStream) -> TokenStream {
     let bridge = lib.map(|lib| {
         let name = format!("{}-rtd", name.value());
         quote! {
-            #[::scheme_rs_macros::bridge(name = #name, lib = #lib)]
+            #[::scheme_rs_macros::define(name = #name, lib = #lib)]
             pub fn rtd() -> ::scheme_rs::value::Value {
                 ::scheme_rs::value::Value::from(RTD.clone())
             }
@@ -1826,7 +1931,6 @@ struct DefineConditionType {
     parent: Type,
     constructor: Option<ExprClosure>,
     fields: Option<Vec<DctField>>,
-    // dbg: Option<ExprClosure>,
 }
 
 impl Parse for DefineConditionType {
@@ -1836,7 +1940,6 @@ impl Parse for DefineConditionType {
         let mut parent = None;
         let mut constructor = None;
         let mut fields = None;
-        // let mut dbg = None;
         let mut lib = None;
 
         while !input.is_empty() {
@@ -1880,12 +1983,6 @@ impl Parse for DefineConditionType {
                 }
                 let _: Token![:] = input.parse()?;
                 constructor = Some(input.parse()?);
-            // } else if keyword == "debug" {
-            //     if dbg.is_some() {
-            //         return Err(Error::new(keyword.span(), "duplicate definition of debug"));
-            //     }
-            //     let _: Token![:] = input.parse()?;
-            //     dbg = Some(input.parse()?);
             } else if keyword == "fields" {
                 if fields.is_some() {
                     return Err(Error::new(keyword.span(), "duplicate definition of fields"));
