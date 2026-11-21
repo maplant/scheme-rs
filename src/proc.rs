@@ -27,10 +27,8 @@
 //!
 //! # fn main() {
 //! let closure = Procedure::new(
-//!     vec![ Value::from(3.1415) ],
+//!     [ Value::from(3.1415) ],
 //!     closure as BridgePtr,
-//!     0,
-//!     false,
 //! );
 //! # }
 //! ```
@@ -62,10 +60,8 @@
 //! # fn main() {
 //! let next_num = Procedure::new(
 //!     // Cells must be converted to values:
-//!     vec![ Cell::new(Value::from(3.1415)).into_value() ],
+//!     [ Cell::new(Value::from(3.1415)).into_value() ],
 //!     next_num as BridgePtr,
-//!     0,
-//!     false,
 //! );
 //! # }
 //! ```
@@ -81,7 +77,7 @@ use crate::{
     cps::PrimOp,
     env::Local,
     exceptions::{Exception, raise},
-    gc::{Gc, Trace},
+    gc::{self, Gc, Trace},
     lists::{Pair, list_len, list_to_vec},
     ports::{BufferMode, Port, Transcoder},
     records::{Embeddable, Embedded},
@@ -92,16 +88,19 @@ use crate::{
     syntax::Span,
     value::Value,
 };
+use scheme_rs_gc::HeapObject;
 use scheme_rs_macros::{define, maybe_async, maybe_await};
 use std::{
+    alloc::Layout,
     any::Any,
     collections::HashMap,
     fmt,
     mem::{self, MaybeUninit},
     ops::DerefMut,
     ptr::NonNull,
+    slice,
     sync::{
-        Arc, LazyLock,
+        LazyLock,
         atomic::{AtomicUsize, Ordering},
     },
 };
@@ -357,40 +356,107 @@ impl From<AsyncBridgePtr> for FuncPtr {
     }
 }
 
-#[derive(Clone, Trace)]
-#[repr(align(16))]
+#[repr(C, align(16))]
 pub(crate) struct ProcedureInner {
-    /// Environmental variables used by the procedure.
-    pub(crate) env: Vec<Value>,
     /// Fuction pointer to the body of the procecure.
-    #[trace(skip)]
     pub(crate) func: FuncPtr,
-    /// Number of required arguments to this procedure.
-    pub(crate) num_required_args: usize,
-    /// Whether or not this is a variadic function.
-    pub(crate) variadic: bool,
     /// Whether or not this function is a variable transformer.
     pub(crate) is_variable_transformer: bool,
     /// Debug information for this function. Only applicable if the function is
     /// a user function, i.e. not a continuation.
-    pub(crate) debug_info: Option<Arc<ProcDebugInfo>>,
+    pub(crate) debug_info: Option<&'static ProcDebugInfo>,
+    /// Number of environmental variables used by the procedure.
+    pub(crate) num_envs: usize,
+    /// Pointer to the first environmental variable.
+    pub(crate) env: [Value; 0],
 }
 
 impl ProcedureInner {
-    pub(crate) fn new(
-        env: Vec<Value>,
+    /// Allocate a new rooted ProcedureInner.
+    pub(crate) fn new_rooted(
+        env: impl ExactSizeIterator<Item = Value>,
         func: FuncPtr,
-        num_required_args: usize,
-        variadic: bool,
-        debug_info: Option<Arc<ProcDebugInfo>>,
-    ) -> Self {
-        Self {
-            env,
-            func,
-            num_required_args,
-            variadic,
-            is_variable_transformer: false,
-            debug_info,
+        is_variable_transformer: bool,
+        debug_info: Option<&'static ProcDebugInfo>,
+    ) -> Gc<Self> {
+        let num_envs = env.len();
+
+        let (layout, env_offset) =
+            Layout::from_size_align(Self::env_offset(), mem::align_of::<Self>())
+                .unwrap()
+                .extend(Layout::array::<Value>(num_envs).unwrap())
+                .unwrap();
+
+        let layout = layout.pad_to_align();
+
+        let proc = unsafe {
+            let proc = HeapObject::alloc_layout(layout).cast::<Self>();
+
+            proc.write(Self {
+                func,
+                is_variable_transformer,
+                debug_info,
+                num_envs,
+                env: [],
+            });
+
+            let env_ptr = proc.byte_add(env_offset).cast::<Value>().as_ptr();
+
+            // Write the environment
+            let mut written = 0;
+            for (i, env) in env.enumerate().take(num_envs) {
+                env_ptr.add(i).write(env);
+                written += 1;
+            }
+
+            // Write undefineds if the iterator lied about its length and we
+            // came up short
+            while written < num_envs {
+                env_ptr.add(written).write(Value::undefined());
+                written += 1;
+            }
+
+            proc
+        };
+
+        Gc { ptr: proc }
+    }
+
+    pub(crate) fn env(&self) -> &[Value] {
+        unsafe { slice::from_raw_parts(self.env_ptr(), self.num_envs) }
+    }
+
+    pub(crate) fn env_mut(&mut self) -> &mut [Value] {
+        unsafe { slice::from_raw_parts_mut(self.env_ptr_mut(), self.num_envs) }
+    }
+
+    pub(crate) fn env_ptr(&self) -> *const Value {
+        &self.env as *const Value
+    }
+
+    pub(crate) fn env_ptr_mut(&mut self) -> *mut Value {
+        &mut self.env as *mut Value
+    }
+
+    pub(crate) const fn env_offset() -> usize {
+        mem::offset_of!(Self, env)
+    }
+}
+
+unsafe impl Trace for ProcedureInner {
+    unsafe fn visit_children(&self, visitor: &mut dyn FnMut(HeapObject)) {
+        for env in self.env() {
+            unsafe {
+                env.visit_children(visitor);
+            }
+        }
+    }
+
+    unsafe fn finalize(&mut self) {
+        for env in self.env_mut() {
+            unsafe {
+                env.finalize();
+            }
         }
     }
 }
@@ -448,15 +514,8 @@ impl Procedure {
 
 impl fmt::Debug for ProcedureInner {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let Some(ref debug_info) = self.debug_info else {
-            write!(f, "(<lambda>")?;
-            for i in 0..self.num_required_args {
-                write!(f, " ${i}")?;
-            }
-            if self.variadic {
-                write!(f, " . ${}", self.num_required_args)?;
-            }
-            return write!(f, ")");
+        let Some(debug_info) = self.debug_info else {
+            return write!(f, "(<lambda> . unknown)");
         };
 
         write!(f, "({}", debug_info.name)?;
@@ -465,7 +524,7 @@ impl fmt::Debug for ProcedureInner {
             for arg in args {
                 write!(f, " {arg}")?;
             }
-            if self.variadic {
+            if debug_info.is_variadic {
                 write!(f, " .")?;
             }
             write!(f, " {last}")?;
@@ -487,44 +546,49 @@ impl Procedure {
     /// Creates a new procedure. `func` must be a [`BridgePtr`] or an
     /// `AsyncBridgePtr` if `async` is enabled.
     pub fn new(
-        env: Vec<Value>,
+        env: impl IntoIterator<IntoIter: ExactSizeIterator, Item = Value>,
         func: impl Into<FuncPtr>,
-        num_required_args: usize,
-        variadic: bool,
     ) -> Self {
-        Self::with_debug_info(env, func.into(), num_required_args, variadic, None)
+        Self::with_debug_info(env, func.into(), None)
     }
 
     pub(crate) fn with_debug_info(
-        env: Vec<Value>,
+        env: impl IntoIterator<IntoIter: ExactSizeIterator, Item = Value>,
         func: FuncPtr,
-        num_required_args: usize,
-        variadic: bool,
-        debug_info: Option<Arc<ProcDebugInfo>>,
+        debug_info: Option<&'static ProcDebugInfo>,
     ) -> Self {
-        Self(Gc::new(ProcedureInner::new(
-            env,
-            func,
-            num_required_args,
-            variadic,
-            debug_info,
-        )))
+        let proc_inner = ProcedureInner::new_rooted(env.into_iter(), func, false, debug_info);
+
+        unsafe {
+            gc::unroot(&proc_inner);
+        }
+
+        Self(proc_inner)
+    }
+
+    pub fn to_variable_transformer(&self) -> Self {
+        let proc_inner = ProcedureInner::new_rooted(
+            self.env().iter().cloned(),
+            self.0.func,
+            true,
+            self.0.debug_info,
+        );
+
+        unsafe {
+            gc::unroot(&proc_inner);
+        }
+
+        Self(proc_inner)
     }
 
     /// Borrow the environment slice of this procedure.
     pub fn env(&self) -> &[Value] {
-        &self.0.env
-    }
-
-    /// Return the number of required arguments and whether or not this function
-    /// is variadic
-    pub fn get_formals(&self) -> (usize, bool) {
-        (self.0.num_required_args, self.0.variadic)
+        self.0.env()
     }
 
     /// Return the debug information associated with procedure, if it exists.
-    pub fn get_debug_info(&self) -> Option<Arc<ProcDebugInfo>> {
-        self.0.debug_info.clone()
+    pub fn get_debug_info(&self) -> Option<&'static ProcDebugInfo> {
+        self.0.debug_info
     }
 
     pub fn is_variable_transformer(&self) -> bool {
@@ -1007,12 +1071,16 @@ impl_rust_cont!(T1, T2, T3, T4, T5);
 
 /// Debug information associated with a procedure, including its name, argument
 /// names, and source location.
+// TODO: We need to add a field for number of required arguments so that we can
+// distinguish optional arguments in bridge functions
 #[derive(Debug)]
 pub struct ProcDebugInfo {
     /// The name of the function.
     pub name: Symbol,
     /// Named arguments for the function.
     pub args: Vec<Local>,
+    /// Whether or not the function is variadic.
+    pub is_variadic: bool,
     /// Location of the function definition
     pub location: Span,
     /// Documentation captured from the function definition.
@@ -1020,23 +1088,30 @@ pub struct ProcDebugInfo {
 }
 
 impl ProcDebugInfo {
-    pub fn new(name: Option<Symbol>, args: Vec<Local>, location: Span) -> Self {
-        Self {
+    pub fn new(
+        name: Option<Symbol>,
+        args: Vec<Local>,
+        is_variadic: bool,
+        location: Span,
+    ) -> &'static Self {
+        Box::leak(Box::new(Self {
             name: name.unwrap_or_else(|| Symbol::intern("<lambda>")),
             args,
             location,
+            is_variadic,
             docs: None,
-        }
+        }))
     }
 
-    pub fn from_bridge_fn(name: &'static str, debug_info: BridgeFnDebugInfo) -> Self {
-        Self {
+    pub fn from_bridge_fn(name: &'static str, debug_info: BridgeFnDebugInfo) -> &'static Self {
+        Box::leak(Box::new(Self {
             name: Symbol::intern(name),
             args: debug_info
                 .args
                 .iter()
                 .map(|arg| Local::gensym_with_name(Symbol::intern(arg)))
                 .collect(),
+            is_variadic: debug_info.is_variadic,
             location: Span {
                 line: debug_info.line,
                 column: debug_info.column as usize,
@@ -1044,7 +1119,7 @@ impl ProcDebugInfo {
                 file: std::sync::Arc::from(debug_info.file.to_string()),
             },
             docs: (!debug_info.docs.is_empty()).then(|| debug_info.docs.to_string()),
-        }
+        }))
     }
 }
 
@@ -1447,12 +1522,7 @@ pub fn print_trace(barrier: &mut ContBarrier) {
     lib = "(rnrs base builtins (6))"
 )]
 pub fn call_with_current_continuation(proc: Procedure, barrier: &mut ContBarrier) -> Application {
-    let escape_proc = Procedure::new(
-        vec![Value::from(barrier.save())],
-        FuncPtr::Bridge(escape_proc),
-        0,
-        true,
-    );
+    let escape_proc = Procedure::new([Value::from(barrier.save())], FuncPtr::Bridge(escape_proc));
 
     Application::new(proc, Args::pack([Value::from(escape_proc)]))
 }
@@ -1694,10 +1764,8 @@ fn unwind_to_prompt(env: [Value; 3], _args: Rest, barrier: &mut ContBarrier) -> 
                     delim_call_stack: saved_barrier.call_stack.delimit(&k),
                 };
                 let delimited_escape_proc = Procedure::new(
-                    vec![Value::from(delimited)],
+                    [Value::from(delimited)],
                     FuncPtr::Bridge(delimited_continuation),
-                    0,
-                    true,
                 );
                 barrier.call_stack.reinstate(k);
                 let args = Value::from(Pair::immutable(Value::from(delimited_escape_proc), args));

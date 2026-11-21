@@ -10,15 +10,18 @@ use cranelift::{
 use cranelift_jit::JITModule;
 use cranelift_module::{FuncId, Linkage, Module};
 use indexmap::IndexMap;
-use std::{mem::MaybeUninit, ptr::NonNull, sync::Arc};
+use std::{mem::MaybeUninit, ptr::NonNull};
 
 use crate::{
     cps::{
         Value as CpsValue,
         analysis::{Escaping, FreeVariables, Liveness, closed_lambdas},
     },
-    proc::{Application, ContBarrier, FuncPtr, ProcDebugInfo, Procedure, ReturnAddress, UserPtr},
-    runtime::{DebugInfo, Runtime},
+    proc::{
+        Application, ContBarrier, FuncPtr, ProcDebugInfo, Procedure, ProcedureInner, ReturnAddress,
+        UserPtr,
+    },
+    runtime::Runtime,
     value::{
         FALSE_VALUE, FIXNUM_MAX, FIXNUM_MIN, NULL_VALUE, TAG, TRUE_VALUE, Tag, UNDEFINED_VALUE,
         Value as SchemeValue,
@@ -92,7 +95,6 @@ pub(crate) struct RuntimeFunctions {
     make_user: FuncId,
     raise_wrong_num_args: FuncId,
     tail_callable: FuncId,
-    proc_env: FuncId,
     pop_env: FuncId,
     push_continuation: FuncId,
     call_continuation: FuncId,
@@ -272,7 +274,6 @@ impl Cps {
         self,
         runtime_funcs: &RuntimeFunctions,
         module: &mut JITModule,
-        debug_info: &mut DebugInfo,
     ) -> ReturnAddress {
         if std::env::var("SCHEME_RS_DEBUG").is_ok() {
             eprintln!(
@@ -300,16 +301,15 @@ impl Cps {
             .map(|val| {
                 let binding = &lambda_bindings[&val];
                 let proc = Procedure::with_debug_info(
-                    Vec::new(),
+                    [],
                     FuncPtr::User(UserPtr(NonNull::dangling())),
-                    binding.args.num_required(),
-                    binding.args.variadic,
                     binding.span.as_ref().map(|span| {
-                        Arc::new(ProcDebugInfo::new(
+                        ProcDebugInfo::new(
                             binding.val.name,
                             binding.args.args.clone(),
+                            binding.args.is_variadic,
                             span.clone(),
-                        ))
+                        )
                     }),
                 );
                 let sig = sig(&binding.args);
@@ -366,7 +366,6 @@ impl Cps {
             &mut funcs,
             &mut continuations,
             module,
-            debug_info,
         );
 
         let mut deferred_procs = Vec::new();
@@ -397,7 +396,6 @@ impl Cps {
                 &mut funcs,
                 &mut continuations,
                 module,
-                debug_info,
                 &mut deferred_procs,
             );
         }
@@ -434,7 +432,6 @@ struct CompilationUnit<'m, 'a> {
     funcs: &'a mut HashMap<Local, Function>,
     continuations: &'a mut HashSet<Local>,
     module: &'a mut JITModule,
-    debug_info: &'a mut DebugInfo,
 }
 
 impl<'m, 'a> CompilationUnit<'m, 'a> {
@@ -451,17 +448,7 @@ impl<'m, 'a> CompilationUnit<'m, 'a> {
         funcs: &'a mut HashMap<Local, Function>,
         continuations: &'a mut HashSet<Local>,
         module: &'a mut JITModule,
-        debug_info: &'a mut DebugInfo,
     ) -> Self {
-        /*
-        for (local, func) in funcs.iter() {
-            if let Some(proc) = &func.closed {
-                let raw = SchemeValue::as_raw(&SchemeValue::from(proc.clone()));
-                let val = builder.ins().iconst(types::I64, raw as i64);
-                live.bind(*local, IrValue::Ref(val));
-            }
-        }
-        */
         Self {
             builder,
             live,
@@ -476,7 +463,6 @@ impl<'m, 'a> CompilationUnit<'m, 'a> {
             funcs,
             continuations,
             module,
-            debug_info,
         }
     }
 }
@@ -1858,26 +1844,17 @@ impl CompilationUnit<'_, '_> {
             .builder
             .ins()
             .iconst(types::I32, bundle.env.len() as i64);
-        let num_required = self
-            .builder
-            .ins()
-            .iconst(types::I32, bundle.args.num_required() as i64);
-        let is_variadic = self
-            .builder
-            .ins()
-            .iconst(types::I8, bundle.args.variadic as i64);
-        assert_eq!(std::mem::size_of::<bool>(), 1);
 
         if bundle.args.continuation.is_some() {
-            let mut args = vec![func_ptr, env_addr, env_len, num_required, is_variadic];
+            let mut args = vec![func_ptr, env_addr, env_len];
             args.push(if let Some(ref loc) = bundle.loc {
-                let debug_info = Arc::new(ProcDebugInfo::new(
+                let debug_info = ProcDebugInfo::new(
                     bundle.val.name,
                     bundle.args.args.clone(),
+                    bundle.args.is_variadic,
                     loc.clone(),
-                ));
-                let debug_info_ptr = Arc::as_ptr(&debug_info);
-                self.debug_info.store_func_info(debug_info);
+                );
+                let debug_info_ptr = debug_info as *const ProcDebugInfo;
                 self.builder.ins().iconst(types::I64, debug_info_ptr as i64)
             } else {
                 self.builder.ins().iconst(types::I64, 0)
@@ -2042,7 +2019,6 @@ impl ProcedureBundle {
         funcs: &mut HashMap<Local, Function>,
         continuations: &mut HashSet<Local>,
         module: &mut JITModule,
-        debug_info: &mut DebugInfo,
         deferred_procs: &mut Vec<Self>,
     ) {
         let mut builder_context = FunctionBuilderContext::new();
@@ -2077,8 +2053,8 @@ impl ProcedureBundle {
         // Load environment:
         let proc_local = if is_user {
             // Load the environment from the self (proc) parameter:
-            let proc = builder.block_params(entry_block)[PROC_PARAM];
-            let proc = builder.ins().bor_imm_s(proc, Tag::Procedure as i64);
+            let proc_ptr = builder.block_params(entry_block)[PROC_PARAM];
+            let proc = builder.ins().bor_imm_s(proc_ptr, Tag::Procedure as i64);
             let proc_local = Local::gensym();
             live.bind(
                 proc_local,
@@ -2088,25 +2064,22 @@ impl ProcedureBundle {
                     IrValue::Owned(proc)
                 },
             );
-            if !self.env.is_empty() {
-                let proc_env = module.declare_func_in_func(runtime_funcs.proc_env, builder.func);
-                let call = builder.ins().call(proc_env, &[proc]);
-                let env_ptr = builder.inst_results(call)[0];
-                for (i, env_var) in self.env.iter().enumerate() {
-                    let var = builder.ins().load(
-                        types::I64,
-                        MemFlagsData::new(),
-                        env_ptr,
-                        (i * 8) as i32,
-                    );
-                    let var = if cells.contains(env_var) {
-                        // We cannot kill the cell
-                        IrValue::CellRef(var)
-                    } else {
-                        IrValue::Ref(var)
-                    };
-                    live.bind(*env_var, var);
-                }
+
+            let env_offset = ProcedureInner::env_offset();
+            for (i, env_var) in self.env.iter().enumerate() {
+                let var = builder.ins().load(
+                    types::I64,
+                    MemFlagsData::new(),
+                    proc_ptr,
+                    (env_offset + i * 8) as i32,
+                );
+                let var = if cells.contains(env_var) {
+                    // We cannot kill the cell
+                    IrValue::CellRef(var)
+                } else {
+                    IrValue::Ref(var)
+                };
+                live.bind(*env_var, var);
             }
 
             Some(proc_local)
@@ -2137,7 +2110,7 @@ impl ProcedureBundle {
         };
 
         let num_required = self.args.num_required();
-        let variadic = self.args.variadic;
+        let variadic = self.args.is_variadic;
 
         if num_required <= crate::proc::MAX_DIRECT_ARGS {
             // Fast path: no argument touches the argn list.
@@ -2395,7 +2368,6 @@ impl ProcedureBundle {
             funcs,
             continuations,
             module,
-            debug_info,
         );
 
         let mut deferred_local_conts = Vec::new();

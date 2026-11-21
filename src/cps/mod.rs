@@ -267,14 +267,14 @@ impl LambdaBinding {
 pub struct LambdaArgs {
     continuation: Option<Local>,
     args: Vec<Local>,
-    variadic: bool,
+    is_variadic: bool,
 }
 
 impl LambdaArgs {
-    pub fn new(args: Vec<Local>, variadic: bool, continuation: Option<Local>) -> Self {
+    pub fn new(args: Vec<Local>, is_variadic: bool, continuation: Option<Local>) -> Self {
         Self {
             args,
-            variadic,
+            is_variadic,
             continuation,
         }
     }
@@ -294,7 +294,7 @@ impl LambdaArgs {
     }
 
     fn num_required(&self) -> usize {
-        self.args.len().saturating_sub(self.variadic as usize)
+        self.args.len().saturating_sub(self.is_variadic as usize)
     }
 
     pub(crate) fn matches_args(&self, num: usize) -> bool {
@@ -302,7 +302,7 @@ impl LambdaArgs {
         // the continuation as its first element. Count the continuation here so
         // a well-formed call is not mistaken for a wrong-arity (escaping) one.
         let params = self.args.len() + self.continuation.is_some() as usize;
-        if self.variadic {
+        if self.is_variadic {
             num > params
         } else {
             num == params
@@ -387,7 +387,7 @@ impl Cps {
                     eprint!("[{binding_name} (λ ",);
                     if binding.args.continuation.is_none()
                         && binding.args.num_required() == 0
-                        && binding.args.variadic
+                        && binding.args.is_variadic
                     {
                         eprint!("{:?} ", binding.args.args[0]);
                     } else {
@@ -401,7 +401,7 @@ impl Cps {
                             if !first {
                                 eprint!(" ");
                             }
-                            if i == binding.args.num_required() && binding.args.variadic {
+                            if i == binding.args.num_required() && binding.args.is_variadic {
                                 eprint!(". ");
                             }
                             eprint!("{arg:?}");

@@ -211,7 +211,7 @@ use std::{
     collections::HashMap,
     fmt,
     hash::{Hash, Hasher},
-    mem::align_of,
+    mem,
     ops::Deref,
     ptr::{self, NonNull},
     slice,
@@ -224,7 +224,7 @@ use indexmap::IndexSet;
 use crate::{
     exceptions::Exception,
     fmt::{Formatter, Mode},
-    gc::{Gc, HeapObject, Trace, unroot},
+    gc::{self, Gc, HeapObject, Trace},
     lists::{append_list, iter_list, split_list},
     proc::{Application, Args, ContBarrier, FuncPtr, Procedure},
     registry::define,
@@ -302,13 +302,11 @@ unsafe impl Embeddable for RecordTypeDescriptorInner {
                 (embedded_ptr, record)
             };
 
-            unsafe {
-                Gc::increment_reference_count(ptr.as_ptr());
-            }
             let gc = Gc { ptr };
 
             unsafe {
-                unroot(&gc);
+                Gc::increment_reference_count(ptr.as_ptr());
+                gc::unroot(&gc);
             }
 
             RecordTypeDescriptor(Embedded {
@@ -513,7 +511,7 @@ impl Record {
     /// Embed a rust value into a record.
     pub fn embed<E: Embeddable>(e: E) -> Self {
         let (layout, embed_offset) =
-            Layout::from_size_align(RecordInner::fields_offset(), align_of::<RecordInner>())
+            Layout::from_size_align(RecordInner::fields_offset(), mem::align_of::<RecordInner>())
                 .unwrap()
                 .extend(Layout::new::<E>())
                 .unwrap();
@@ -532,7 +530,7 @@ impl Record {
         let gc = Gc { ptr };
 
         unsafe {
-            unroot(&gc);
+            gc::unroot(&gc);
         }
 
         Self(gc)
@@ -1226,10 +1224,8 @@ pub fn make_default_record_constructor_descriptor(
         make_default_record_constructor_descriptor(RecordTypeDescriptor(parent.0.clone()))
     });
     let protocol = Procedure::new(
-        vec![Value::from(rtd.clone())],
+        [Value::from(rtd.clone())],
         FuncPtr::Bridge(default_protocol),
-        1,
-        false,
     );
     Embedded::new(RecordConstructorDescriptor {
         parent,
@@ -1272,10 +1268,8 @@ pub fn make_record_constructor_descriptor(
         protocol.clone().try_into()?
     } else {
         Procedure::new(
-            vec![Value::from(rtd.clone())],
+            [Value::from(rtd.clone())],
             FuncPtr::Bridge(default_protocol),
-            1,
-            false,
         )
     };
 
@@ -1299,10 +1293,8 @@ pub fn record_constructor(
 
     Ok(Application::new(
         Procedure::new(
-            vec![Value::from(rtds), Value::null()],
+            [Value::from(rtds), Value::null()],
             FuncPtr::Bridge(chain_constructors),
-            0,
-            true,
         ),
         Args::pack([]),
     ))
@@ -1347,10 +1339,9 @@ fn chain_constructors(
     let remaining_rtds = rtds.split_off(1);
     let curr_rtd: RecordTypeDescriptor = rtds[0].clone().try_into()?;
     let rtds_remain = !remaining_rtds.is_empty();
-    let num_args = curr_rtd.sub_constructor_arity();
     let collected = append_list(&collected, args)?;
     let next_proc = Procedure::new(
-        vec![
+        [
             if rtds_remain {
                 Value::from(remaining_rtds)
             } else {
@@ -1363,8 +1354,6 @@ fn chain_constructors(
         } else {
             FuncPtr::Bridge(constructor)
         },
-        num_args,
-        false,
     );
     Ok(barrier.call_cont(Args::pack([Value::from(next_proc)])))
 }
@@ -1441,7 +1430,7 @@ fn constructor(
 
         let gc = Gc { ptr: record };
 
-        unroot(&gc);
+        gc::unroot(&gc);
 
         Record(gc)
     };
@@ -1455,13 +1444,9 @@ fn default_protocol(
     ctor: Value,
     barrier: &mut ContBarrier,
 ) -> Result<Application, Exception> {
-    let num_args = rtd.constructor_arity();
-
     let constructor = Procedure::new(
-        vec![ctor, Value::from(rtd)],
+        [ctor, Value::from(rtd)],
         FuncPtr::Bridge(default_protocol_constructor),
-        num_args,
-        false,
     );
 
     Ok(barrier.call_cont(Args::pack([Value::from(constructor)])))
@@ -1505,12 +1490,7 @@ fn record_predicate_fn(
 #[define(name = "record-predicate", lib = "(rnrs records procedural (6))")]
 pub fn record_predicate(rtd: Value) -> Procedure {
     // TODO: Check if RTD is a record type.
-    Procedure::new(
-        vec![rtd.clone()],
-        FuncPtr::Bridge(record_predicate_fn),
-        1,
-        false,
-    )
+    Procedure::new([rtd.clone()], FuncPtr::Bridge(record_predicate_fn))
 }
 
 #[define]
@@ -1560,10 +1540,8 @@ pub fn record_accessor(rtd: RecordTypeDescriptor, idx: usize) -> Result<Procedur
     // Store the local (within-rtd) index; `record_accessor_fn` resolves it to
     // either the embed or an inline slot.
     Ok(Procedure::new(
-        vec![Value::from(rtd), Value::from(idx)],
+        [Value::from(rtd), Value::from(idx)],
         FuncPtr::Bridge(record_accessor_fn),
-        1,
-        false,
     ))
 }
 
@@ -1579,13 +1557,11 @@ pub fn record_accessor_absolute(
         let num_fields = parent.fields.len();
         if num_fields + parent.num_inherited_fields > idx {
             return Ok(Procedure::new(
-                vec![
+                [
                     Value::from(parent.0.clone()),
                     Value::from(idx - parent.num_inherited_fields),
                 ],
                 FuncPtr::Bridge(record_accessor_fn),
-                1,
-                false,
             ));
         }
     }
@@ -1599,10 +1575,8 @@ pub fn record_accessor_absolute(
 
     let idx = idx - rtd.num_inherited_fields;
     Ok(Procedure::new(
-        vec![Value::from(rtd), Value::from(idx)],
+        [Value::from(rtd), Value::from(idx)],
         FuncPtr::Bridge(record_accessor_fn),
-        1,
-        false,
     ))
 }
 
@@ -1651,10 +1625,8 @@ pub fn record_mutator(rtd: RecordTypeDescriptor, idx: usize) -> Result<Procedure
         return Err(Exception::error(format!("{idx} is immutable")));
     }
     Ok(Procedure::new(
-        vec![Value::from(rtd), Value::from(idx)],
+        [Value::from(rtd), Value::from(idx)],
         FuncPtr::Bridge(record_mutator_fn),
-        2,
-        false,
     ))
 }
 
@@ -1676,13 +1648,11 @@ pub fn record_mutator_absolute(
                 return Err(Exception::error(format!("{idx} is immutable")));
             }
             return Ok(Procedure::new(
-                vec![
+                [
                     Value::from(parent.0.clone()),
                     Value::from(idx - parent.num_inherited_fields),
                 ],
                 FuncPtr::Bridge(record_mutator_fn),
-                2,
-                false,
             ));
         }
     }
@@ -1701,10 +1671,8 @@ pub fn record_mutator_absolute(
     }
     let idx = idx - rtd.num_inherited_fields;
     Ok(Procedure::new(
-        vec![Value::from(rtd), Value::from(idx)],
+        [Value::from(rtd), Value::from(idx)],
         FuncPtr::Bridge(record_mutator_fn),
-        2,
-        false,
     ))
 }
 

@@ -3,7 +3,7 @@ use crate::{
     ast::{Expression, ParseContext},
     env::{Binding, Environment, Local, Scope, add_binding},
     exceptions::Exception,
-    gc::{Gc, Trace},
+    gc::Trace,
     proc::Procedure,
     records::{Embeddable, Embedded},
     registry::define,
@@ -867,7 +867,5 @@ unsafe extern "C" fn error_no_patterns_match() -> i64 {
 
 #[define(name = "make-variable-transformer", lib = "(rnrs base builtins (6))")]
 pub fn make_variable_transformer(proc: Procedure) -> Procedure {
-    let mut var_transformer = proc.0.as_ref().clone();
-    var_transformer.is_variable_transformer = true;
-    Procedure(Gc::new(var_transformer))
+    proc.to_variable_transformer()
 }

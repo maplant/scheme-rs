@@ -16,7 +16,7 @@ use crate::{
 
 use std::{
     path::{Path, PathBuf},
-    sync::{Arc, LazyLock, OnceLock},
+    sync::{LazyLock, OnceLock},
 };
 
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
@@ -80,8 +80,6 @@ pub enum Bridge {
 pub struct BridgeFn {
     name: &'static str,
     lib_name: &'static str,
-    num_args: usize,
-    variadic: bool,
     wrapper: Bridge,
     is_keyword: bool,
     debug_info: BridgeFnDebugInfo,
@@ -91,8 +89,6 @@ impl BridgeFn {
     pub const fn new(
         name: &'static str,
         lib_name: &'static str,
-        num_args: usize,
-        variadic: bool,
         wrapper: Bridge,
         is_keyword: bool,
         debug_info: BridgeFnDebugInfo,
@@ -100,8 +96,6 @@ impl BridgeFn {
         Self {
             name,
             lib_name,
-            num_args,
-            variadic,
             wrapper,
             is_keyword,
             debug_info,
@@ -117,6 +111,7 @@ pub struct BridgeFnDebugInfo {
     pub(crate) column: u32,
     pub(crate) offset: usize,
     pub(crate) args: &'static [&'static str],
+    pub(crate) is_variadic: bool,
     pub(crate) docs: &'static str,
 }
 
@@ -127,6 +122,7 @@ impl BridgeFnDebugInfo {
         column: u32,
         offset: usize,
         args: &'static [&'static str],
+        is_variadic: bool,
         docs: &'static str,
     ) -> Self {
         Self {
@@ -135,6 +131,7 @@ impl BridgeFnDebugInfo {
             column,
             offset,
             args,
+            is_variadic,
             docs,
         }
     }
@@ -189,10 +186,7 @@ impl RegistryInner {
         let mut new_libs = HashMap::<Vec<Symbol>, Lib>::default();
 
         for bridge_fn in bridges {
-            let debug_info = Arc::new(ProcDebugInfo::from_bridge_fn(
-                bridge_fn.name,
-                bridge_fn.debug_info,
-            ));
+            let debug_info = ProcDebugInfo::from_bridge_fn(bridge_fn.name, bridge_fn.debug_info);
             let lib_name = LibraryName::from_str(bridge_fn.lib_name, None)?;
             let lib = new_libs.entry(lib_name.name).or_insert_with(|| Lib {
                 version: lib_name.version,
@@ -203,15 +197,13 @@ impl RegistryInner {
                 Symbol::intern(bridge_fn.name),
                 (
                     Procedure::with_debug_info(
-                        Vec::new(),
+                        [],
                         match bridge_fn.wrapper {
                             Bridge::Sync(func) => FuncPtr::Bridge(func),
                             Bridge::Known(known) => FuncPtr::Known(known),
                             #[cfg(feature = "async")]
                             Bridge::Async(func) => FuncPtr::AsyncBridge(func),
                         },
-                        bridge_fn.num_args,
-                        bridge_fn.variadic,
                         Some(debug_info),
                     ),
                     bridge_fn.is_keyword,
