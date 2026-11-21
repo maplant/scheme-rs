@@ -10,7 +10,7 @@ use cranelift::{
 use cranelift_jit::JITModule;
 use cranelift_module::{FuncId, Linkage, Module};
 use indexmap::IndexMap;
-use std::{mem::MaybeUninit, ptr::NonNull};
+use std::{mem, ptr::NonNull};
 
 use crate::{
     cps::{
@@ -18,8 +18,7 @@ use crate::{
         analysis::{Escaping, FreeVariables, Liveness, closed_lambdas},
     },
     proc::{
-        Application, ContBarrier, FuncPtr, ProcDebugInfo, Procedure, ProcedureInner, ReturnAddress,
-        UserPtr,
+        ContBarrier, FuncPtr, ProcDebugInfo, Procedure, ProcedureInner, ReturnAddress, UserPtr,
     },
     runtime::Runtime,
     value::{
@@ -151,7 +150,6 @@ pub(crate) type JitContEntryFn = extern "C" fn(
     arg4: RuntimeValue,
     argn: RuntimeValue,
     barrier: &mut ContBarrier<'_>,
-    out: &mut MaybeUninit<Application>,
 );
 
 pub(crate) fn codegen_jit_cont_entry_fn(module: &mut JITModule) -> JitContEntryFn {
@@ -160,7 +158,6 @@ pub(crate) fn codegen_jit_cont_entry_fn(module: &mut JITModule) -> JitContEntryF
     sig.params
         .extend((0..NUM_ARG_SLOTS).map(|_| AbiParam::new(types::I64))); // Arg1..Arg4, Argn
     sig.params.push(AbiParam::new(types::I64)); // ContBarrier
-    sig.params.push(AbiParam::new(types::I64)); // Application out-pointer
 
     let entry = module.declare_anonymous_function(&sig).unwrap();
 
@@ -177,7 +174,12 @@ pub(crate) fn codegen_jit_cont_entry_fn(module: &mut JITModule) -> JitContEntryF
     let args = builder.block_params(entry_block).to_vec();
     let callee_sig = builder.import_signature(cont_sig());
 
-    builder.ins().call_indirect(callee_sig, args[0], &args[1..]);
+    let saved = builder.ins().get_pinned_reg(types::I64);
+    builder.ins().set_pinned_reg(args[args.len() - 1]);
+    builder
+        .ins()
+        .call_indirect(callee_sig, args[0], &args[1..args.len() - 1]);
+    builder.ins().set_pinned_reg(saved);
     builder.ins().return_(&[]);
     builder.finalize(module.target_config());
 
@@ -185,9 +187,7 @@ pub(crate) fn codegen_jit_cont_entry_fn(module: &mut JITModule) -> JitContEntryF
     module.clear_context(&mut ctx);
     module.finalize_definitions().unwrap();
 
-    unsafe {
-        std::mem::transmute::<*const u8, JitContEntryFn>(module.get_finalized_function(entry))
-    }
+    unsafe { mem::transmute::<*const u8, JitContEntryFn>(module.get_finalized_function(entry)) }
 }
 
 pub(crate) type JitUserEntryFn = extern "C" fn(
@@ -199,7 +199,6 @@ pub(crate) type JitUserEntryFn = extern "C" fn(
     arg4: RuntimeValue,
     argn: RuntimeValue,
     barrier: &mut ContBarrier<'_>,
-    out: &mut MaybeUninit<Application>,
 );
 
 pub(crate) fn codegen_jit_user_entry_fn(module: &mut JITModule) -> JitUserEntryFn {
@@ -209,7 +208,6 @@ pub(crate) fn codegen_jit_user_entry_fn(module: &mut JITModule) -> JitUserEntryF
     sig.params
         .extend((0..NUM_ARG_SLOTS).map(|_| AbiParam::new(types::I64))); // Arg1..Arg4, Argn
     sig.params.push(AbiParam::new(types::I64)); // ContBarrier
-    sig.params.push(AbiParam::new(types::I64)); // Application out-pointer
 
     let entry = module.declare_anonymous_function(&sig).unwrap();
 
@@ -226,7 +224,12 @@ pub(crate) fn codegen_jit_user_entry_fn(module: &mut JITModule) -> JitUserEntryF
     let args = builder.block_params(entry_block).to_vec();
     let callee_sig = builder.import_signature(user_sig());
 
-    builder.ins().call_indirect(callee_sig, args[0], &args[1..]);
+    let saved = builder.ins().get_pinned_reg(types::I64);
+    builder.ins().set_pinned_reg(args[args.len() - 1]);
+    builder
+        .ins()
+        .call_indirect(callee_sig, args[0], &args[1..args.len() - 1]);
+    builder.ins().set_pinned_reg(saved);
     builder.ins().return_(&[]);
     builder.finalize(module.target_config());
 
@@ -234,9 +237,7 @@ pub(crate) fn codegen_jit_user_entry_fn(module: &mut JITModule) -> JitUserEntryF
     module.clear_context(&mut ctx);
     module.finalize_definitions().unwrap();
 
-    unsafe {
-        std::mem::transmute::<*const u8, JitUserEntryFn>(module.get_finalized_function(entry))
-    }
+    unsafe { mem::transmute::<*const u8, JitUserEntryFn>(module.get_finalized_function(entry)) }
 }
 
 struct Function {
@@ -344,14 +345,6 @@ impl Cps {
         builder.switch_to_block(entry_block);
         builder.seal_block(entry_block);
 
-        let params = {
-            let block_params = builder.block_params(entry_block);
-            [
-                block_params[CONT_BARRIER_PARAM],
-                block_params[CONT_OUT_PARAM],
-            ]
-        };
-
         let mut continuations = HashSet::default();
 
         let mut cu = CompilationUnit::new(
@@ -359,7 +352,6 @@ impl Cps {
             LiveValues::new(),
             None,
             runtime_funcs,
-            params,
             &escaping,
             &liveness,
             &free_vars,
@@ -425,7 +417,6 @@ struct CompilationUnit<'m, 'a> {
     local_cont_scopes: HashMap<Local, LiveValues>,
     local_cont_blocks: HashMap<Local, Block>,
     runtime_funcs: &'a RuntimeFunctions,
-    params: [Value; 2],
     escaping: &'a Escaping,
     liveness: &'a Liveness,
     free_vars: &'a FreeVariables,
@@ -441,7 +432,6 @@ impl<'m, 'a> CompilationUnit<'m, 'a> {
         live: LiveValues,
         proc_local: Option<Local>,
         runtime_funcs: &'a RuntimeFunctions,
-        params: [Value; 2],
         escaping: &'a Escaping,
         liveness: &'a Liveness,
         free_vars: &'a FreeVariables,
@@ -456,7 +446,6 @@ impl<'m, 'a> CompilationUnit<'m, 'a> {
             local_cont_scopes: HashMap::default(),
             local_cont_blocks: HashMap::default(),
             runtime_funcs,
-            params,
             escaping,
             liveness,
             free_vars,
@@ -468,12 +457,8 @@ impl<'m, 'a> CompilationUnit<'m, 'a> {
 }
 
 impl CompilationUnit<'_, '_> {
-    fn get_barrier(&self) -> Value {
-        self.params[0]
-    }
-
-    fn get_out(&self) -> Value {
-        self.params[1]
+    fn get_barrier(&mut self) -> Value {
+        self.builder.ins().get_pinned_reg(types::I64)
     }
 
     fn cps_codegen(
@@ -1457,10 +1442,7 @@ impl CompilationUnit<'_, '_> {
             let ret_to_tramp_block = self.builder.create_block();
             let tail_call_block = self.builder.create_block();
 
-            let out = self.get_out();
             let barrier = self.get_barrier();
-            args.push(barrier);
-            args.push(out);
             let pop_return_address = self
                 .module
                 .declare_func_in_func(self.runtime_funcs.pop_return_address, self.builder.func);
@@ -1482,6 +1464,7 @@ impl CompilationUnit<'_, '_> {
             self.builder.switch_to_block(ret_to_tramp_block);
             self.builder.seal_block(ret_to_tramp_block);
 
+            args.push(barrier);
             let call_cont = self
                 .module
                 .declare_func_in_func(self.runtime_funcs.call_continuation, self.builder.func);
@@ -1502,7 +1485,6 @@ impl CompilationUnit<'_, '_> {
             };
 
             let [arg1, arg2, arg3, arg4, argn] = self.arg_slots_codegen(args, &HashSet::default());
-            let out = self.get_out();
 
             // Direct tail call to known function
             if let Some(local) = operator.to_local()
@@ -1522,10 +1504,9 @@ impl CompilationUnit<'_, '_> {
                 let op_owned = self.builder.ins().band_imm_s(op, !(TAG as i64));
                 self.drop_all_codegen();
                 let func_ref = self.module.declare_func_in_func(func_id, self.builder.func);
-                self.builder.ins().return_call(
-                    func_ref,
-                    &[op_owned, arg1, arg2, arg3, arg4, argn, barrier, out],
-                );
+                self.builder
+                    .ins()
+                    .return_call(func_ref, &[op_owned, arg1, arg2, arg3, arg4, argn]);
                 return;
             }
 
@@ -1549,7 +1530,7 @@ impl CompilationUnit<'_, '_> {
                 .declare_func_in_func(self.runtime_funcs.apply, self.builder.func);
             self.builder
                 .ins()
-                .call(apply, &[op, arg1, arg2, arg3, arg4, argn, barrier, out]);
+                .call(apply, &[op, arg1, arg2, arg3, arg4, argn, barrier]);
             self.drop_all_codegen();
             self.builder.ins().return_(&[]);
 
@@ -1569,7 +1550,7 @@ impl CompilationUnit<'_, '_> {
             self.builder.ins().return_call_indirect(
                 sig,
                 func_ptr,
-                &[op_owned, arg1, arg2, arg3, arg4, argn, barrier, out],
+                &[op_owned, arg1, arg2, arg3, arg4, argn],
             );
         }
     }
@@ -1596,11 +1577,11 @@ impl CompilationUnit<'_, '_> {
 
     fn halt_codegen(&mut self, args: &CpsValue) {
         let val = self.value_codegen(args);
-        let out = self.get_out();
+        let barrier = self.get_barrier();
         let halt = self
             .module
             .declare_func_in_func(self.runtime_funcs.halt, self.builder.func);
-        self.builder.ins().call(halt, &[val, out]);
+        self.builder.ins().call(halt, &[val, barrier]);
         self.drop_all_codegen();
         self.builder.ins().return_(&[]);
     }
@@ -1644,11 +1625,10 @@ impl CompilationUnit<'_, '_> {
 
     fn raise_codegen(&mut self, val: Value) {
         let barrier = self.get_barrier();
-        let out = self.get_out();
         let raise = self
             .module
             .declare_func_in_func(self.runtime_funcs.raise_rt, self.builder.func);
-        self.builder.ins().call(raise, &[val, barrier, out]);
+        self.builder.ins().call(raise, &[val, barrier]);
         self.builder.ins().return_(&[]);
     }
 
@@ -1933,29 +1913,21 @@ const NUM_ARG_SLOTS: usize = crate::proc::MAX_DIRECT_ARGS + 1;
 
 const PROC_PARAM: usize = 0;
 const USER_ARG1_PARAM: usize = PROC_PARAM + 1;
-const USER_BARRIER_PARAM: usize = USER_ARG1_PARAM + NUM_ARG_SLOTS;
-const USER_OUT_PARAM: usize = USER_BARRIER_PARAM + 1;
 
 fn user_sig() -> Signature {
     let mut sig = Signature::new(CallConv::Tail);
     sig.params.push(AbiParam::new(types::I64)); // Owned procedure value
     sig.params
         .extend((0..NUM_ARG_SLOTS).map(|_| AbiParam::new(types::I64))); // Arg1..Arg4, Argn
-    sig.params.push(AbiParam::new(types::I64)); // ContBarrier
-    sig.params.push(AbiParam::new(types::I64)); // Application out-pointer
     sig
 }
 
 const CONT_ARG1_PARAM: usize = 0;
-const CONT_BARRIER_PARAM: usize = CONT_ARG1_PARAM + NUM_ARG_SLOTS;
-const CONT_OUT_PARAM: usize = CONT_BARRIER_PARAM + 1;
 
 fn cont_sig() -> Signature {
     let mut sig = Signature::new(CallConv::Tail);
     sig.params
         .extend((0..NUM_ARG_SLOTS).map(|_| AbiParam::new(types::I64))); // Arg1..Arg4, Argn
-    sig.params.push(AbiParam::new(types::I64)); // ContBarrier
-    sig.params.push(AbiParam::new(types::I64)); // Application out-pointer
     sig
 }
 
@@ -2026,10 +1998,10 @@ impl ProcedureBundle {
         let is_user = self.args.continuation.is_some();
         ctx.func.signature = sig(&self.args);
 
-        let (arg1_param, barrier_param, out_param) = if is_user {
-            (USER_ARG1_PARAM, USER_BARRIER_PARAM, USER_OUT_PARAM)
+        let arg1_param = if is_user {
+            USER_ARG1_PARAM
         } else {
-            (CONT_ARG1_PARAM, CONT_BARRIER_PARAM, CONT_OUT_PARAM)
+            CONT_ARG1_PARAM
         };
 
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_context);
@@ -2039,11 +2011,6 @@ impl ProcedureBundle {
         builder.append_block_params_for_function_params(entry_block);
         builder.switch_to_block(entry_block);
         builder.seal_block(entry_block);
-
-        let params = {
-            let block_params = builder.block_params(entry_block);
-            [block_params[barrier_param], block_params[out_param]]
-        };
 
         // Bind closed functions:
         for free_var in free_vars.free_in(self.body.dest) {
@@ -2087,8 +2054,9 @@ impl ProcedureBundle {
             // Load the environment by repeatedly calling pop_env:
             let pop_env = module.declare_func_in_func(runtime_funcs.pop_env, builder.func);
             let mut vals = Vec::with_capacity(self.env.len());
+            let barrier = builder.ins().get_pinned_reg(types::I64);
             for _ in 0..self.env.len() {
-                let call = builder.ins().call(pop_env, &[params[0]]);
+                let call = builder.ins().call(pop_env, &[barrier]);
                 vals.push(builder.inst_results(call)[0]);
             }
             for (env_var, var) in self.env.iter().zip(vals.into_iter().rev()) {
@@ -2160,6 +2128,7 @@ impl ProcedureBundle {
                 let num_required_v = builder.ins().iconst(types::I32, num_required as i64);
                 let raise_wrong_num_args =
                     module.declare_func_in_func(runtime_funcs.raise_wrong_num_args, builder.func);
+                let barrier = builder.ins().get_pinned_reg(types::I64);
                 builder.ins().call(
                     raise_wrong_num_args,
                     &[
@@ -2169,8 +2138,7 @@ impl ProcedureBundle {
                         arg_slots[3],
                         arg_slots[4],
                         num_required_v,
-                        params[0],
-                        params[1],
+                        barrier,
                     ],
                 );
                 builder.ins().return_(&[]);
@@ -2321,6 +2289,7 @@ impl ProcedureBundle {
             let num_required_v = builder.ins().iconst(types::I32, num_required as i64);
             let raise_wrong_num_args =
                 module.declare_func_in_func(runtime_funcs.raise_wrong_num_args, builder.func);
+            let barrier = builder.ins().get_pinned_reg(types::I64);
             builder.ins().call(
                 raise_wrong_num_args,
                 &[
@@ -2330,8 +2299,7 @@ impl ProcedureBundle {
                     arg_slots[3],
                     arg_slots[4],
                     num_required_v,
-                    params[0],
-                    params[1],
+                    barrier,
                 ],
             );
             builder.ins().return_(&[]);
@@ -2361,7 +2329,6 @@ impl ProcedureBundle {
             live,
             proc_local,
             runtime_funcs,
-            params,
             escaping,
             liveness,
             free_vars,
