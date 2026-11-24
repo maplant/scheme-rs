@@ -322,9 +322,12 @@ pub enum Codec {
     Utf16,
 }
 
-static LATIN_1_CODEC: LazyLock<Embedded<Codec>> = LazyLock::new(|| Embedded::new(Codec::Latin1));
-static UTF_8_CODEC: LazyLock<Embedded<Codec>> = LazyLock::new(|| Embedded::new(Codec::Utf8));
-static UTF_16_CODEC: LazyLock<Embedded<Codec>> = LazyLock::new(|| Embedded::new(Codec::Utf16));
+pub(crate) static LATIN_1_CODEC: LazyLock<Embedded<Codec>> =
+    LazyLock::new(|| Embedded::new(Codec::Latin1));
+pub(crate) static UTF_8_CODEC: LazyLock<Embedded<Codec>> =
+    LazyLock::new(|| Embedded::new(Codec::Utf8));
+pub(crate) static UTF_16_CODEC: LazyLock<Embedded<Codec>> =
+    LazyLock::new(|| Embedded::new(Codec::Utf16));
 
 #[bridge(name = "latin-1-codec", lib = "(rnrs io builtins (6))")]
 pub fn latin_1_codec() -> Value {
@@ -646,79 +649,77 @@ mod __impl {
         })
     }
 
-    pub(super) fn proc_to_read_fn(read: Procedure) -> ReadFn {
-        Box::new(move |_, buff, start, count| {
-            let [read] = read
-                .call(
-                    &[
-                        Value::from(buff.clone()),
-                        Value::from(start),
-                        Value::from(count),
-                    ],
-                    &mut ContBarrier::new(),
-                )
-                .map_err(|err| err.add_condition(IoReadError::new()))?
-                .try_into()
-                .map_err(|_| {
-                    Exception::io_read_error(
-                        "invalid number of values returned from read procedure",
-                    )
-                })?;
-            let read: usize = read.try_into().map_err(|_| {
-                Exception::io_read_error("could not convert read procedure return value to usize")
+    pub(super) fn custom_read(
+        read: &Procedure,
+        buff: &ByteVector,
+        start: usize,
+        count: usize,
+    ) -> Result<usize, Exception> {
+        let [read] = read
+            .call(
+                &[
+                    Value::from(buff.clone()),
+                    Value::from(start),
+                    Value::from(count),
+                ],
+                &mut ContBarrier::new(),
+            )
+            .map_err(|err| err.add_condition(IoReadError::new()))?
+            .try_into()
+            .map_err(|_| {
+                Exception::io_read_error("invalid number of values returned from read procedure")
             })?;
-            Ok(read)
-        })
+        let read: usize = read.try_into().map_err(|_| {
+            Exception::io_read_error("could not convert read procedure return value to usize")
+        })?;
+        Ok(read)
     }
 
-    pub(super) fn proc_to_write_fn(write: Procedure) -> WriteFn {
-        Box::new(move |_, buff, start, count| {
-            let _ = write
-                .call(
-                    &[
-                        Value::from(buff.clone()),
-                        Value::from(start),
-                        Value::from(count),
-                    ],
-                    &mut ContBarrier::new(),
-                )
-                .map_err(|err| err.add_condition(IoReadError::new()))?;
-            Ok(())
-        })
+    pub(super) fn custom_write(
+        write: &Procedure,
+        buff: &ByteVector,
+        start: usize,
+        count: usize,
+    ) -> Result<(), Exception> {
+        let _ = write
+            .call(
+                &[
+                    Value::from(buff.clone()),
+                    Value::from(start),
+                    Value::from(count),
+                ],
+                &mut ContBarrier::new(),
+            )
+            .map_err(|err| err.add_condition(IoReadError::new()))?;
+        Ok(())
     }
 
-    pub(super) fn proc_to_get_pos_fn(get_pos: Procedure) -> GetPosFn {
-        Box::new(move |_| {
-            let [pos] = get_pos
-                .call(&[], &mut ContBarrier::new())
-                .map_err(|err| err.add_condition(IoError::new()))?
-                .try_into()
-                .map_err(|_| {
-                    Exception::io_error("invalid number of values returned get-pos procedure")
-                })?;
-            let pos: u64 = pos.try_into().map_err(|_| {
-                Exception::io_read_error("could not convert get-pos procedure return value to u64")
+    pub(super) fn custom_get_pos(get_pos: &Procedure) -> Result<u64, Exception> {
+        let [pos] = get_pos
+            .call(&[], &mut ContBarrier::new())
+            .map_err(|err| err.add_condition(IoError::new()))?
+            .try_into()
+            .map_err(|_| {
+                Exception::io_error("invalid number of values returned get-pos procedure")
             })?;
-            Ok(pos)
-        })
+        let pos: u64 = pos.try_into().map_err(|_| {
+            Exception::io_read_error("could not convert get-pos procedure return value to u64")
+        })?;
+        Ok(pos)
     }
 
-    pub(super) fn proc_to_set_pos_fn(set_pos: Procedure) -> SetPosFn {
-        Box::new(move |_, pos| {
-            let _ = set_pos
-                .call(&[Value::from(pos)], &mut ContBarrier::new())
-                .map_err(|err| err.add_condition(IoError::new()))?;
-            Ok(())
-        })
+    pub(super) fn custom_set_pos(set_pos: &Procedure, pos: u64) -> Result<(), Exception> {
+        let _ = set_pos
+            .call(&[Value::from(pos)], &mut ContBarrier::new())
+            .map_err(|err| err.add_condition(IoError::new()))?;
+        Ok(())
     }
 
-    pub(super) fn proc_to_close_fn(close: Procedure) -> CloseFn {
-        Box::new(move |_| {
-            let _ = close
-                .call(&[], &mut ContBarrier::new())
-                .map_err(|err| err.add_condition(IoError::new()))?;
-            Ok(())
-        })
+    pub(super) fn custom_close(close: &Procedure) -> Result<(), Exception> {
+        let _ = close
+            .call(&[], &mut ContBarrier::new())
+            .map_err(|err| err.add_condition(IoError::new()))?;
+        Ok(())
     }
 
     impl<D> Iterator for Decoder<'_, D>
@@ -907,103 +908,82 @@ mod __impl {
         })
     }
 
-    pub(super) fn proc_to_read_fn(read: Procedure) -> ReadFn {
-        Box::new(move |_, buff, start, count| {
-            let read = read.clone();
-            Box::pin(async move {
-                let [read] = read
-                    .call(
-                        &[
-                            Value::from(buff.clone()),
-                            Value::from(start),
-                            Value::from(count),
-                        ],
-                        &mut ContBarrier::new(),
-                    )
-                    .await
-                    .map_err(|err| err.add_condition(IoReadError::new()))?
-                    .try_into()
-                    .map_err(|_| {
-                        Exception::io_read_error(
-                            "invalid number of values returned from read procedure",
-                        )
-                    })?;
-                let read: usize = read.try_into().map_err(|_| {
-                    Exception::io_read_error(
-                        "could not convert read procedure return value to usize",
-                    )
-                })?;
-                Ok(read)
-            })
-        })
+    pub(super) async fn custom_read(
+        read: &Procedure,
+        buff: &ByteVector,
+        start: usize,
+        count: usize,
+    ) -> Result<usize, Exception> {
+        let [read] = read
+            .call(
+                &[
+                    Value::from(buff.clone()),
+                    Value::from(start),
+                    Value::from(count),
+                ],
+                &mut ContBarrier::new(),
+            )
+            .await
+            .map_err(|err| err.add_condition(IoReadError::new()))?
+            .try_into()
+            .map_err(|_| {
+                Exception::io_read_error("invalid number of values returned from read procedure")
+            })?;
+        let read: usize = read.try_into().map_err(|_| {
+            Exception::io_read_error("could not convert read procedure return value to usize")
+        })?;
+        Ok(read)
     }
 
-    pub(super) fn proc_to_write_fn(write: Procedure) -> WriteFn {
-        Box::new(move |_, buff, start, count| {
-            let write = write.clone();
-            Box::pin(async move {
-                let _ = write
-                    .call(
-                        &[
-                            Value::from(buff.clone()),
-                            Value::from(start),
-                            Value::from(count),
-                        ],
-                        &mut ContBarrier::new(),
-                    )
-                    .await
-                    .map_err(|err| err.add_condition(IoReadError::new()))?;
-                Ok(())
-            })
-        })
+    pub(super) async fn custom_write(
+        write: &Procedure,
+        buff: &ByteVector,
+        start: usize,
+        count: usize,
+    ) -> Result<(), Exception> {
+        let _ = write
+            .call(
+                &[
+                    Value::from(buff.clone()),
+                    Value::from(start),
+                    Value::from(count),
+                ],
+                &mut ContBarrier::new(),
+            )
+            .await
+            .map_err(|err| err.add_condition(IoReadError::new()))?;
+        Ok(())
     }
 
-    pub(super) fn proc_to_get_pos_fn(get_pos: Procedure) -> GetPosFn {
-        Box::new(move |_| {
-            let get_pos = get_pos.clone();
-            Box::pin(async move {
-                let [pos] = get_pos
-                    .call(&[], &mut ContBarrier::new())
-                    .await
-                    .map_err(|err| err.add_condition(IoError::new()))?
-                    .try_into()
-                    .map_err(|_| {
-                        Exception::io_error("invalid number of values returned get-pos procedure")
-                    })?;
-                let pos: u64 = pos.try_into().map_err(|_| {
-                    Exception::io_read_error(
-                        "could not convert get-pos procedure return value to u64",
-                    )
-                })?;
-                Ok(pos)
-            })
-        })
+    pub(super) async fn custom_get_pos(get_pos: &Procedure) -> Result<u64, Exception> {
+        let [pos] = get_pos
+            .call(&[], &mut ContBarrier::new())
+            .await
+            .map_err(|err| err.add_condition(IoError::new()))?
+            .try_into()
+            .map_err(|_| {
+                Exception::io_error("invalid number of values returned get-pos procedure")
+            })?;
+        let pos: u64 = pos.try_into().map_err(|_| {
+            Exception::io_read_error("could not convert get-pos procedure return value to u64")
+        })?;
+        Ok(pos)
     }
 
-    pub(super) fn proc_to_set_pos_fn(set_pos: Procedure) -> SetPosFn {
-        Box::new(move |_, pos| {
-            let set_pos = set_pos.clone();
-            Box::pin(async move {
-                let _ = set_pos
-                    .call(&[Value::from(pos)], &mut ContBarrier::new())
-                    .await
-                    .map_err(|err| err.add_condition(IoError::new()))?;
-                Ok(())
-            })
-        })
+    pub(super) async fn custom_set_pos(set_pos: &Procedure, pos: u64) -> Result<(), Exception> {
+        let _ = set_pos
+            .call(&[Value::from(pos)], &mut ContBarrier::new())
+            .await
+            .map_err(|err| err.add_condition(IoError::new()))?;
+        Ok(())
     }
 
-    pub(super) fn proc_to_close_fn(close: Procedure) -> CloseFn {
-        Box::new(move |_| {
-            let close = close.clone();
-            Box::pin(async move {
-                let _ = close
-                    .call(&[], &mut ContBarrier::new())
-                    .await
-                    .map_err(|err| err.add_condition(IoError::new()))?;
-                Ok(())
-            })
-        })
+    pub(super) async fn custom_close(close: &Procedure) -> Result<(), Exception> {
+        let _ = close
+            .call(&[], &mut ContBarrier::new())
+            .await
+            .map_err(|err| err.add_condition(IoError::new()))?;
+        Ok(())
     }
 
     #[cfg(feature = "tokio")]
@@ -1142,12 +1122,11 @@ where
 
 pub type PollReadyFn = Box<dyn Fn(&dyn Any) -> bool + Send + Sync>;
 
-#[derive(Trace, Embeddable)]
+#[derive(Embeddable, Trace)]
 #[scheme(name = "port", sealed = true, opaque = true)]
 pub(crate) struct PortInner {
     #[trace(skip)]
     pub(crate) info: PortInfo,
-    #[trace(skip)]
     pub(crate) data: Mutex<PortData>,
 }
 
@@ -1186,21 +1165,23 @@ impl PortInner {
                 transcoder,
             },
             data: Mutex::new(PortData {
-                inner_port: Some(port.into_port()),
                 input_pos: 0,
                 bytes_read: 0,
                 input_buffer: buffer_mode.new_input_byte_buffer(transcoder.is_some(), can_read),
                 output_buffer: buffer_mode.new_output_byte_buffer(can_write),
                 utf16_endianness: None,
-                read,
-                write,
-                get_pos,
-                set_pos,
-                close,
-                #[cfg(unix)]
-                raw_fd: P::raw_fd_fn(),
-                poll_read_ready: P::poll_read_ready_fn(),
-                poll_write_ready: P::poll_write_ready_fn(),
+                io: Some(PortIo::Native(NativeIo {
+                    inner_port: port.into_port(),
+                    read,
+                    write,
+                    get_pos,
+                    set_pos,
+                    close,
+                    #[cfg(unix)]
+                    raw_fd: P::raw_fd_fn(),
+                    poll_read_ready: P::poll_read_ready_fn(),
+                    poll_write_ready: P::poll_write_ready_fn(),
+                })),
             }),
         }
     }
@@ -1219,12 +1200,6 @@ impl PortInner {
         let is_read = read.is_some();
         let is_write = write.is_some();
 
-        let read = read.map(proc_to_read_fn);
-        let write = write.map(proc_to_write_fn);
-        let get_pos = get_pos.map(proc_to_get_pos_fn);
-        let set_pos = set_pos.map(proc_to_set_pos_fn);
-        let close = close.map(proc_to_close_fn);
-
         Self {
             info: PortInfo {
                 id: id.to_string(),
@@ -1236,21 +1211,18 @@ impl PortInner {
                 transcoder,
             },
             data: Mutex::new(PortData {
-                inner_port: Some(Box::new(())),
                 input_pos: 0,
                 bytes_read: 0,
                 input_buffer: buffer_mode.new_input_byte_buffer(transcoder.is_some(), is_read),
                 output_buffer: buffer_mode.new_output_byte_buffer(is_write),
                 utf16_endianness: None,
-                read,
-                write,
-                get_pos,
-                set_pos,
-                close,
-                #[cfg(unix)]
-                raw_fd: None,
-                poll_read_ready: None,
-                poll_write_ready: None,
+                io: Some(PortIo::Custom(CustomProcs {
+                    read,
+                    write,
+                    get_pos,
+                    set_pos,
+                    close,
+                })),
             }),
         }
     }
@@ -1274,15 +1246,104 @@ pub(crate) struct PortInfo {
     transcoder: Option<Transcoder>,
 }
 
-/// Mutable data contained in the binary port.
-pub(crate) struct PortData {
-    inner_port: Option<PortBox>,
-    input_pos: usize,
-    bytes_read: usize,
-    input_buffer: ByteVector,
-    output_buffer: ByteVector,
-    utf16_endianness: Option<Endianness>,
-    // I/O Functions:
+// Splits the port IO in to what's traceable and what's not.
+#[derive(Trace)]
+enum PortIo {
+    Native(#[trace(skip)] NativeIo),
+    Custom(CustomProcs),
+}
+
+impl PortIo {
+    #[maybe_async]
+    fn write(&mut self, buf: &ByteVector, start: usize, count: usize) -> Result<(), Exception> {
+        match self {
+            PortIo::Native(NativeIo {
+                write: Some(f),
+                inner_port,
+                ..
+            }) => maybe_await!(f(&mut **inner_port, buf, start, count)),
+            PortIo::Custom(CustomProcs { write: Some(p), .. }) => {
+                let p = p.clone();
+                maybe_await!(custom_write(&p, buf, start, count))
+            }
+            _ => Err(Exception::io_write_error("not an output port")),
+        }
+    }
+
+    #[maybe_async]
+    fn read(&mut self, buf: &ByteVector, start: usize, count: usize) -> Result<usize, Exception> {
+        match self {
+            PortIo::Native(NativeIo {
+                read: Some(f),
+                inner_port,
+                ..
+            }) => maybe_await!(f(&mut **inner_port, buf, start, count)),
+            PortIo::Custom(CustomProcs { read: Some(p), .. }) => {
+                let p = p.clone();
+                maybe_await!(custom_read(&p, buf, start, count))
+            }
+            _ => Err(Exception::io_read_error("not an input port")),
+        }
+    }
+
+    #[maybe_async]
+    fn get_pos(&mut self) -> Result<u64, Exception> {
+        match self {
+            PortIo::Native(NativeIo {
+                get_pos: Some(f),
+                inner_port,
+                ..
+            }) => maybe_await!(f(&mut **inner_port)),
+            PortIo::Custom(CustomProcs {
+                get_pos: Some(p), ..
+            }) => {
+                let p = p.clone();
+                maybe_await!(custom_get_pos(&p))
+            }
+            _ => Err(Exception::io_error("port does not support port-position")),
+        }
+    }
+
+    #[maybe_async]
+    fn set_pos(&mut self, pos: u64) -> Result<(), Exception> {
+        match self {
+            PortIo::Native(NativeIo {
+                set_pos: Some(f),
+                inner_port,
+                ..
+            }) => maybe_await!(f(&mut **inner_port, pos)),
+            PortIo::Custom(CustomProcs {
+                set_pos: Some(p), ..
+            }) => {
+                let p = p.clone();
+                maybe_await!(custom_set_pos(&p, pos))
+            }
+            _ => Err(Exception::io_error(
+                "port does not support set-port-position!",
+            )),
+        }
+    }
+
+    /// A port without a close function closes without doing anything.
+    #[maybe_async]
+    fn close(&mut self) -> Result<(), Exception> {
+        match self {
+            PortIo::Native(NativeIo {
+                close: Some(f),
+                inner_port,
+                ..
+            }) => maybe_await!(f(&mut **inner_port)),
+            PortIo::Custom(CustomProcs { close: Some(p), .. }) => {
+                let p = p.clone();
+                maybe_await!(custom_close(&p))
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+struct NativeIo {
+    inner_port: PortBox,
     read: Option<ReadFn>,
     write: Option<WriteFn>,
     get_pos: Option<GetPosFn>,
@@ -1292,6 +1353,29 @@ pub(crate) struct PortData {
     raw_fd: Option<RawFdFn>,
     poll_read_ready: Option<PollReadyFn>,
     poll_write_ready: Option<PollReadyFn>,
+}
+
+#[derive(Trace)]
+struct CustomProcs {
+    read: Option<Procedure>,
+    write: Option<Procedure>,
+    get_pos: Option<Procedure>,
+    set_pos: Option<Procedure>,
+    close: Option<Procedure>,
+}
+
+/// Mutable data contained in the binary port.
+#[derive(Trace)]
+pub(crate) struct PortData {
+    #[trace(skip)]
+    input_pos: usize,
+    #[trace(skip)]
+    bytes_read: usize,
+    input_buffer: ByteVector,
+    output_buffer: ByteVector,
+    #[trace(skip)]
+    utf16_endianness: Option<Endianness>,
+    io: Option<PortIo>,
 }
 
 pub const BUFFER_SIZE: usize = 8192;
@@ -1310,19 +1394,15 @@ impl PortData {
 
     #[maybe_async]
     fn peekn_bytes(&mut self, port_info: &PortInfo, n: usize) -> Result<Option<u8>, Exception> {
-        let Some(read) = self.read.as_ref() else {
-            return Err(Exception::io_read_error("not an input port"));
-        };
-
-        let Some(port) = self.inner_port.as_deref_mut() else {
+        let Some(io) = self.io.as_mut() else {
             return Err(Exception::io_read_error("port is closed"));
         };
 
-        if let Some(write) = self.write.as_ref()
+        if port_info.can_write
             && let len = self.output_buffer.len()
             && len != 0
         {
-            maybe_await!(write(port, &self.output_buffer, 0, len))?;
+            maybe_await!(io.write(&self.output_buffer, 0, len))?;
             self.output_buffer.clear()?;
         }
 
@@ -1333,7 +1413,7 @@ impl PortData {
         while self.bytes_read <= n + self.input_pos {
             match (port_info.buffer_mode, port_info.transcoder) {
                 (BufferMode::None, _) => {
-                    let read = maybe_await!((read)(port, &self.input_buffer, self.bytes_read, 1))?;
+                    let read = maybe_await!(io.read(&self.input_buffer, self.bytes_read, 1))?;
                     if read == 1 {
                         self.bytes_read += 1;
                     } else {
@@ -1345,7 +1425,7 @@ impl PortData {
                     loop {
                         let count = self.input_buffer.len() - self.bytes_read;
                         let read =
-                            maybe_await!((read)(port, &self.input_buffer, self.bytes_read, count))?;
+                            maybe_await!(io.read(&self.input_buffer, self.bytes_read, count))?;
                         if read == 0 {
                             if start == self.bytes_read {
                                 return Ok(None);
@@ -1380,8 +1460,7 @@ impl PortData {
                 }
                 (BufferMode::Line | BufferMode::Block, _) => {
                     let count = self.input_buffer.len() - self.bytes_read;
-                    let read =
-                        maybe_await!((read)(port, &self.input_buffer, self.bytes_read, count))?;
+                    let read = maybe_await!(io.read(&self.input_buffer, self.bytes_read, count))?;
                     if read == 0 {
                         return Ok(None);
                     }
@@ -1568,23 +1647,16 @@ impl PortData {
 
     #[maybe_async]
     fn put_bytes(&mut self, port_info: &PortInfo, mut bytes: &[u8]) -> Result<(), Exception> {
-        let Some(write) = self.write.as_ref() else {
-            return Err(Exception::io_write_error("not an output port"));
-        };
-
-        let Some(port) = self.inner_port.as_deref_mut() else {
-            return Err(Exception::io_write_error("port is closed"));
+        let Some(io) = self.io.as_mut() else {
+            return Err(Exception::io_write_error("Port is closed"));
         };
 
         // If we can, seek back
-        if let Some(get_pos) = self.get_pos.as_ref()
-            && let Some(set_pos) = self.set_pos.as_ref()
-            && self.bytes_read > 0
-        {
-            let curr_pos = maybe_await!(get_pos(port))
-                .map_err(|err| err.add_condition(IoWriteError::new()))?;
+        if port_info.can_get_pos && port_info.can_set_pos && self.bytes_read > 0 {
+            let curr_pos =
+                maybe_await!(io.get_pos()).map_err(|err| err.add_condition(IoWriteError::new()))?;
             let seek_to = curr_pos - (self.bytes_read as u64 - self.input_pos as u64);
-            maybe_await!(set_pos(port, seek_to))
+            maybe_await!(io.set_pos(seek_to))
                 .map_err(|err| err.add_condition(IoWriteError::new()))?;
             self.bytes_read = 0;
             self.input_pos = 0;
@@ -1598,7 +1670,7 @@ impl PortData {
                         output_buffer.push(*byte);
                         output_buffer.len()
                     };
-                    maybe_await!(write(port, &self.output_buffer, 0, len))?;
+                    maybe_await!(io.write(&self.output_buffer, 0, len))?;
                     self.output_buffer.as_mut_vec()?.clear();
                 }
             }
@@ -1611,12 +1683,7 @@ impl PortData {
                         .as_mut_vec()?
                         .extend_from_slice(&bytes[..next_line]);
                     bytes = &bytes[next_line..];
-                    maybe_await!(write(
-                        port,
-                        &self.output_buffer,
-                        0,
-                        self.output_buffer.len()
-                    ))?;
+                    maybe_await!(io.write(&self.output_buffer, 0, self.output_buffer.len()))?;
                     self.output_buffer.clear()?;
                 } else {
                     self.output_buffer.as_mut_vec()?.extend_from_slice(bytes);
@@ -1630,12 +1697,7 @@ impl PortData {
                         .as_mut_vec()?
                         .extend_from_slice(&bytes[..num_bytes_to_buffer]);
                     bytes = &bytes[num_bytes_to_buffer..];
-                    maybe_await!(write(
-                        port,
-                        &self.output_buffer,
-                        0,
-                        self.output_buffer.len()
-                    ))?;
+                    maybe_await!(io.write(&self.output_buffer, 0, self.output_buffer.len()))?;
                     self.output_buffer.clear()?;
                 } else {
                     self.output_buffer.as_mut_vec()?.extend_from_slice(bytes);
@@ -1686,20 +1748,11 @@ impl PortData {
 
     #[maybe_async]
     fn flush(&mut self) -> Result<(), Exception> {
-        let Some(write) = self.write.as_ref() else {
-            return Err(Exception::io_write_error("not an output port"));
-        };
-
-        let Some(port) = self.inner_port.as_deref_mut() else {
+        let Some(io) = self.io.as_mut() else {
             return Err(Exception::io_write_error("port is closed"));
         };
 
-        maybe_await!(write(
-            port,
-            &self.output_buffer,
-            0,
-            self.output_buffer.len()
-        ))?;
+        maybe_await!(io.write(&self.output_buffer, 0, self.output_buffer.len()))?;
         self.output_buffer.clear()?;
 
         Ok(())
@@ -1707,65 +1760,35 @@ impl PortData {
 
     #[maybe_async]
     fn get_pos(&mut self) -> Result<u64, Exception> {
-        let Some(get_pos) = self.get_pos.as_ref() else {
-            return Err(Exception::io_error("port does not support port-position"));
-        };
-
-        let Some(port) = self.inner_port.as_deref_mut() else {
+        let Some(io) = self.io.as_mut() else {
             return Err(Exception::io_error("port is closed"));
         };
 
-        maybe_await!(get_pos(port))
+        maybe_await!(io.get_pos())
     }
 
     #[maybe_async]
     fn set_pos(&mut self, pos: u64) -> Result<(), Exception> {
-        let Some(set_pos) = self.set_pos.as_ref() else {
-            return Err(Exception::io_error(
-                "port does not support set-port-position!",
-            ));
-        };
-
-        let Some(port) = self.inner_port.as_deref_mut() else {
+        let Some(io) = self.io.as_mut() else {
             return Err(Exception::io_error("port is closed"));
         };
 
-        // Reset the buffers
-        if let Some(write) = self.write.as_ref() {
-            maybe_await!(write(
-                port,
-                &self.output_buffer,
-                0,
-                self.output_buffer.len()
-            ))?;
-            self.output_buffer.clear()?;
-        }
+        maybe_await!(io.write(&self.output_buffer, 0, self.output_buffer.len()))?;
+
+        self.output_buffer.clear()?;
         self.bytes_read = 0;
         self.input_pos = 0;
 
-        maybe_await!(set_pos(port, pos))
+        maybe_await!(io.set_pos(pos))
     }
 
     #[maybe_async]
     fn close(&mut self) -> Result<(), Exception> {
-        let mut port = self.inner_port.take();
+        let Some(io) = self.io.as_mut() else {
+            return Err(Exception::io_error("port is closed"));
+        };
 
-        if let Some(port) = port.as_deref_mut() {
-            if let Some(write) = self.write.as_ref() {
-                maybe_await!(write(
-                    port,
-                    &self.output_buffer,
-                    0,
-                    self.output_buffer.len()
-                ))?;
-            }
-
-            if let Some(close) = self.close.as_ref() {
-                maybe_await!((close)(port))?;
-            }
-        }
-
-        Ok(())
+        io.close()
     }
 }
 
@@ -1930,9 +1953,10 @@ impl Port {
         #[cfg(feature = "async")]
         let data = self.0.data.lock().await;
 
-        data.raw_fd
-            .as_ref()
-            .and_then(|f| data.inner_port.as_deref().map(|port| f(port)))
+        match &data.io {
+            Some(PortIo::Native(n)) => n.raw_fd.as_ref().map(|f| f(&*n.inner_port)),
+            _ => None,
+        }
     }
 
     #[maybe_async]
@@ -1942,10 +1966,13 @@ impl Port {
         #[cfg(feature = "async")]
         let data = self.0.data.lock().await;
 
-        data.poll_read_ready
-            .as_ref()
-            .and_then(|f| data.inner_port.as_deref().map(|port| f(port)))
-            .unwrap_or(false)
+        match &data.io {
+            Some(PortIo::Native(n)) => n
+                .poll_read_ready
+                .as_ref()
+                .is_some_and(|f| f(&*n.inner_port)),
+            _ => false,
+        }
     }
 
     #[maybe_async]
@@ -1955,10 +1982,13 @@ impl Port {
         #[cfg(feature = "async")]
         let data = self.0.data.lock().await;
 
-        data.poll_write_ready
-            .as_ref()
-            .and_then(|f| data.inner_port.as_deref().map(|port| f(port)))
-            .unwrap_or(false)
+        match &data.io {
+            Some(PortIo::Native(n)) => n
+                .poll_write_ready
+                .as_ref()
+                .is_some_and(|f| f(&*n.inner_port)),
+            _ => false,
+        }
     }
 
     /// Return the Id of the port.
@@ -2747,9 +2777,9 @@ impl IoEncodingError {
 #[scheme(name = "!eof", sealed = true, opaque = true)]
 pub struct EofObject;
 
-static EOF_OBJECT: LazyLock<Value> = LazyLock::new(|| Value::from(EofObject));
+pub(crate) static EOF_OBJECT: LazyLock<Value> = LazyLock::new(|| Value::from(EofObject));
 
-static FILE_OPTIONS: LazyLock<Embedded<EnumerationType>> = LazyLock::new(|| {
+pub(crate) static FILE_OPTIONS: LazyLock<Embedded<EnumerationType>> = LazyLock::new(|| {
     Embedded::new(EnumerationType::new([
         Symbol::intern("append"),
         Symbol::intern("no-create"),
@@ -2910,21 +2940,12 @@ pub fn transcoded_port(port: Port, transcoder: Embedded<Transcoder>) -> Result<P
     let port_info = &port.0.info;
 
     let data = PortData {
-        inner_port: port_data.inner_port.take(),
         input_pos: port_data.input_pos,
         bytes_read: port_data.bytes_read,
         input_buffer: port_data.input_buffer.clone(),
         output_buffer: port_data.output_buffer.clone(),
         utf16_endianness: port_data.utf16_endianness.take(),
-        read: port_data.read.take(),
-        write: port_data.write.take(),
-        get_pos: port_data.get_pos.take(),
-        set_pos: port_data.set_pos.take(),
-        close: port_data.close.take(),
-        #[cfg(unix)]
-        raw_fd: port_data.raw_fd.take(),
-        poll_read_ready: port_data.poll_read_ready.take(),
-        poll_write_ready: port_data.poll_write_ready.take(),
+        io: port_data.io.take(),
     };
 
     let info = PortInfo {

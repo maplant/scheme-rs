@@ -1,8 +1,10 @@
+use std::marker::PhantomData;
 use std::sync::Arc;
 
 use crate::gc_stack::GcStack;
-use crate::sync::{AtomicU8, Ordering, lock};
+use std::sync::atomic::{AtomicU8, Ordering};
 use rt::{CHANGED, STOP, THREADS, ThreadIndex, thread, thread_local};
+use std::mem::DropGuard;
 
 #[derive(PartialEq)]
 #[repr(u8)]
@@ -54,7 +56,7 @@ impl ThreadState {
     }
 
     fn set_runstate(&self, state: RunState) {
-        let _lock = lock(&THREADS);
+        let _lock = THREADS.lock();
         self.state.store(state);
 
         if STOP.load(Ordering::Relaxed) {
@@ -63,9 +65,9 @@ impl ThreadState {
     }
 
     fn enter_gc_awareness(&self) {
-        let mut threads = lock(&THREADS);
+        let mut threads = THREADS.lock();
         while STOP.load(Ordering::Acquire) {
-            threads = CHANGED.wait(threads).unwrap_or_else(|p| p.into_inner())
+            CHANGED.wait(&mut threads);
         }
         self.state.store(RunState::InsideGc); // No need to notify here
     }
@@ -82,7 +84,9 @@ mod rt {
     };
 
     use super::ThreadState;
-    use crate::sync::{AtomicBool, Condvar, Mutex};
+    use std::sync::atomic::AtomicBool;
+
+    use parking_lot::{Condvar, Mutex};
 
     pub(super) use std::{thread, thread::ThreadId as ThreadIndex, thread_local};
 
@@ -97,6 +101,27 @@ mod rt {
     }
 }
 
+// !send + !sync
+pub struct GcWatching(PhantomData<*mut ()>);
+
+impl GcWatching {
+    #[inline(always)]
+    pub fn without_gc_watching<R>(&mut self, f: impl FnOnce() -> R) -> R {
+        ME.with(|me| {
+            if !me.is_in_gc() {
+                f()
+            } else {
+                let _scope = DropGuard::new(me, |me| {
+                    me.state.enter_gc_awareness();
+                });
+                me.state.stack.capture();
+                me.state.set_runstate(RunState::OutsideGc);
+                f()
+            }
+        })
+    }
+}
+
 struct RegisteredThread {
     id: ThreadIndex,
     state: Arc<ThreadState>,
@@ -104,7 +129,7 @@ struct RegisteredThread {
 
 impl Drop for RegisteredThread {
     fn drop(&mut self) {
-        let mut threads = lock(&THREADS);
+        let mut threads = THREADS.lock();
         let id = self.id;
         threads.remove(&id);
         CHANGED.notify_all();
@@ -121,7 +146,7 @@ thread_local! {
     static ME: RegisteredThread = {
         let state = Arc::new(ThreadState::new());
         let id = thread::current().id();
-        lock(&THREADS).insert(id, state.clone());
+        THREADS.lock().insert(id, state.clone());
         RegisteredThread { id, state }
     }
 }
@@ -136,49 +161,22 @@ pub use rt::safepoint_flag;
 // Values must be created inside this block, otherwise they are invisible to
 // memory management.
 #[inline(always)] // stack is captured, so this needs to be inlined.
-pub fn with_gc_watching<R>(f: impl FnOnce() -> R) -> R {
+pub fn with_gc_watching<R>(f: impl FnOnce(&mut GcWatching) -> R) -> R {
+    let mut watching = GcWatching(PhantomData);
     ME.with(|me| {
         if me.is_in_gc() {
-            f()
+            f(&mut watching)
         } else {
+            let _scope = DropGuard::new(me, |me| {
+                me.state.stack.close_segment();
+                me.state.set_runstate(RunState::OutsideGc);
+            });
+
             me.state.stack.start_segment_here();
             me.state.enter_gc_awareness();
-            let _in_gc_scope = InGcScope(me);
-            f()
+            f(&mut watching)
         }
     })
-}
-
-// Makes it safe for if f() panics
-struct InGcScope<'a>(&'a RegisteredThread);
-
-impl Drop for InGcScope<'_> {
-    fn drop(&mut self) {
-        self.0.state.stack.close_segment();
-        self.0.state.set_runstate(RunState::OutsideGc);
-    }
-}
-
-#[inline(always)]
-pub fn without_gc_watching<R>(f: impl FnOnce() -> R) -> R {
-    ME.with(|me| {
-        if !me.is_in_gc() {
-            f()
-        } else {
-            me.state.stack.capture();
-            me.state.set_runstate(RunState::OutsideGc);
-            let _outside_gc = OutsideGcScope(me);
-            f()
-        }
-    })
-}
-
-struct OutsideGcScope<'a>(&'a RegisteredThread);
-
-impl Drop for OutsideGcScope<'_> {
-    fn drop(&mut self) {
-        self.0.state.enter_gc_awareness();
-    }
 }
 
 #[inline(never)]
@@ -197,7 +195,7 @@ pub fn park_self() {
 pub struct Stopped(());
 impl Drop for Stopped {
     fn drop(&mut self) {
-        let _threads = lock(&THREADS);
+        let _threads = THREADS.lock();
         STOP.store(false, Ordering::Relaxed);
         CHANGED.notify_all();
     }
@@ -205,17 +203,17 @@ impl Drop for Stopped {
 
 pub fn stop_the_world() -> Stopped {
     STOP.store(true, Ordering::Relaxed);
-    let mut threads = lock(&THREADS);
+    let mut threads = THREADS.lock();
 
     while threads.values().any(|t| t.is_in_gc()) {
-        threads = CHANGED.wait(threads).unwrap_or_else(|p| p.into_inner());
+        CHANGED.wait(&mut threads);
     }
 
     Stopped(())
 }
 
 pub fn for_each_threads_words(_stopped: &Stopped, mut f: impl FnMut(usize)) {
-    let threads = lock(&THREADS);
+    let threads = THREADS.lock();
     for t in threads.values() {
         unsafe {
             t.stack.for_each_word(&mut f);

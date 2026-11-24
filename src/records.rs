@@ -215,16 +215,18 @@ use std::{
     ops::Deref,
     ptr::{self, NonNull},
     slice,
-    sync::{Arc, LazyLock, Mutex},
+    sync::LazyLock,
 };
 
 use by_address::ByAddress;
 use indexmap::IndexSet;
+use parking_lot::Mutex;
+use scheme_rs_gc::{RootedStatic, Roots};
 
 use crate::{
     exceptions::Exception,
     fmt::{Formatter, Mode},
-    gc::{Gc, HeapObject, HeapValue, Trace, alloc_layout, unroot},
+    gc::{Gc, HeapObject, HeapValue, Trace, alloc_layout, heap, unroot},
     lists::{append_list, iter_list, split_list},
     proc::{Application, Args, ContBarrier, FuncPtr, Procedure},
     registry::bridge,
@@ -311,6 +313,7 @@ unsafe impl Embeddable for RecordTypeDescriptorInner {
                 unroot(&gc);
             }
 
+            heap().register_roots(&RTD);
             RecordTypeDescriptor(Embedded {
                 embedded_ptr,
                 record: Record(gc),
@@ -318,6 +321,12 @@ unsafe impl Embeddable for RecordTypeDescriptorInner {
         });
 
         RTD.clone()
+    }
+}
+
+unsafe impl Roots for RecordTypeDescriptor {
+    fn visit_roots(&self, visitor: &mut dyn FnMut(HeapObject)) {
+        unsafe { self.0.record.visit_children(visitor) };
     }
 }
 
@@ -1090,10 +1099,10 @@ pub(crate) fn is_subtype_of(val: &Value, rt: RecordTypeDescriptor) -> Result<boo
     )
 }
 
-type NonGenerativeStore =
-    LazyLock<Arc<Mutex<HashMap<Symbol, Embedded<RecordTypeDescriptorInner>>>>>;
+type NonGenerativeStore = RootedStatic<HashMap<Symbol, Embedded<RecordTypeDescriptorInner>>>;
 
-static NONGENERATIVE: NonGenerativeStore = LazyLock::new(|| Arc::new(Mutex::new(HashMap::new())));
+pub(crate) static NONGENERATIVE: NonGenerativeStore =
+    RootedStatic::new(|| Mutex::new(HashMap::new()));
 
 #[bridge(
     name = "make-record-type-descriptor",
@@ -1116,7 +1125,7 @@ pub fn make_record_type_descriptor(
     // If the record is non-generative, check to see if it has already been
     // instanciated.
     if let Some(ref uid) = uid
-        && let Some(rtd) = NONGENERATIVE.lock().unwrap().get(uid)
+        && let Some(rtd) = NONGENERATIVE.lock().get(uid)
     {
         return Ok(rtd.clone());
     }
@@ -1159,7 +1168,7 @@ pub fn make_record_type_descriptor(
     });
 
     if let Some(uid) = uid {
-        NONGENERATIVE.lock().unwrap().insert(uid, rtd.clone());
+        NONGENERATIVE.lock().insert(uid, rtd.clone());
     }
 
     Ok(rtd)

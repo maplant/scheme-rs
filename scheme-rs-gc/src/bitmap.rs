@@ -1,4 +1,4 @@
-use crate::sync::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[inline]
 pub(crate) const fn bits_through(bit: usize) -> u64 {

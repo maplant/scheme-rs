@@ -1792,7 +1792,9 @@ pub fn rtd(tokens: TokenStream) -> TokenStream {
     quote! {
         {
             static RTD: ::std::sync::LazyLock<::scheme_rs::records::RecordTypeDescriptor> =
-                ::std::sync::LazyLock::new(|| ::scheme_rs::records::RecordTypeDescriptor(
+            ::std::sync::LazyLock::new(|| {
+                ::scheme_rs::gc::register_roots(&RTD);
+                ::scheme_rs::records::RecordTypeDescriptor(
                     ::scheme_rs::records::Embedded::new(::scheme_rs::records::RecordTypeDescriptorInner {
                         name: ::scheme_rs::symbols::Symbol::intern(#name),
                         inherits: #inherits,
@@ -1804,7 +1806,10 @@ pub fn rtd(tokens: TokenStream) -> TokenStream {
                         embedded_constructor: #embedded_constructor,
                         embedded_vtable: Some(::scheme_rs::records::EmbeddableVTable::new::<#ty>(#num_embedded_fields)),
                     })
-                ));
+                )
+            });
+
+
             #bridge
             RTD.clone()
         }

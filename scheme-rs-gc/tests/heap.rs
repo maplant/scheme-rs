@@ -4,7 +4,9 @@ use core::alloc::Layout;
 use std::sync::atomic::Ordering;
 
 use common::*;
-use scheme_rs_gc::{BLOCK_SIZE, LINE_SIZE, LOS_MAX_SIZE, Mutator};
+use scheme_rs_gc::{
+    BLOCK_SIZE, HeapObject, LINE_SIZE, LOS_MAX_SIZE, Mutator, Roots, with_gc_watching,
+};
 
 #[test]
 fn budget_rounds_up_to_whole_blocks() {
@@ -73,7 +75,7 @@ fn a_full_heap_fails_and_recovers_after_a_free() {
     let first = full_block(&heap);
     full_block(&heap);
     let layout = Layout::from_size_align(32, 16).unwrap();
-    assert!(heap.mutator().alloc(layout).is_err());
+    assert!(with_gc_watching(|w| heap.mutator().alloc(w, layout)).is_err());
     let mut c = heap.reclaimer();
     unsafe { c.free(first[0]) };
     c.sweep();
@@ -218,6 +220,31 @@ fn a_temporary_mutator_hands_its_block_back() {
     c.sweep();
     c.sweep();
     assert_eq!(heap.stats().free_blocks, total_blocks(&heap));
+}
+
+struct TestRoots(Vec<HeapObject>);
+
+unsafe impl Roots for TestRoots {
+    fn visit_roots(&self, visitor: &mut dyn FnMut(scheme_rs_gc::HeapObject)) {
+        for root in self.0.iter() {
+            visitor(*root);
+        }
+    }
+}
+
+#[test]
+fn visit_roots() {
+    let heap = test_heap();
+    let mut objs = Vec::new();
+    for _ in 0..100 {
+        let p = init_obj(&mut heap.mutator(), 32, 16);
+        objs.push(unsafe { HeapObject::from_data(p) });
+    }
+    let roots: &'static TestRoots = Box::leak(Box::new(TestRoots(objs)));
+    heap.register_roots(roots);
+    let mut seen = 0;
+    unsafe { heap.for_each_root(&mut |_| seen += 1) }
+    assert_eq!(seen, 100)
 }
 
 #[test]

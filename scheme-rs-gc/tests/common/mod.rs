@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use scheme_rs_gc::{
     AllocError, Allocator, BLOCK_SIZE, Global, Heap, LINE_SIZE, Mutator, ObjectHeader,
+    with_gc_watching,
 };
 
 /// Test objects keep their layout in their first 16 bytes
@@ -45,7 +46,7 @@ pub fn init_obj<A: Allocator>(
 ) -> NonNull<u8> {
     assert!(size >= size_of::<Layout>() && align >= align_of::<Layout>());
     let layout = Layout::from_size_align(size, align).unwrap();
-    stamp(m.alloc(layout).unwrap(), layout)
+    stamp(with_gc_watching(|w| m.alloc(w, layout)).unwrap(), layout)
 }
 
 pub fn block_of(obj: NonNull<u8>) -> usize {

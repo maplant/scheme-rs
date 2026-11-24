@@ -2,6 +2,7 @@
 //! Cycle Collection in Reference Counted Systems by David F. Bacon and
 //! V.T. Rajan.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{alloc::Layout, any::TypeId, mem::take, ptr::null_mut};
 
 use parking_lot::Mutex;
@@ -11,7 +12,6 @@ use crate::{
     HeapObject, MAX_ALIGN, Reclaimer, VTable,
     collector::{Collector, DropAction, INVALID_VTABLE, on_collector_thread},
     heap::{Heap, ObjectHeader},
-    sync::{AtomicUsize, Ordering},
 };
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]

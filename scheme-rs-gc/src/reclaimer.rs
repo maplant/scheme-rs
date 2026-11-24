@@ -1,6 +1,8 @@
 use core::{mem::take, ptr::NonNull};
 use std::alloc::Layout;
-use std::sync::TryLockError;
+use std::sync::atomic::Ordering;
+
+use parking_lot::MutexGuard;
 
 use allocator_api2::alloc::{Allocator, Global};
 
@@ -12,7 +14,6 @@ use crate::{
         ALL_LINES, BLOCK_SIZE, BlockId, GRANULE, OwnedBlock, ReclaimerToken, Region, State,
         is_large,
     },
-    sync::{MutexGuard, Ordering, lock},
 };
 
 /// State only a `Reclaimer` can reach, behind the heap's reclaimer mutex.
@@ -60,11 +61,10 @@ pub struct Reclaimer<'h, H: ObjectHeader, A: Allocator = Global> {
 
 impl<'h, H: ObjectHeader, A: Allocator> Reclaimer<'h, H, A> {
     pub(crate) fn new(heap: &'h Heap<H, A>) -> Self {
-        let state = match heap.reclaimer.try_lock() {
-            Ok(state) => state,
-            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
-            Err(TryLockError::WouldBlock) => panic!("reclaimer already taken"),
-        };
+        let state = heap
+            .reclaimer
+            .try_lock()
+            .expect("reclaimer already taken");
         Self { heap, state }
     }
 
@@ -121,11 +121,11 @@ impl<'h, H: ObjectHeader, A: Allocator> Reclaimer<'h, H, A> {
         for (block, holes) in state.quarantine.drain(..) {
             if holes == ALL_LINES {
                 region.moved(&block, &[State::AwaitingClearance], State::Free);
-                lock(&heap.free).push(block);
+                heap.free.lock().push(block);
                 heap.return_space(BLOCK_SIZE);
             } else {
                 region.moved(&block, &[State::AwaitingClearance], State::Recycled);
-                lock(&heap.recycled).push((block, holes));
+                heap.recycled.lock().push((block, holes));
             }
         }
 
@@ -139,11 +139,11 @@ impl<'h, H: ObjectHeader, A: Allocator> Reclaimer<'h, H, A> {
         state.large_quarantined = take(&mut state.large_freed);
 
         // Recycled blocks freed into have stale holes; take them back.
-        let reclaimed: Vec<_> = lock(&heap.recycled)
+        let reclaimed: Vec<_> = heap.recycled.lock()
             .extract_if(.., |entry| state.dirty_flags[entry.0.id().index()])
             .map(|(block, _)| block)
             .collect();
-        let retired = take(&mut *lock(&heap.retired));
+        let retired = take(&mut *heap.retired.lock());
         let mut candidates = take(&mut state.dirty);
         for &id in &candidates {
             state.dirty_flags[id.index()] = false;

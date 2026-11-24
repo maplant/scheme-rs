@@ -7,7 +7,7 @@ use std::{
 };
 
 use common::TestHeader;
-use scheme_rs_gc::{BLOCK_SIZE, Collector, Heap, start_collector};
+use scheme_rs_gc::{BLOCK_SIZE, Collector, Heap, start_collector, with_gc_watching};
 
 static EPOCHS: AtomicUsize = AtomicUsize::new(0);
 
@@ -31,7 +31,7 @@ fn crossing_the_trigger_notifies_the_collector() {
     let mut mutator = heap.mutator();
     let layout = Layout::from_size_align(1024, 8).unwrap();
 
-    while mutator.alloc(layout).is_ok() {}
+    while with_gc_watching(|w| mutator.alloc(w, layout)).is_ok() {}
 
     let deadline = Instant::now() + Duration::from_millis(200);
     while EPOCHS.load(Ordering::Relaxed) == 0 {

@@ -6,7 +6,9 @@ use std::slice;
 
 use crate::bitmap::last_set_at_or_before;
 use crate::region::BLOCK_SIZE;
-use crate::sync::{AtomicU64, Mutex, Ordering, lock};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use parking_lot::Mutex;
 
 pub(crate) const PAGE: usize = 4096; // bytes
 
@@ -70,7 +72,7 @@ impl LargeSpace {
 
     pub(crate) fn claim_run(&self, n_pages: usize, align_bytes: usize) -> Option<Run> {
         let align_pages = align_bytes.div_ceil(PAGE).max(1);
-        let mut runs = lock(&self.runs);
+        let mut runs = self.runs.lock();
 
         let (start, length, at) = runs.iter().find_map(|(&start, &length)| {
             let at = start.next_multiple_of(align_pages);
@@ -92,7 +94,7 @@ impl LargeSpace {
     }
 
     pub(crate) fn release_run(&self, run: Run) {
-        let mut runs = lock(&self.runs);
+        let mut runs = self.runs.lock();
         let mut start = run.start_index;
         let mut length = run.n_pages;
 

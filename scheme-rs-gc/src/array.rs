@@ -5,7 +5,7 @@ use std::{
 
 use allocator_api2::alloc::AllocError;
 
-use crate::{Header, Heap, HeapObject, Mutator, SlotValue, Trace, VTable, unroot_in};
+use crate::{GcWatching, Header, Heap, HeapObject, Mutator, SlotValue, Trace, VTable, unroot_in};
 
 #[repr(C)]
 struct HeapArrayInner<T> {
@@ -119,13 +119,17 @@ impl<T: Trace> HeapArray<T> {
         }
     }
 
-    pub fn from_iter_in<I>(m: &mut Mutator<'_, Header>, items: I) -> Result<Self, AllocError>
+    pub fn from_iter_in<I>(
+        m: &mut Mutator<'_, Header>,
+        watching: &mut GcWatching,
+        items: I,
+    ) -> Result<Self, AllocError>
     where
         I: IntoIterator<Item = T>,
         I::IntoIter: ExactSizeIterator,
     {
         let items = items.into_iter();
-        let data = unsafe { HeapObject::alloc_layout_in(m, Self::layout(items.len()))? };
+        let data = unsafe { HeapObject::alloc_layout_in(m, watching, Self::layout(items.len()))? };
         Ok(unsafe { Self::init_in(m.heap, data, items) })
     }
 
@@ -178,17 +182,19 @@ impl<'a, T: Trace> IntoIterator for &'a HeapArray<T> {
 mod array_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use crate::{BLOCK_SIZE, CycleHeader, Heap, HeapArray, HeapObject, Trace};
+    use crate::{BLOCK_SIZE, CycleHeader, Heap, HeapArray, HeapObject, Trace, with_gc_watching};
 
     #[test]
     pub fn tracing_arrays_visits_every_slot() {
         let heap = Box::leak(Box::new(Heap::<CycleHeader>::new(4 * BLOCK_SIZE).unwrap()));
         let mut m = heap.mutator();
-        let children: Vec<_> = (0..5)
-            .map(|_| HeapArray::<usize>::from_iter_in(&mut m, []).unwrap())
-            .collect();
-        let expected: Vec<HeapObject> = children.iter().map(|c| c.0).collect();
-        let parent = HeapArray::from_iter_in(&mut m, children).unwrap();
+        let (expected, parent) = with_gc_watching(|w| {
+            let children: Vec<_> = (0..5)
+                .map(|_| HeapArray::<usize>::from_iter_in(&mut m, w, []).unwrap())
+                .collect();
+            let expected: Vec<HeapObject> = children.iter().map(|c| c.0).collect();
+            (expected, HeapArray::from_iter_in(&mut m, w, children).unwrap())
+        });
 
         let mut seen = Vec::new();
         unsafe {
@@ -213,7 +219,9 @@ mod array_tests {
     pub fn finalizing_array_finalizes_each_child() {
         let heap = Box::leak(Box::new(Heap::<CycleHeader>::new(4 * BLOCK_SIZE).unwrap()));
         let mut m = heap.mutator();
-        let array = HeapArray::from_iter_in(&mut m, (0..5).map(|_| Counted)).unwrap();
+        let array = with_gc_watching(|w| {
+            HeapArray::from_iter_in(&mut m, w, (0..5).map(|_| Counted)).unwrap()
+        });
 
         unsafe {
             (HeapArray::<Counted>::vtable().finalize)(array.0.data_mut().cast());

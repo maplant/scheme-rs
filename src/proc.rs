@@ -81,7 +81,7 @@ use crate::{
     cps::PrimOp,
     env::Local,
     exceptions::{Exception, raise},
-    gc::{Gc, HeapValue, Trace, heap_array, heap_array_with_len},
+    gc::{Gc, HeapValue, Trace, heap, heap_array, heap_array_with_len},
     lists::{Pair, list_len, list_to_vec},
     ports::{BufferMode, Port, Transcoder},
     records::{Embeddable, Embedded},
@@ -1218,7 +1218,7 @@ impl<'a> ContBarrier<'a> {
 
     pub fn current_input_port(&self) -> Port {
         static STDIN: LazyLock<Port> = LazyLock::new(|| {
-            Port::new(
+            let p = Port::new(
                 "<stdin>",
                 #[cfg(not(feature = "async"))]
                 std::io::stdin(),
@@ -1226,7 +1226,9 @@ impl<'a> ContBarrier<'a> {
                 tokio::io::stdin(),
                 BufferMode::Line,
                 Some(Transcoder::native()),
-            )
+            );
+            heap().register_roots(&STDIN);
+            p
         });
         self.state
             .stack()
@@ -1241,6 +1243,7 @@ impl<'a> ContBarrier<'a> {
 
     pub fn current_output_port(&self) -> Port {
         static STDOUT: LazyLock<Port> = LazyLock::new(|| {
+            heap().register_roots(&STDOUT);
             Port::new(
                 "<stdout>",
                 #[cfg(not(feature = "async"))]

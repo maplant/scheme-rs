@@ -15,7 +15,7 @@
 mod heap;
 
 pub use heap::{HeapAlreadyCreated, budget, init_gc, set_heap_size, shutdown_gc};
-pub use scheme_rs_gc::{HeapObject, Trace};
+pub use scheme_rs_gc::{Handle, HeapObject, Trace};
 pub use scheme_rs_macros::Trace;
 
 use std::{
@@ -24,12 +24,12 @@ use std::{
     mem::ManuallyDrop,
     ops::Deref,
     ptr::NonNull,
-    sync::atomic::Ordering,
+    sync::{LazyLock, atomic::Ordering},
 };
 
 use heap::{alloc, alloc_zeroed, collect_garbage_sync, unroot_obj};
-pub(crate) use heap::{alloc_layout, heap_array, heap_array_with_len};
-use scheme_rs_gc::{GcOrTrace, HEADER_SIZE, HeapSlot, VTable};
+pub(crate) use heap::{alloc_layout, heap, heap_array, heap_array_with_len};
+use scheme_rs_gc::{GcOrTrace, HEADER_SIZE, Handles, HeapSlot, Roots, VTable};
 use scheme_rs_macros::{maybe_async, maybe_await};
 #[cfg(feature = "tokio")]
 use tokio::task::spawn_blocking;
@@ -55,6 +55,9 @@ use crate::{Either, registry::bridge, value::Value};
 /// An opt-in escape, `#[trace(unbarriered)]`, is planned for types that
 /// cannot comply.
 pub type HeapValue = HeapSlot<Value>;
+
+pub type ValueHandle = Handle<'static, Value>;
+pub(crate) static HANDLES: LazyLock<Handles<Value>> = LazyLock::new(|| Handles::new());
 
 /// A heap allocated garbage collected smart pointer. Gc requires that `T`
 /// implements the [`Trace`] trait to properly track references.
@@ -336,6 +339,11 @@ pub async fn collect_garbage() {
 #[bridge(name = "collect-garbage", lib = "(runtime (1))")]
 pub fn collect_garbage_bridge() {
     maybe_await!(collect_garbage());
+}
+
+#[doc(hidden)]
+pub fn register_roots(roots: &'static dyn Roots) {
+    heap().register_roots(roots);
 }
 
 #[cfg(test)]
