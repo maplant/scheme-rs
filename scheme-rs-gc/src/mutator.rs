@@ -1,3 +1,4 @@
+use std::sync::atomic::Ordering;
 use core::{alloc::Layout, mem::take, ptr::NonNull};
 
 use allocator_api2::alloc::{AllocError, Allocator, Global};
@@ -6,7 +7,7 @@ use crate::{
     Heap,
     heap::ObjectHeader,
     region::{ALL_LINES, GRANULE, LINE_SIZE, OwnedBlock, Region, is_large, take_hole},
-    sync::Ordering,
+    safepoint::GcWatching,
 };
 
 /// Bump window over the holes of one block.
@@ -167,7 +168,7 @@ impl<'h, H: ObjectHeader, A: Allocator> Mutator<'h, H, A> {
     }
 
     /// Returns uninitialized memory for `layout`.
-    pub fn alloc(&mut self, layout: Layout) -> Result<NonNull<u8>, AllocError> {
+    pub fn alloc(&mut self, _: &mut GcWatching, layout: Layout) -> Result<NonNull<u8>, AllocError> {
         self.bump.alloc(self.heap, layout)
     }
 }

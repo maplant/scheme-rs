@@ -6,10 +6,9 @@ use std::{
     ops::Deref,
 };
 
-use crate::{
-    HeapObject, Trace,
-    sync::RwLock,
-};
+use parking_lot::RwLock;
+
+use crate::{HeapObject, Trace};
 
 /// A value that can be stored in a `HeapSlot`.
 ///

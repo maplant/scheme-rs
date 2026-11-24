@@ -14,9 +14,18 @@ use std::{
 
 use parking_lot::Mutex;
 use scheme_rs_gc::{
-    CollectorAlreadyRunning, CollectorHandle, DefaultCollector, Header, Heap, HeapArray,
-    HeapObject, Mutator, Trace, VTable, collect_garbage_in, on_collector_thread, start_collector,
-    unroot_in, without_gc_watching,
+    CollectorAlreadyRunning, CollectorHandle, DefaultCollector, GcWatching, Header, Heap,
+    HeapArray, HeapObject, Mutator, Trace, VTable, collect_garbage_in, on_collector_thread,
+    start_collector, unroot_in, with_gc_watching,
+};
+
+use crate::{
+    env::TOP_LEVEL_BINDINGS,
+    gc::HANDLES,
+    keywords::INTERNED,
+    ports::{EOF_OBJECT, FILE_OPTIONS, LATIN_1_CODEC, UTF_8_CODEC, UTF_16_CODEC},
+    records::NONGENERATIVE,
+    registry::PRIMITIVES_LIB,
 };
 
 const DEFAULT_HEAP_SIZE: usize = 512 * 1024 * 1024;
@@ -38,7 +47,7 @@ pub fn set_heap_size(bytes: usize) -> Result<(), HeapAlreadyCreated> {
     Ok(())
 }
 
-fn heap() -> &'static Heap<Header> {
+pub(crate) fn heap() -> &'static Heap<Header> {
     HEAP.get_or_init(|| {
         let bytes = match HEAP_SIZE.load(Ordering::Relaxed) {
             0 => env::var("SCHEME_RS_HEAP_SIZE")
@@ -50,7 +59,18 @@ fn heap() -> &'static Heap<Header> {
                 .unwrap_or(DEFAULT_HEAP_SIZE),
             bytes => bytes,
         };
-        Heap::new(bytes).expect("could not reserve the GC heap")
+        let heap = Heap::new(bytes).expect("could not reserve the GC heap");
+        heap.register_roots(&INTERNED);
+        heap.register_roots(&TOP_LEVEL_BINDINGS);
+        heap.register_roots(&*HANDLES);
+        heap.register_roots(&LATIN_1_CODEC);
+        heap.register_roots(&UTF_8_CODEC);
+        heap.register_roots(&UTF_16_CODEC);
+        heap.register_roots(&EOF_OBJECT);
+        heap.register_roots(&FILE_OPTIONS);
+        heap.register_roots(&NONGENERATIVE);
+        heap.register_roots(&PRIMITIVES_LIB);
+        heap
     })
 }
 
@@ -98,19 +118,20 @@ thread_local! {
 /// On exiting threads: Drop and thread-local allocators must not allocate via `alloc`
 pub(crate) unsafe fn alloc_layout(layout: Layout) -> NonNull<u8> {
     assert!(!on_collector_thread(), "Gc allocated during finalization");
-    let try_alloc = || {
-        MUTATOR
-            .try_with(|m| unsafe { HeapObject::alloc_layout_in(&mut m.borrow_mut(), layout) })
-            .expect("Gc allocated after this thread's GC mutator was destroyed")
-    };
-    if let Ok(obj) = try_alloc() {
-        return obj;
-    }
-    // A full heap waits for the collector, outside GC watching so a pause never
-    // waits on this thread. Two epochs: freed lines are reusable only after the
-    // sweep that follows the one that found them.
-    without_gc_watching(|| heap().wait_for_epochs(2));
-    try_alloc().unwrap_or_else(|_| handle_alloc_error(layout))
+    with_gc_watching(|watching| {
+        let try_alloc = |watching: &mut GcWatching| {
+            MUTATOR
+                .try_with(|m| unsafe {
+                    HeapObject::alloc_layout_in(&mut m.borrow_mut(), watching, layout)
+                })
+                .expect("Gc allocated after this thread's GC mutator was destroyed")
+        };
+        if let Ok(obj) = try_alloc(watching) {
+            return obj;
+        } else {
+            handle_alloc_error(layout)
+        }
+    })
 }
 
 pub(crate) fn heap_array<T: Trace + 'static, I>(items: I) -> HeapArray<T>

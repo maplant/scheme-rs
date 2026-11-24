@@ -1,6 +1,7 @@
+use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex};
 
+use scheme_rs_gc::RootedStatic;
 use scheme_rs_macros::{Trace, bridge};
 
 use crate::records::Embedded;
@@ -10,13 +11,13 @@ use crate::{records::Embeddable, symbols::Symbol, value::Value};
 #[scheme(name = "keyword", sealed = true, opaque = true)]
 pub struct Keyword(Symbol);
 
-static INTERNED: LazyLock<Mutex<HashMap<Symbol, Value>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+pub(crate) static INTERNED: RootedStatic<HashMap<Symbol, Value>> =
+    RootedStatic::new(|| Mutex::new(HashMap::new()));
 
 impl Keyword {
     pub fn intern(name: &str) -> Value {
         let sym = Symbol::intern(name);
-        let mut cache = INTERNED.lock().unwrap();
+        let mut cache = INTERNED.lock();
         cache
             .entry(sym)
             .or_insert_with(|| Value::from(Keyword(sym)))

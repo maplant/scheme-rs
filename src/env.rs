@@ -5,10 +5,7 @@ use std::{
     fmt,
     hash::{Hash, Hasher},
     path::{Path, PathBuf},
-    sync::{
-        LazyLock,
-        atomic::{AtomicUsize, Ordering},
-    },
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 #[cfg(feature = "async")]
@@ -16,6 +13,7 @@ use async_lock::{RwLock, RwLockUpgradableReadGuard, RwLockWriteGuard};
 use parking_lot::Mutex;
 #[cfg(not(feature = "async"))]
 use parking_lot::{RwLock, RwLockUpgradableReadGuard, RwLockWriteGuard};
+use scheme_rs_gc::RootedStatic;
 use scheme_rs_macros::{Embeddable, maybe_async, maybe_await};
 
 #[cfg(feature = "async")]
@@ -46,7 +44,7 @@ pub(crate) mod error {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Trace)]
 pub(crate) enum TopLevelBinding {
     Unexpanded(TopLevelEnvironment),
     Global(Global),
@@ -60,8 +58,8 @@ impl TopLevelBinding {
     }
 }
 
-pub(crate) static TOP_LEVEL_BINDINGS: LazyLock<Mutex<HashMap<Binding, TopLevelBinding>>> =
-    LazyLock::new(|| Mutex::new(HashMap::default()));
+pub(crate) static TOP_LEVEL_BINDINGS: RootedStatic<HashMap<Binding, TopLevelBinding>> =
+    RootedStatic::new(|| Mutex::new(HashMap::default()));
 
 fn add_pending_top_level_binding(binding: Binding, origin: TopLevelEnvironment) {
     TOP_LEVEL_BINDINGS
@@ -1050,8 +1048,8 @@ impl fmt::Debug for Binding {
 type Bindings = Vec<(BTreeSet<Scope>, Binding)>;
 
 // We can probably design this much more intelligently
-pub(crate) static GLOBAL_BINDING_TABLE: LazyLock<Mutex<HashMap<Symbol, Bindings>>> =
-    LazyLock::new(|| Mutex::new(HashMap::default()));
+pub(crate) static GLOBAL_BINDING_TABLE: RootedStatic<HashMap<Symbol, Bindings>> =
+    RootedStatic::new(|| Mutex::new(HashMap::default()));
 
 pub(crate) fn add_binding(id: Identifier, binding: Binding) {
     GLOBAL_BINDING_TABLE

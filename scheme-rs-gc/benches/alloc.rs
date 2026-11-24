@@ -1,7 +1,7 @@
 use core::alloc::Layout;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use scheme_rs_gc::{Heap, ObjectHeader};
+use scheme_rs_gc::{Heap, ObjectHeader, with_gc_watching};
 
 struct Model {
     layout: Layout,
@@ -26,13 +26,15 @@ fn churn(c: &mut Criterion) {
     c.bench_function("heap: 1000 x 64B alloc, free, sweep", |b| {
         b.iter(|| {
             let mut m = heap.mutator();
-            let objs: Vec<_> = (0..N)
-                .map(|_| {
-                    let obj = m.alloc(OBJ).unwrap();
-                    unsafe { obj.cast::<Layout>().write(OBJ) };
-                    obj
-                })
-                .collect();
+            let objs: Vec<_> = with_gc_watching(|w| {
+                (0..N)
+                    .map(|_| {
+                        let obj = m.alloc(w, OBJ).unwrap();
+                        unsafe { obj.cast::<Layout>().write(OBJ) };
+                        obj
+                    })
+                    .collect()
+            });
             drop(m);
             let mut reclaimer = heap.reclaimer();
             for obj in objs {

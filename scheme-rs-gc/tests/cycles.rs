@@ -2,8 +2,8 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use std::{alloc::Layout, any::TypeId};
 
 use scheme_rs_gc::{
-    BLOCK_SIZE, CycleCollector, CycleHeader, Heap, HeapObject, Mutator, VTable, collect_garbage_in,
-    start_collector, unroot_in,
+    BLOCK_SIZE, CycleCollector, CycleHeader, GcWatching, Heap, HeapObject, Mutator, VTable,
+    collect_garbage_in, start_collector, unroot_in, with_gc_watching,
 };
 
 struct Node {
@@ -25,9 +25,13 @@ fn node_vtable() -> VTable {
     }
 }
 
-fn new_node(heap: &Heap<CycleHeader>, mutator: &mut Mutator<'_, CycleHeader>) -> HeapObject {
+fn new_node(
+    heap: &Heap<CycleHeader>,
+    mutator: &mut Mutator<'_, CycleHeader>,
+    watching: &mut GcWatching,
+) -> HeapObject {
     unsafe {
-        let data = HeapObject::alloc_layout_in(mutator, Layout::new::<Node>())
+        let data = HeapObject::alloc_layout_in(mutator, watching, Layout::new::<Node>())
             .unwrap()
             .cast::<Node>();
         data.write(Node { next: None });
@@ -46,8 +50,12 @@ fn an_unreachable_cycle_is_finalized() {
     let heap = Box::leak(Box::new(Heap::<CycleHeader>::new(4 * BLOCK_SIZE).unwrap()));
     let _gc = start_collector::<CycleCollector>(heap).unwrap();
     let mut mutator = heap.mutator();
-    let a = new_node(heap, &mut mutator);
-    let b = new_node(heap, &mut mutator);
+    let (a, b) = with_gc_watching(|w| {
+        (
+            new_node(heap, &mut mutator, w),
+            new_node(heap, &mut mutator, w),
+        )
+    });
     unsafe {
         (*data(a)).next = Some(b);
         b.rc().fetch_add(1, Ordering::Relaxed);

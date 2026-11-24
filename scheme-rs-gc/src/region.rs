@@ -11,7 +11,7 @@ use allocator_api2::alloc::{AllocError, Allocator};
 use std::sync::atomic::AtomicU32;
 
 use crate::large::PAGE;
-use crate::sync::{AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use crate::{bitmap::last_set_at_or_before, large::LargeSpace};
 
 pub const BLOCK_SIZE: usize = 32 * 1024;

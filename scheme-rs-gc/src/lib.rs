@@ -24,6 +24,7 @@ pub use cycle_collector::{CycleCollector, CycleHeader, CycleList, collect_garbag
 pub use heap_object::{HEADER_SIZE, Header, HeapObject, VTable};
 pub use trace::{GcOrTrace, Trace};
 
+pub use handle::{Handle, Handles};
 pub use slot::{HeapSlot, SlotValue};
 
 #[cfg(feature = "barrier_count")]

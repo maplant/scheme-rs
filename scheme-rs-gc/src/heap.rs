@@ -1,13 +1,17 @@
 use core::{alloc::Layout, marker::PhantomData, ptr::NonNull};
+use std::cmp::min;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use allocator_api2::alloc::{AllocError, Allocator, Global};
+use parking_lot::{Condvar, Mutex};
 
+use crate::HeapObject;
 use crate::{
     GRANULE, Mutator, Reclaimer,
     large::{PAGE, Run},
     reclaimer::ReclaimerState,
     region::{ALL_LINES, BLOCK_SIZE, OwnedBlock, Region, State},
-    sync::{AtomicUsize, Condvar, Mutex, Ordering, lock, wait_while},
+    roots::Roots,
 };
 
 /// Tells the heap how to read an object it allocated.
@@ -60,6 +64,7 @@ pub struct Heap<H: ObjectHeader, A: Allocator = Global> {
     pub(crate) recycled: Mutex<Vec<(OwnedBlock, u128)>>,
     pub(crate) retired: Mutex<Vec<OwnedBlock>>,
     pub(crate) reclaimer: Mutex<ReclaimerState>,
+    pub(crate) roots: Mutex<Vec<&'static dyn Roots>>,
     pub(crate) bytes_allocated: AtomicUsize,
     pub(crate) overflow_bytes: AtomicUsize,
     pub(crate) large_objects: AtomicUsize,
@@ -108,6 +113,7 @@ impl<H: ObjectHeader, A: Allocator> Heap<H, A> {
             recycled: Mutex::new(Vec::new()),
             retired: Mutex::new(Vec::new()),
             reclaimer: Mutex::new(reclaimer),
+            roots: Mutex::new(Vec::new()),
             bytes_allocated: AtomicUsize::new(0),
             next_trigger: AtomicUsize::new(usize::MAX),
             overflow_bytes: AtomicUsize::new(0),
@@ -148,8 +154,8 @@ impl<H: ObjectHeader, A: Allocator> Heap<H, A> {
 
     pub fn stats(&self) -> HeapStats {
         HeapStats {
-            free_blocks: lock(&self.free).len(),
-            recycled_blocks: lock(&self.recycled).len(),
+            free_blocks: self.free.lock().len(),
+            recycled_blocks: self.recycled.lock().len(),
             bytes_allocated: self.bytes_allocated.load(Ordering::Relaxed),
             overflow_bytes: self.overflow_bytes.load(Ordering::Relaxed),
             large_objects: self.large_objects.load(Ordering::Relaxed),
@@ -160,7 +166,7 @@ impl<H: ObjectHeader, A: Allocator> Heap<H, A> {
 
     /// A block to bump into and its free lines. Recycled blocks first.
     pub(crate) fn acquire(&self) -> Result<(OwnedBlock, u128), AllocError> {
-        if let Some((block, holes)) = lock(&self.recycled).pop() {
+        if let Some((block, holes)) = self.recycled.lock().pop() {
             self.region
                 .moved(&block, &[State::Recycled], State::MutatorOwned);
             return Ok((block, holes));
@@ -170,7 +176,7 @@ impl<H: ObjectHeader, A: Allocator> Heap<H, A> {
 
     /// A block with every line free.
     pub(crate) fn acquire_clean(&self) -> Result<OwnedBlock, AllocError> {
-        let mut lock = lock(&self.free);
+        let mut lock = self.free.lock();
 
         if self.claim_space(BLOCK_SIZE).is_ok() {
             let block = lock.pop().ok_or_else(|| {
@@ -191,7 +197,7 @@ impl<H: ObjectHeader, A: Allocator> Heap<H, A> {
     pub(crate) fn retire(&self, block: OwnedBlock) {
         self.region
             .moved(&block, &[State::MutatorOwned], State::Full);
-        lock(&self.retired).push(block);
+        self.retired.lock().push(block);
     }
 
     pub(crate) fn claim_space(&self, bytes: usize) -> Result<(), AllocError> {
@@ -231,7 +237,7 @@ impl<H: ObjectHeader, A: Allocator> Heap<H, A> {
 
     /// Wakes the collector of this heap, if one runs.
     pub fn request_collection(&self) {
-        lock(&self.signal.status).requested = true;
+        self.signal.status.lock().requested = true;
         self.signal.start.notify_one();
     }
 
@@ -239,7 +245,7 @@ impl<H: ObjectHeader, A: Allocator> Heap<H, A> {
     /// after this call have finished, or until the collector exits.
     pub fn wait_for_epochs(&self, epochs: usize) {
         for _ in 0..epochs {
-            let mut status = lock(&self.signal.status);
+            let mut status = self.signal.status.lock();
             let target = if status.running {
                 status.epoch + 2
             } else {
@@ -247,24 +253,42 @@ impl<H: ObjectHeader, A: Allocator> Heap<H, A> {
             };
             status.requested = true;
             self.signal.start.notify_one();
-            drop(wait_while(&self.signal.done, status, |s| {
-                s.epoch < target && s.alive
-            }));
+            self.signal
+                .done
+                .wait_while(&mut status, |s| s.epoch < target && s.alive);
         }
     }
 
     // In theory something could allocate between reading used
     // and storing to next_trigger, making the calculation wrong.
     // In practice this will not have any effect, so I'm leaving it.
-    pub(crate) fn set_trigger(&self, distance: usize) {
-        self.next_trigger.store(
+    pub(crate) fn set_trigger(&self, trigger_distance: usize) {
+        let reserve = self.budget / 4;
+        let distance = min(trigger_distance, reserve);
+        let trigger = min(
             self.used.load(Ordering::Relaxed) + distance,
-            Ordering::Relaxed,
+            self.budget - reserve,
         );
+
+        self.next_trigger.store(trigger, Ordering::Relaxed);
     }
 
     pub(crate) fn return_space(&self, bytes: usize) {
         self.used.fetch_sub(bytes, Ordering::Relaxed);
+    }
+
+    pub fn register_roots(&self, roots: &'static dyn Roots) {
+        self.roots.lock().push(roots);
+    }
+
+    /// # Safety
+    /// Only safe to call in garbage collector pauses
+    /// Useful for debugging and testing.
+    /// Use at your own risk.
+    pub unsafe fn for_each_root(&self, visitor: &mut dyn FnMut(HeapObject)) {
+        for roots in self.roots.lock().iter() {
+            roots.visit_roots(visitor);
+        }
     }
 
     pub(crate) fn alloc_large(&self, layout: Layout) -> Result<NonNull<u8>, AllocError> {

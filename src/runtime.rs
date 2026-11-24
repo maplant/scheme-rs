@@ -16,7 +16,7 @@ use crate::{
     },
     env::{Environment, Global, Scope, TopLevelEnvironment},
     exceptions::{Exception, SourceCache, raise},
-    gc::{Gc, HeapValue, Trace, init_gc},
+    gc::{Gc, HeapValue, Trace, heap, init_gc},
     hashtables::EqualHashSet,
     lists::Pair,
     num,
@@ -31,18 +31,22 @@ use crate::{
     value::{Cell, TAG, UnpackedValue, Value},
 };
 use cranelift_jit::{ArenaMemoryProvider, JITModule};
-use parking_lot::{Mutex, MutexGuard};
-#[cfg(not(feature = "async"))]
-use scheme_rs_gc::without_gc_watching;
-use scheme_rs_gc::{park_self, with_gc_watching};
+use parking_lot::{Mutex, MutexGuard, Once};
+use scheme_rs_gc::{GcWatching, HeapObject, Roots, park_self, with_gc_watching};
 use scheme_rs_macros::{maybe_async, maybe_await, runtime_fn};
 use std::{
     collections::HashSet,
+    marker::PhantomData,
     mem::{ManuallyDrop, MaybeUninit},
     path::Path,
     ptr::NonNull,
     sync::{Arc, LazyLock},
 };
+
+struct InScheme {
+    watching: GcWatching,
+    _not_send: PhantomData<*mut ()>,
+}
 
 /// Scheme-rs core runtime
 ///
@@ -76,6 +80,8 @@ use std::{
 #[derive(Trace, Copy, Clone)]
 pub struct Runtime(#[trace(skip)] pub(crate) &'static RuntimeInner);
 
+static REGISTER: Once = Once::new();
+
 impl Default for Runtime {
     fn default() -> Self {
         Self::handle()
@@ -88,6 +94,7 @@ impl Runtime {
     /// populated.
     pub fn handle() -> Self {
         static APP_RUNTIME: LazyLock<RuntimeInner> = LazyLock::new(RuntimeInner::new);
+        REGISTER.call_once(|| heap().register_roots(&*APP_RUNTIME));
         Self(&APP_RUNTIME)
     }
 
@@ -188,7 +195,7 @@ impl Runtime {
     ) -> Application {
         let mut out = MaybeUninit::uninit();
         let Args([arg1, arg2, arg3, arg4, argn]) = args;
-        with_gc_watching(|| {
+        with_gc_watching(|_| {
             (self.0.jit_cont_entry_fn)(jit, arg1, arg2, arg3, arg4, argn, barrier, &mut out);
         });
         unsafe { out.assume_init() }
@@ -203,7 +210,7 @@ impl Runtime {
     ) -> Application {
         let mut out = MaybeUninit::uninit();
         let Args([arg1, arg2, arg3, arg4, argn]) = args;
-        with_gc_watching(|| {
+        with_gc_watching(|_| {
             (self.0.jit_user_entry_fn)(jit, proc, arg1, arg2, arg3, arg4, argn, barrier, &mut out);
         });
         unsafe { out.assume_init() }
@@ -247,6 +254,18 @@ pub(crate) struct RuntimeInner {
     /// Functions for jumping into JIT code
     jit_cont_entry_fn: JitContEntryFn,
     jit_user_entry_fn: JitUserEntryFn,
+}
+
+unsafe impl Roots for RuntimeInner {
+    fn visit_roots(&self, visitor: &mut dyn FnMut(HeapObject)) {
+        let constants = self.constants_pool.lock();
+        let globals = self.globals_pool.lock();
+
+        unsafe {
+            constants.visit_children(visitor);
+            globals.visit_children(visitor);
+        }
+    }
 }
 
 impl Default for RuntimeInner {
@@ -327,7 +346,7 @@ fn completion() -> (CompletionTx, CompletionRx) {
 
 #[cfg(not(feature = "async"))]
 fn recv_continuation(rx: CompletionRx) -> ReturnAddress {
-    without_gc_watching(|| rx.recv().unwrap())
+    with_gc_watching(|watching| watching.without_gc_watching(|| rx.recv().unwrap()))
 }
 
 #[cfg(feature = "async")]

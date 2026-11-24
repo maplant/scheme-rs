@@ -1,11 +1,11 @@
 use std::{
     cell::Cell,
+    sync::atomic::Ordering,
     thread::{JoinHandle, spawn},
 };
 
 use crate::{
     ObjectHeader,
-    sync::{lock, wait_while},
 };
 
 #[cfg(not(feature = "lxr"))]
@@ -67,12 +67,12 @@ pub struct CollectorHandle<H: ObjectHeader + 'static> {
 
 impl<H: ObjectHeader + 'static> Drop for CollectorHandle<H> {
     fn drop(&mut self) {
-        lock(&self.heap.signal.status).shutdown = true;
+        self.heap.signal.status.lock().shutdown = true;
         self.heap.signal.start.notify_all();
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
-        lock(&self.heap.signal.status).shutdown = false;
+        self.heap.signal.status.lock().shutdown = false;
     }
 }
 
@@ -82,7 +82,7 @@ impl<H: ObjectHeader + 'static> Drop for CollectorHandle<H> {
 pub fn start_collector<C: Collector>(
     heap: &'static Heap<C::Header>,
 ) -> Result<CollectorHandle<C::Header>, CollectorAlreadyRunning> {
-    let mut status = lock(&heap.signal.status);
+    let mut status = heap.signal.status.lock();
     if status.alive {
         return Err(CollectorAlreadyRunning);
     }
@@ -103,7 +103,7 @@ struct ClearAlive<H: ObjectHeader + 'static>(&'static Heap<H>);
 
 impl<H: ObjectHeader + 'static> Drop for ClearAlive<H> {
     fn drop(&mut self) {
-        lock(&self.0.signal.status).alive = false;
+        self.0.signal.status.lock().alive = false;
         self.0.signal.done.notify_all();
     }
 }
@@ -114,9 +114,11 @@ fn run<C: Collector>(heap: &'static Heap<C::Header>) {
     let mut collector = C::new(heap);
 
     loop {
-        let mut status = lock(&heap.signal.status);
+        let mut status = heap.signal.status.lock();
 
-        status = wait_while(&heap.signal.start, status, |s| !s.requested && !s.shutdown);
+        heap.signal
+            .start
+            .wait_while(&mut status, |s| !s.requested && !s.shutdown);
 
         if status.shutdown && !status.requested {
             break;
@@ -128,9 +130,17 @@ fn run<C: Collector>(heap: &'static Heap<C::Header>) {
 
         collector.collect();
 
-        let mut status = lock(&heap.signal.status);
+        let mut status = heap.signal.status.lock();
         status.epoch += 1;
         heap.set_trigger(C::trigger_distance(heap));
+
+        if heap.used.load(Ordering::Relaxed) >= heap.next_trigger.load(Ordering::Relaxed)
+        // ignore collecting if we're shutting down
+            && !status.shutdown
+        {
+            status.requested = true;
+        }
+
         status.running = false;
         heap.signal.done.notify_all();
     }

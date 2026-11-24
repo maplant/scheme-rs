@@ -2,7 +2,7 @@ use std::{
     hint::black_box,
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc,
     },
@@ -10,16 +10,16 @@ use std::{
     time::{Duration, Instant},
 };
 
+use parking_lot::Mutex;
 use scheme_rs_gc::{
     for_each_threads_words, park_self, should_park, stop_the_world, with_gc_watching,
-    without_gc_watching,
 };
 
 // tests run serially, as to not interfere with each other.
 static SERIAL: Mutex<()> = Mutex::new(());
 
 fn spinner(count: Arc<AtomicU64>, done: Arc<AtomicBool>) {
-    with_gc_watching(|| {
+    with_gc_watching(|_| {
         while !done.load(Ordering::Relaxed) {
             if should_park() {
                 park_self();
@@ -31,7 +31,7 @@ fn spinner(count: Arc<AtomicU64>, done: Arc<AtomicBool>) {
 
 #[test]
 fn a_stop_halts_running_threads_until_released() {
-    let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+    let _serial = SERIAL.lock();
     let done = Arc::new(AtomicBool::new(false));
     let counts: Vec<_> = (0..4).map(|_| Arc::new(AtomicU64::new(0))).collect();
     let threads: Vec<_> = counts
@@ -68,9 +68,9 @@ fn a_stop_halts_running_threads_until_released() {
 
 #[test]
 fn a_thread_without_gc_watching_does_not_delay_a_stop() {
-    let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+    let _serial = SERIAL.lock();
     let t =
-        spawn(|| with_gc_watching(|| without_gc_watching(|| sleep(Duration::from_millis(500)))));
+        spawn(|| with_gc_watching(|w| w.without_gc_watching(|| sleep(Duration::from_millis(500)))));
     sleep(Duration::from_millis(50));
     let start = Instant::now();
     let stop = stop_the_world();
@@ -81,12 +81,12 @@ fn a_thread_without_gc_watching_does_not_delay_a_stop() {
 
 #[test]
 fn leaving_without_gc_watching_waits_for_the_stop() {
-    let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+    let _serial = SERIAL.lock();
     let back = Arc::new(AtomicBool::new(false));
     let b = back.clone();
     let t = spawn(move || {
-        with_gc_watching(|| {
-            without_gc_watching(|| sleep(Duration::from_millis(50)));
+        with_gc_watching(|w| {
+            w.without_gc_watching(|| sleep(Duration::from_millis(50)));
             // it should be parked here.
             b.store(true, Ordering::Relaxed);
         })
@@ -106,12 +106,12 @@ fn leaving_without_gc_watching_waits_for_the_stop() {
 
 #[test]
 fn the_scan_sees_values_live_across_park() {
-    let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+    let _serial = SERIAL.lock();
     const MARKER: usize = 0x5ca1_ab1e_0000_1230;
     let done = Arc::new(AtomicBool::new(false));
     let d = done.clone();
     let t = spawn(move || {
-        with_gc_watching(|| {
+        with_gc_watching(|_| {
             let marker = black_box(MARKER);
             while !d.load(Ordering::Relaxed) {
                 if should_park() {
@@ -137,7 +137,7 @@ fn the_scan_sees_values_live_across_park() {
 
 #[test]
 fn the_scan_sees_values_live_across_re_entry() {
-    let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+    let _serial = SERIAL.lock();
     const MARKER: usize = 0x5ca1_ab1e_0000_1230;
     const MARKER_B: usize = 0x5ca1_ab1e_0000_1231;
     let done = Arc::new(AtomicBool::new(false));
@@ -145,10 +145,10 @@ fn the_scan_sees_values_live_across_re_entry() {
     let c = count.clone();
     let d = done.clone();
     let t = spawn(move || {
-        with_gc_watching(|| {
+        with_gc_watching(|w| {
             let marker = black_box(MARKER);
-            without_gc_watching(|| {
-                with_gc_watching(|| {
+            w.without_gc_watching(|| {
+                with_gc_watching(|_| {
                     let marker_b = black_box(MARKER_B);
                     while !d.load(Ordering::Relaxed) {
                         if should_park() {
@@ -190,11 +190,11 @@ fn the_scan_sees_values_live_across_re_entry() {
 
 #[test]
 fn panic_in_with_gc_watching_does_not_break_stops() {
-    let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+    let _serial = SERIAL.lock();
     let (unwind_tx, unwind) = mpsc::channel();
     let (done_tx, done) = mpsc::channel::<()>();
     let t = spawn(move || {
-        let r = catch_unwind(AssertUnwindSafe(|| with_gc_watching(|| panic!("panic!"))));
+        let r = catch_unwind(AssertUnwindSafe(|| with_gc_watching(|_| panic!("panic!"))));
         assert!(r.is_err());
         unwind_tx.send(()).unwrap();
         done.recv().unwrap();
@@ -213,12 +213,12 @@ fn panic_in_with_gc_watching_does_not_break_stops() {
 
 #[test]
 fn panic_in_without_gc_watching_does_not_break_stops() {
-    let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+    let _serial = SERIAL.lock();
     let (unwind_tx, unwind) = mpsc::channel();
     let (done_tx, done) = mpsc::channel::<()>();
     let t = spawn(move || {
         let r = catch_unwind(AssertUnwindSafe(|| {
-            with_gc_watching(|| without_gc_watching(|| panic!("panic!")))
+            with_gc_watching(|w| w.without_gc_watching(|| panic!("panic!")))
         }));
         assert!(r.is_err());
         unwind_tx.send(()).unwrap();
@@ -238,7 +238,7 @@ fn panic_in_without_gc_watching_does_not_break_stops() {
 
 #[test]
 fn park_outside_gc_does_nothing() {
-    let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+    let _serial = SERIAL.lock();
     let stop = stop_the_world();
 
     let (returned_tx, returned) = mpsc::channel();

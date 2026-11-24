@@ -10,7 +10,7 @@ use std::{
 use crate::cycle_collector::CycleHeader;
 #[cfg(feature = "lxr")]
 use crate::lxr_collector::LxrHeader;
-use crate::{AllocError, Mutator, region::MAX_ALIGN};
+use crate::{AllocError, GcWatching, Mutator, region::MAX_ALIGN};
 
 #[derive(Debug)]
 pub struct VTable {
@@ -49,10 +49,11 @@ impl HeapObject {
     /// The memory returned is uninitialized.
     pub unsafe fn alloc_layout_in(
         mutator: &mut Mutator<'_, Header>,
+        watching: &mut GcWatching,
         data_layout: Layout,
     ) -> Result<NonNull<u8>, AllocError> {
         let layout = Self::object_layout(data_layout);
-        Ok(unsafe { Self::init_header(mutator.alloc(layout)?, layout) })
+        Ok(unsafe { Self::init_header(mutator.alloc(watching, layout)?, layout) })
     }
 
     fn object_layout(data_layout: Layout) -> Layout {

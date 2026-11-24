@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use scheme_rs_gc::{
     BLOCK_SIZE, CycleCollector, CycleHeader, Heap, HeapArray, HeapObject, Trace,
-    collect_garbage_in, start_collector,
+    collect_garbage_in, start_collector, with_gc_watching,
 };
 
 static FINALIZED: AtomicUsize = AtomicUsize::new(0);
@@ -23,7 +23,7 @@ unsafe impl Trace for Counted {
 fn zero_length_array_is_allowed() {
     let heap = Box::leak(Box::new(Heap::<CycleHeader>::new(4 * BLOCK_SIZE).unwrap()));
     let mut mutator = heap.mutator();
-    let arr = HeapArray::<usize>::from_iter_in(&mut mutator, []).unwrap();
+    let arr = with_gc_watching(|w| HeapArray::<usize>::from_iter_in(&mut mutator, w, [])).unwrap();
     assert_eq!(arr.len(), 0)
 }
 
@@ -32,7 +32,10 @@ fn dropped_arrays_are_finalized() {
     let heap = Box::leak(Box::new(Heap::<CycleHeader>::new(4 * BLOCK_SIZE).unwrap()));
     let _gc = start_collector::<CycleCollector>(heap).unwrap();
     let mut mutator = heap.mutator();
-    let arr = HeapArray::<Counted>::from_iter_in(&mut mutator, (0..5).map(|_| Counted)).unwrap();
+    let arr = with_gc_watching(|w| {
+        HeapArray::<Counted>::from_iter_in(&mut mutator, w, (0..5).map(|_| Counted))
+    })
+    .unwrap();
 
     for _ in 0..3 {
         collect_garbage_in(heap);

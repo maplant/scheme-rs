@@ -10,7 +10,7 @@ use std::{
 };
 
 use parking_lot::Mutex;
-use scheme_rs_gc::{HeapSlot, without_gc_watching};
+use scheme_rs_gc::{HeapSlot, with_gc_watching};
 use scheme_rs_macros::bridge;
 
 use crate::{
@@ -71,7 +71,8 @@ pub fn join(
 ) -> Result<Application, Exception> {
     let thread = handle.thread.lock().take();
     if let Some(t) = thread {
-        without_gc_watching(|| t.join()).expect("spawned thread panicked");
+        with_gc_watching(|watching| watching.without_gc_watching(|| t.join()))
+            .expect("spawned thread panicked");
     }
     let v = handle.result.get();
     if handle.failed.load(Ordering::Acquire) {
@@ -84,9 +85,11 @@ pub fn join(
 
 #[bridge(name = "sleep", lib = "(threads (1))")]
 pub fn sleep(ms: u64) -> Result<(), Exception> {
-    without_gc_watching(|| {
-        thread::sleep(Duration::from_millis(ms));
-        Ok(())
+    with_gc_watching(|watching| {
+        watching.without_gc_watching(|| {
+            thread::sleep(Duration::from_millis(ms));
+            Ok(())
+        })
     })
 }
 

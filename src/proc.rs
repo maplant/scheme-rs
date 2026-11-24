@@ -81,7 +81,7 @@ use crate::{
     cps::PrimOp,
     env::Local,
     exceptions::{Exception, raise},
-    gc::{Gc, HeapValue, Trace, heap_array, heap_array_with_len},
+    gc::{Gc, HeapValue, Trace, heap, heap_array, heap_array_with_len},
     lists::{Pair, list_len, list_to_vec},
     ports::{BufferMode, Port, Transcoder},
     records::{Embeddable, Embedded},
@@ -1254,6 +1254,7 @@ impl<'a> ContBarrier<'a> {
                 Some(Transcoder::native()),
             )
         });
+        heap().register_roots(&STDOUT);
         self.state
             .stack()
             .iter()
