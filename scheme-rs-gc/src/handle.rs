@@ -51,6 +51,8 @@ pub struct Handle<'h, V: SlotValue> {
 
 impl<V: SlotValue> Drop for Handle<'_, V> {
     fn drop(&mut self) {
+        // Because this takes a lock, handles can't be dropped on the collector thread
+        // during a pause as it would be a deadlock.
         self.table.map.lock().remove(&self.key);
     }
 }

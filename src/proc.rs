@@ -1218,7 +1218,7 @@ impl<'a> ContBarrier<'a> {
 
     pub fn current_input_port(&self) -> Port {
         static STDIN: LazyLock<Port> = LazyLock::new(|| {
-            Port::new(
+            let p = Port::new(
                 "<stdin>",
                 #[cfg(not(feature = "async"))]
                 std::io::stdin(),
@@ -1226,9 +1226,10 @@ impl<'a> ContBarrier<'a> {
                 tokio::io::stdin(),
                 BufferMode::Line,
                 Some(Transcoder::native()),
-            )
+            );
+            heap().register_roots(&STDIN);
+            p
         });
-        heap().register_roots(&STDIN);
         self.state
             .stack()
             .iter()
@@ -1242,6 +1243,7 @@ impl<'a> ContBarrier<'a> {
 
     pub fn current_output_port(&self) -> Port {
         static STDOUT: LazyLock<Port> = LazyLock::new(|| {
+            heap().register_roots(&STDOUT);
             Port::new(
                 "<stdout>",
                 #[cfg(not(feature = "async"))]
@@ -1254,7 +1256,6 @@ impl<'a> ContBarrier<'a> {
                 Some(Transcoder::native()),
             )
         });
-        heap().register_roots(&STDOUT);
         self.state
             .stack()
             .iter()

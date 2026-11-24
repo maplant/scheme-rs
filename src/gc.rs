@@ -29,7 +29,7 @@ use std::{
 
 use heap::{alloc, alloc_zeroed, collect_garbage_sync, unroot_obj};
 pub(crate) use heap::{alloc_layout, heap, heap_array, heap_array_with_len};
-use scheme_rs_gc::{GcOrTrace, HEADER_SIZE, Handles, HeapSlot, VTable};
+use scheme_rs_gc::{GcOrTrace, HEADER_SIZE, Handles, HeapSlot, Roots, VTable};
 use scheme_rs_macros::{maybe_async, maybe_await};
 #[cfg(feature = "tokio")]
 use tokio::task::spawn_blocking;
@@ -339,6 +339,11 @@ pub async fn collect_garbage() {
 #[bridge(name = "collect-garbage", lib = "(runtime (1))")]
 pub fn collect_garbage_bridge() {
     maybe_await!(collect_garbage());
+}
+
+#[doc(hidden)]
+pub fn register_roots(roots: &'static dyn Roots) {
+    heap().register_roots(roots);
 }
 
 #[cfg(test)]

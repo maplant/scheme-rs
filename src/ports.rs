@@ -322,9 +322,12 @@ pub enum Codec {
     Utf16,
 }
 
-pub(crate) static LATIN_1_CODEC: LazyLock<Embedded<Codec>> = LazyLock::new(|| Embedded::new(Codec::Latin1));
-pub(crate) static UTF_8_CODEC: LazyLock<Embedded<Codec>> = LazyLock::new(|| Embedded::new(Codec::Utf8));
-pub(crate) static UTF_16_CODEC: LazyLock<Embedded<Codec>> = LazyLock::new(|| Embedded::new(Codec::Utf16));
+pub(crate) static LATIN_1_CODEC: LazyLock<Embedded<Codec>> =
+    LazyLock::new(|| Embedded::new(Codec::Latin1));
+pub(crate) static UTF_8_CODEC: LazyLock<Embedded<Codec>> =
+    LazyLock::new(|| Embedded::new(Codec::Utf8));
+pub(crate) static UTF_16_CODEC: LazyLock<Embedded<Codec>> =
+    LazyLock::new(|| Embedded::new(Codec::Utf16));
 
 #[bridge(name = "latin-1-codec", lib = "(rnrs io builtins (6))")]
 pub fn latin_1_codec() -> Value {
@@ -1260,7 +1263,8 @@ impl PortIo {
                 ..
             }) => maybe_await!(f(&mut **inner_port, buf, start, count)),
             PortIo::Custom(CustomProcs { write: Some(p), .. }) => {
-                maybe_await!(custom_write(p, buf, start, count))
+                let p = p.clone();
+                maybe_await!(custom_write(&p, buf, start, count))
             }
             _ => Err(Exception::io_write_error("not an output port")),
         }
@@ -1275,7 +1279,8 @@ impl PortIo {
                 ..
             }) => maybe_await!(f(&mut **inner_port, buf, start, count)),
             PortIo::Custom(CustomProcs { read: Some(p), .. }) => {
-                maybe_await!(custom_read(p, buf, start, count))
+                let p = p.clone();
+                maybe_await!(custom_read(&p, buf, start, count))
             }
             _ => Err(Exception::io_read_error("not an input port")),
         }
@@ -1291,7 +1296,10 @@ impl PortIo {
             }) => maybe_await!(f(&mut **inner_port)),
             PortIo::Custom(CustomProcs {
                 get_pos: Some(p), ..
-            }) => maybe_await!(custom_get_pos(p)),
+            }) => {
+                let p = p.clone();
+                maybe_await!(custom_get_pos(&p))
+            }
             _ => Err(Exception::io_error("port does not support port-position")),
         }
     }
@@ -1306,7 +1314,10 @@ impl PortIo {
             }) => maybe_await!(f(&mut **inner_port, pos)),
             PortIo::Custom(CustomProcs {
                 set_pos: Some(p), ..
-            }) => maybe_await!(custom_set_pos(p, pos)),
+            }) => {
+                let p = p.clone();
+                maybe_await!(custom_set_pos(&p, pos))
+            }
             _ => Err(Exception::io_error(
                 "port does not support set-port-position!",
             )),
@@ -1323,7 +1334,8 @@ impl PortIo {
                 ..
             }) => maybe_await!(f(&mut **inner_port)),
             PortIo::Custom(CustomProcs { close: Some(p), .. }) => {
-                maybe_await!(custom_close(p))
+                let p = p.clone();
+                maybe_await!(custom_close(&p))
             }
             _ => Ok(()),
         }

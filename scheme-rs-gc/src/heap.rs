@@ -286,8 +286,9 @@ impl<H: ObjectHeader, A: Allocator> Heap<H, A> {
     /// Useful for debugging and testing.
     /// Use at your own risk.
     pub unsafe fn for_each_root(&self, visitor: &mut dyn FnMut(HeapObject)) {
-        for roots in self.roots.lock().iter() {
-            roots.visit_roots(visitor);
+        let roots = self.roots.lock().clone();
+        for r in roots {
+            r.visit_roots(visitor);
         }
     }
 

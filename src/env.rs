@@ -5,7 +5,10 @@ use std::{
     fmt,
     hash::{Hash, Hasher},
     path::{Path, PathBuf},
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::{
+        LazyLock,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 #[cfg(feature = "async")]
@@ -1048,8 +1051,8 @@ impl fmt::Debug for Binding {
 type Bindings = Vec<(BTreeSet<Scope>, Binding)>;
 
 // We can probably design this much more intelligently
-pub(crate) static GLOBAL_BINDING_TABLE: RootedStatic<HashMap<Symbol, Bindings>> =
-    RootedStatic::new(|| Mutex::new(HashMap::default()));
+pub(crate) static GLOBAL_BINDING_TABLE: LazyLock<Mutex<HashMap<Symbol, Bindings>>> =
+    LazyLock::new(|| Mutex::new(HashMap::default()));
 
 pub(crate) fn add_binding(id: Identifier, binding: Binding) {
     GLOBAL_BINDING_TABLE
