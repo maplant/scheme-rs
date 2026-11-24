@@ -225,7 +225,7 @@ use crate::{
     exceptions::Exception,
     fmt::{Formatter, Mode},
     gc::{self, Gc, HeapObject, Trace},
-    lists::{append_list, iter_list, split_list},
+    lists::{self, iter, split_list},
     proc::{Application, Args, ContBarrier, FuncPtr, Procedure},
     registry::define,
     symbols::Symbol,
@@ -1280,6 +1280,20 @@ pub fn make_record_constructor_descriptor(
     })
 }
 
+fn next_constructor(mut rtds: Vec<Value>, collected: Value) -> Procedure {
+    if rtds.len() == 1 {
+        Procedure::new(
+            [rtds.pop().unwrap(), collected],
+            FuncPtr::Bridge(constructor),
+        )
+    } else {
+        Procedure::new(
+            [Value::from(rtds), collected],
+            FuncPtr::Bridge(chain_constructors),
+        )
+    }
+}
+
 #[define(name = "record-constructor", lib = "(rnrs records procedural (6))")]
 pub fn record_constructor(
     rcd: Embedded<RecordConstructorDescriptor>,
@@ -1291,13 +1305,8 @@ pub fn record_constructor(
     let rtds = rtds.into_iter().map(Value::from).collect::<Vec<_>>();
     barrier.push_cont([Value::from(protocols)], chain_protocols);
 
-    Ok(Application::new(
-        Procedure::new(
-            [Value::from(rtds), Value::null()],
-            FuncPtr::Bridge(chain_constructors),
-        ),
-        Args::pack([]),
-    ))
+    let first_constructor = next_constructor(rtds, Value::null());
+    Ok(barrier.call_cont(Args::pack([Value::from(first_constructor)])))
 }
 
 fn rcd_to_protocols_and_rtds(
@@ -1338,23 +1347,17 @@ fn chain_constructors(
     let mut rtds = rtds.0.vec.read().clone();
     let remaining_rtds = rtds.split_off(1);
     let curr_rtd: RecordTypeDescriptor = rtds[0].clone().try_into()?;
-    let rtds_remain = !remaining_rtds.is_empty();
-    let collected = append_list(&collected, args)?;
-    let next_proc = Procedure::new(
-        [
-            if rtds_remain {
-                Value::from(remaining_rtds)
-            } else {
-                Value::from(curr_rtd)
-            },
-            collected,
-        ],
-        if rtds_remain {
-            FuncPtr::Bridge(chain_constructors)
-        } else {
-            FuncPtr::Bridge(constructor)
-        },
-    );
+
+    // Check that the correct number of arguments is passed to this constructor:
+    let arity = curr_rtd.sub_constructor_arity();
+    let args_len = lists::length(&args)?;
+    if arity != args_len {
+        return Err(Exception::wrong_num_of_args(arity, args_len));
+    }
+
+    let collected = lists::append(&collected, args)?;
+    let next_proc = next_constructor(remaining_rtds, collected);
+
     Ok(barrier.call_cont(Args::pack([Value::from(next_proc)])))
 }
 
@@ -1366,10 +1369,15 @@ fn constructor(
     barrier: &mut ContBarrier,
 ) -> Result<Application, Exception> {
     // The fields of the record are the accumulated field list chained with
-    // the arguments to this function.
-    let mut fields = iter_list(&collected)
-        .chain(iter_list(&args))
-        .collect::<Vec<_>>();
+    // the arguments to this function:
+    let mut fields = iter(&collected).chain(iter(&args)).collect::<Vec<_>>();
+
+    // Check that fields matches the constructor arity:
+    let arity = rtd.constructor_arity();
+    if arity != fields.len() {
+        return Err(Exception::wrong_num_of_args(arity, fields.len()));
+    }
+
     let (embedded_vtable_and_writer, fields) =
         if let Some(embedded_constructor) = rtd.embedded_constructor {
             let embedded_vtable = rtd.embedded_vtable.unwrap();

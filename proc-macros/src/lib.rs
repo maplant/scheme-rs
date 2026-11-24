@@ -374,7 +374,7 @@ fn bridge_inner(
         let no_extra = if num_args >= MAX_DIRECT_ARGS {
             let err = too_many_args_error(
                 num_optional > 0,
-                quote!(NUM_ARGS + ::scheme_rs::lists::list_len(&rest)),
+                quote!(NUM_ARGS + ::scheme_rs::lists::iter(&rest).count()),
             );
             quote! {
                 if !rest.is_null() {
@@ -389,7 +389,7 @@ fn bridge_inner(
             });
             let err = too_many_args_error(
                 num_optional > 0,
-                quote!(NUM_ARGS #( + #defined )* + ::scheme_rs::lists::list_len(&rest)),
+                quote!(NUM_ARGS #( + #defined )* + ::scheme_rs::lists::iter(&rest).count()),
             );
             quote! {
                 if !#next.is_undefined() {

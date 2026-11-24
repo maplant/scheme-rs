@@ -17,7 +17,7 @@ use crate::{
     character::{char_switch_case, to_foldcase},
     exceptions::Exception,
     fmt::{Formatter, Mode},
-    lists::iter_list,
+    lists::iter,
     records::{Embeddable, Embedded, Record, RecordTypeDescriptor},
     registry::define,
     value::Value,
@@ -77,7 +77,7 @@ pub fn make_string(k: usize, chr: Option<char>) -> Result<String> {
 pub fn string(chr: Value, #[rest_args] chars: Value) -> Result<String> {
     [chr.clone()]
         .into_iter()
-        .chain(iter_list(&chars))
+        .chain(iter(&chars))
         .map(|x| -> Result<char> { x.try_into() })
         .collect()
 }
@@ -101,7 +101,7 @@ pub fn is_string_eq(
     string_2: Value,
     #[rest_args] string_n: Value,
 ) -> Result<bool> {
-    for string_n in [string_2.clone()].into_iter().chain(iter_list(&string_n)) {
+    for string_n in [string_2.clone()].into_iter().chain(iter(&string_n)) {
         let string_n: Embedded<String> = string_n.try_into()?;
         if *string_1 != *string_n {
             return Ok(false);
@@ -117,7 +117,7 @@ pub fn is_string_less(
     #[rest_args] string_n: Value,
 ) -> Result<bool> {
     let mut prev_string = string_1;
-    for string_n in [string_2.clone()].into_iter().chain(iter_list(&string_n)) {
+    for string_n in [string_2.clone()].into_iter().chain(iter(&string_n)) {
         let string_n: Embedded<String> = string_n.try_into()?;
         if *prev_string >= *string_n {
             return Ok(false);
@@ -134,7 +134,7 @@ pub fn is_string_greater(
     #[rest_args] string_n: Value,
 ) -> Result<bool> {
     let mut prev_string = string_1;
-    for string_n in [string_2.clone()].into_iter().chain(iter_list(&string_n)) {
+    for string_n in [string_2.clone()].into_iter().chain(iter(&string_n)) {
         let string_n: Embedded<String> = string_n.try_into()?;
         if *prev_string <= *string_n {
             return Ok(false);
@@ -151,7 +151,7 @@ pub fn is_string_less_equal(
     #[rest_args] string_n: Value,
 ) -> Result<bool> {
     let mut prev_string = string_1;
-    for string_n in [string_2.clone()].into_iter().chain(iter_list(&string_n)) {
+    for string_n in [string_2.clone()].into_iter().chain(iter(&string_n)) {
         let string_n: Embedded<String> = string_n.try_into()?;
         if *prev_string > *string_n {
             return Ok(false);
@@ -168,7 +168,7 @@ pub fn is_string_greater_equal(
     #[rest_args] string_n: Value,
 ) -> Result<bool> {
     let mut prev_string = string_1;
-    for string_n in [string_2.clone()].into_iter().chain(iter_list(&string_n)) {
+    for string_n in [string_2.clone()].into_iter().chain(iter(&string_n)) {
         let string_n: Embedded<String> = string_n.try_into()?;
         if *prev_string < *string_n {
             return Ok(false);
@@ -191,7 +191,7 @@ pub fn substring(string: Embedded<String>, start: usize, end: usize) -> Result<S
 #[define(name = "string-append", lib = "(rnrs base builtins (6))")]
 pub fn list(#[rest_args] args: Value) -> Result<String> {
     let mut output = String::new();
-    for arg in iter_list(&args) {
+    for arg in iter(&args) {
         let arg: Embedded<String> = arg.try_into()?;
         output += arg.as_str();
     }
