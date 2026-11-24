@@ -1366,10 +1366,17 @@ fn constructor(
     barrier: &mut ContBarrier,
 ) -> Result<Application, Exception> {
     // The fields of the record are the accumulated field list chained with
-    // the arguments to this function.
+    // the arguments to this function:
     let mut fields = iter_list(&collected)
         .chain(iter_list(&args))
         .collect::<Vec<_>>();
+
+    // Check that fields matches the constructor arity:
+    let arity = rtd.constructor_arity();
+    if arity != fields.len() {
+        return Err(Exception::wrong_num_of_args(arity, fields.len()));
+    }
+
     let (embedded_vtable_and_writer, fields) =
         if let Some(embedded_constructor) = rtd.embedded_constructor {
             let embedded_vtable = rtd.embedded_vtable.unwrap();
