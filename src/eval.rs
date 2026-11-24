@@ -40,7 +40,7 @@ pub fn environment(
 ) -> Result<Application, Exception> {
     let env = Environment::Top(TopLevelEnvironment::new_repl());
     let scope_set = env.get_scope_set();
-    let import_sets = crate::lists::iter_list(&import_spec)
+    let import_sets = crate::lists::iter(&import_spec)
         .map(|spec| {
             let syntax = Syntax::datum_to_syntax(&scope_set, spec, &Span::default());
             ImportSet::parse(discard_for(&syntax))

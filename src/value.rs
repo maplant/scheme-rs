@@ -1332,7 +1332,7 @@ pub fn boolean_pred(arg: Value) -> bool {
 
 #[define(name = "boolean=?", lib = "(rnrs base builtins (6))")]
 pub fn boolean_eq_pred(a: Value, #[rest_args] args: Value) -> bool {
-    a.type_of() == ValueType::Boolean && lists::iter_list(&args).all(|arg| arg == a)
+    a.type_of() == ValueType::Boolean && lists::iter(&args).all(|arg| arg == a)
 }
 
 #[define(name = "symbol?", lib = "(rnrs base builtins (6))")]

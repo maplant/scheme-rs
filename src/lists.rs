@@ -311,13 +311,8 @@ impl Iterator for ListIterator {
 }
 
 /// Iterate over the elements of a scheme list without collecting them.
-pub fn iter_list(list: &Value) -> ListIterator {
+pub fn iter(list: &Value) -> ListIterator {
     ListIterator { curr: list.clone() }
-}
-
-/// Return the number of elements in a scheme list.
-pub fn list_len(list: &Value) -> usize {
-    iter_list(list).count()
 }
 
 /// Split a list at index `at`, returning the first `at` elements as a newly
@@ -454,7 +449,7 @@ pub fn list_to_string(List { items, .. }: List) -> Result<String, Exception> {
     items.into_iter().map(char::try_from).collect()
 }
 
-pub(crate) fn append_list(list: &Value, tail: Value) -> Result<Value, Exception> {
+pub(crate) fn append(list: &Value, tail: Value) -> Result<Value, Exception> {
     if list.is_null() {
         return Ok(tail);
     }
@@ -484,7 +479,7 @@ pub(crate) fn append_list(list: &Value, tail: Value) -> Result<Value, Exception>
 }
 
 #[define(name = "append", lib = "(rnrs base builtins (6))")]
-pub fn append(#[rest_args] lists: Value) -> Result<Value, Exception> {
+pub fn append_builtin(#[rest_args] lists: Value) -> Result<Value, Exception> {
     fn append_lists(lists: &Value) -> Result<Value, Exception> {
         let Some(pair) = lists.cast::<Pair>() else {
             return Ok(Value::null());
@@ -493,7 +488,7 @@ pub fn append(#[rest_args] lists: Value) -> Result<Value, Exception> {
         if cdr.is_null() {
             Ok(pair.car())
         } else {
-            append_list(&pair.car(), append_lists(&cdr)?)
+            append(&pair.car(), append_lists(&cdr)?)
         }
     }
 

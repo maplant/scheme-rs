@@ -52,7 +52,7 @@
 
 use crate::{
     gc::Trace,
-    lists::{Pair, iter_list, slice_to_list},
+    lists::{Pair, iter, slice_to_list},
     ports::{IoDecodingError, IoEncodingError, IoError, IoReadError, IoWriteError},
     proc::{Application, Args, ContBarrier, DynStackElem, FuncPtr, Procedure, Rest},
     records::{Embeddable, Embedded, RecordTypeDescriptor},
@@ -870,9 +870,7 @@ pub fn condition(#[rest_args] conditions: Value) -> Result<Value, Exception> {
     {
         return Ok(pair.car());
     }
-    Ok(Value::from(CompoundCondition(
-        iter_list(&conditions).collect(),
-    )))
+    Ok(Value::from(CompoundCondition(iter(&conditions).collect())))
 }
 
 #[define(name = "simple-conditions", lib = "(rnrs conditions (6))")]

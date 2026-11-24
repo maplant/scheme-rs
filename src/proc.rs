@@ -78,7 +78,7 @@ use crate::{
     env::Local,
     exceptions::{Exception, raise},
     gc::{self, Gc, Trace},
-    lists::{Pair, list_len, list_to_vec},
+    lists::{self, Pair, list_to_vec},
     ports::{BufferMode, Port, Transcoder},
     records::{Embeddable, Embedded},
     registry::BridgeFnDebugInfo,
@@ -222,7 +222,7 @@ impl Args {
             }
             count += 1;
         }
-        count + list_len(&self.0[MAX_DIRECT_ARGS])
+        count + lists::iter(&self.0[MAX_DIRECT_ARGS]).count()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -628,7 +628,7 @@ impl Procedure {
 
     pub(crate) fn to_primop(&self) -> Option<PrimOp> {
         use crate::{
-            lists::{append, car, cdr, cons, list},
+            lists::{append_builtin, car, cdr, cons, list},
             num::{add, div, equal, greater, greater_equal, lesser, lesser_equal, mul, sub},
             proc::{BridgePtr, FuncPtr::Bridge},
             value::{not, null_pred, pair_pred},
@@ -646,7 +646,7 @@ impl Procedure {
             (lesser, PrimOp::Lesser),
             (lesser_equal, PrimOp::LesserEqual),
             (list, PrimOp::List),
-            (append, PrimOp::Append),
+            (append_builtin, PrimOp::Append),
             (cons, PrimOp::Cons),
             (car, PrimOp::Car),
             (cdr, PrimOp::Cdr),
@@ -906,7 +906,7 @@ macro_rules! direct_args {
         let no_extra = if expected < MAX_DIRECT_ARGS {
             $args.0[expected].is_undefined()
         } else {
-            list_len(&$args.0[MAX_DIRECT_ARGS]) == expected - MAX_DIRECT_ARGS
+            lists::iter(&$args.0[MAX_DIRECT_ARGS]).count() == expected - MAX_DIRECT_ARGS
         };
 
         if !required_present || !no_extra {
@@ -953,7 +953,7 @@ macro_rules! direct_args_rest {
 
         let required_present = $args.0[..direct].iter().all(|arg| !arg.is_undefined())
             && (expected <= MAX_DIRECT_ARGS
-                || list_len(&$args.0[MAX_DIRECT_ARGS]) >= expected - MAX_DIRECT_ARGS);
+                || lists::iter(&$args.0[MAX_DIRECT_ARGS]).count() >= expected - MAX_DIRECT_ARGS);
 
         if !required_present {
             return raise(

@@ -7,7 +7,7 @@ use crate::{
     exceptions::Exception,
     fmt::Formatter,
     gc::Trace,
-    lists::{List, iter_list, slice_to_list},
+    lists::{List, iter, slice_to_list},
     records::{Embeddable, Embedded, Record, RecordTypeDescriptor},
     registry::define,
     value::Value,
@@ -416,7 +416,7 @@ pub fn make_vector(n: usize, with: Option<Value>) -> Result<Vector, Exception> {
 
 #[define(name = "vector", lib = "(rnrs base builtins (6))")]
 pub fn vector(#[rest_args] args: Value) -> Vector {
-    Vector::mutable(iter_list(&args).collect())
+    Vector::mutable(iter(&args).collect())
 }
 
 #[define(name = "vector-ref", lib = "(rnrs base builtins (6))")]
@@ -530,7 +530,7 @@ pub fn vector_append(#[rest_args] args: Value) -> Result<Value, Exception> {
     }
 
     let mut appended = Vec::new();
-    for arg in iter_list(&args) {
+    for arg in iter(&args) {
         let vec: Vector = arg.try_into()?;
         appended.extend(vec.0.vec.read().iter().cloned());
     }

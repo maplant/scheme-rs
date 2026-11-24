@@ -659,7 +659,7 @@ unsafe extern "C" fn append(vals: *const *const (), num_vals: u32, error: *mut V
             if num_vals == 1 {
                 return Ok((*first).clone());
             }
-            crate::lists::append_list(&first, append_raw(vals.add(1), num_vals - 1)?)
+            crate::lists::append(&first, append_raw(vals.add(1), num_vals - 1)?)
         }
     }
 

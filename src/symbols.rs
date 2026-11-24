@@ -77,7 +77,7 @@ pub fn symbol_equal_pred(
     if symbol1 != symbol2 {
         return Ok(false);
     }
-    for symboln in crate::lists::iter_list(&symboln) {
+    for symboln in crate::lists::iter(&symboln) {
         let symboln = symboln.try_to::<Symbol>()?;
         if symbol1 != symboln {
             return Ok(false);

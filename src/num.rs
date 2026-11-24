@@ -25,7 +25,7 @@
 use crate::{
     exceptions::Exception,
     gc::Trace,
-    lists::iter_list,
+    lists::iter,
     ports::{BufferMode, Port, Transcoder},
     records::Embedded,
     registry::define,
@@ -2009,7 +2009,7 @@ pub fn exact(z: Number) -> Number {
 
 #[define(name = "=", lib = "(rnrs base builtins (6))")]
 pub fn equal(#[rest_args] args: Value) -> Result<bool, Exception> {
-    equal_prim(iter_list(&args))
+    equal_prim(iter(&args))
 }
 
 pub(crate) fn equal_prim(vals: impl IntoIterator<Item = Value>) -> Result<bool, Exception> {
@@ -2028,7 +2028,7 @@ pub(crate) fn equal_prim(vals: impl IntoIterator<Item = Value>) -> Result<bool, 
 
 #[define(name = "<", lib = "(rnrs base builtins (6))")]
 pub fn lesser(#[rest_args] args: Value) -> Result<bool, Exception> {
-    lesser_prim(iter_list(&args))
+    lesser_prim(iter(&args))
 }
 
 pub(crate) fn lesser_prim(vals: impl IntoIterator<Item = Value>) -> Result<bool, Exception> {
@@ -2055,7 +2055,7 @@ pub(crate) fn lesser_prim(vals: impl IntoIterator<Item = Value>) -> Result<bool,
 
 #[define(name = ">", lib = "(rnrs base builtins (6))")]
 pub fn greater(#[rest_args] args: Value) -> Result<bool, Exception> {
-    greater_prim(iter_list(&args))
+    greater_prim(iter(&args))
 }
 
 pub(crate) fn greater_prim(vals: impl IntoIterator<Item = Value>) -> Result<bool, Exception> {
@@ -2084,7 +2084,7 @@ pub(crate) fn greater_prim(vals: impl IntoIterator<Item = Value>) -> Result<bool
 
 #[define(name = "<=", lib = "(rnrs base builtins (6))")]
 pub fn lesser_equal(#[rest_args] args: Value) -> Result<bool, Exception> {
-    lesser_equal_prim(iter_list(&args))
+    lesser_equal_prim(iter(&args))
 }
 
 pub(crate) fn lesser_equal_prim(vals: impl IntoIterator<Item = Value>) -> Result<bool, Exception> {
@@ -2114,7 +2114,7 @@ pub(crate) fn lesser_equal_prim(vals: impl IntoIterator<Item = Value>) -> Result
 
 #[define(name = ">=", lib = "(rnrs base builtins (6))")]
 pub fn greater_equal(#[rest_args] args: Value) -> Result<bool, Exception> {
-    greater_equal_prim(iter_list(&args))
+    greater_equal_prim(iter(&args))
 }
 
 pub(crate) fn greater_equal_prim(vals: impl IntoIterator<Item = Value>) -> Result<bool, Exception> {
@@ -2174,7 +2174,7 @@ pub fn is_nan(num: SimpleNumber) -> bool {
 
 #[define(name = "+", lib = "(rnrs base builtins (6))")]
 pub fn add(#[rest_args] args: Value) -> Result<Number, Exception> {
-    add_prim(iter_list(&args))
+    add_prim(iter(&args))
 }
 
 pub(crate) fn add_prim(vals: impl IntoIterator<Item = Value>) -> Result<Number, Exception> {
@@ -2188,7 +2188,7 @@ pub(crate) fn add_prim(vals: impl IntoIterator<Item = Value>) -> Result<Number, 
 
 #[define(name = "*", lib = "(rnrs base builtins (6))")]
 pub fn mul(#[rest_args] args: Value) -> Result<Number, Exception> {
-    mul_prim(iter_list(&args))
+    mul_prim(iter(&args))
 }
 
 pub(crate) fn mul_prim(vals: impl IntoIterator<Item = Value>) -> Result<Number, Exception> {
@@ -2202,7 +2202,7 @@ pub(crate) fn mul_prim(vals: impl IntoIterator<Item = Value>) -> Result<Number, 
 
 #[define(name = "-", lib = "(rnrs base builtins (6))")]
 pub fn sub(arg1: Value, #[rest_args] args: Value) -> Result<Number, Exception> {
-    sub_prim(&arg1, iter_list(&args))
+    sub_prim(&arg1, iter(&args))
 }
 
 pub(crate) fn sub_prim(
@@ -2224,7 +2224,7 @@ pub(crate) fn sub_prim(
 
 #[define(name = "/", lib = "(rnrs base builtins (6))")]
 pub fn div(arg1: Value, #[rest_args] args: Value) -> Result<Number, Exception> {
-    div_prim(&arg1, iter_list(&args))
+    div_prim(&arg1, iter(&args))
 }
 
 pub(crate) fn div_prim(
