@@ -5,6 +5,7 @@ mod bitmap;
 mod collector;
 mod cycle_collector;
 mod gc_stack;
+mod handle;
 mod heap;
 mod heap_object;
 mod large;
@@ -13,9 +14,9 @@ mod lxr_collector;
 mod mutator;
 mod reclaimer;
 mod region;
+mod roots;
 mod safepoint;
 mod slot;
-mod sync;
 mod trace;
 
 pub use allocator_api2::alloc::{AllocError, Allocator, Global};
@@ -33,9 +34,11 @@ pub use mutator::Mutator;
 pub use reclaimer::Reclaimer;
 pub use region::{BLOCK_SIZE, GRANULE, LINE_SIZE, LOS_MAX_SIZE, MAX_ALIGN};
 pub use safepoint::{
-    Stopped, for_each_threads_words, park_self, should_park, stop_the_world, with_gc_watching,
-    without_gc_watching,
+    GcWatching, Stopped, for_each_threads_words, park_self, should_park, stop_the_world,
+    with_gc_watching,
 };
+
+pub use roots::{RootedStatic, Roots};
 
 pub use collector::{
     Collector, CollectorAlreadyRunning, CollectorHandle, DefaultCollector, on_collector_thread,

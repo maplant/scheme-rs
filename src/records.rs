@@ -317,6 +317,8 @@ unsafe impl Embeddable for RecordTypeDescriptorInner {
             })
         });
 
+        heap().register_roots(&RTD);
+
         RTD.clone()
     }
 }
@@ -1093,7 +1095,8 @@ pub(crate) fn is_subtype_of(val: &Value, rt: RecordTypeDescriptor) -> Result<boo
 type NonGenerativeStore =
     LazyLock<Arc<Mutex<HashMap<Symbol, Embedded<RecordTypeDescriptorInner>>>>>;
 
-static NONGENERATIVE: NonGenerativeStore = LazyLock::new(|| Arc::new(Mutex::new(HashMap::new())));
+pub(crate) static NONGENERATIVE: NonGenerativeStore =
+    LazyLock::new(|| Arc::new(Mutex::new(HashMap::new())));
 
 #[bridge(
     name = "make-record-type-descriptor",

@@ -1228,6 +1228,7 @@ impl<'a> ContBarrier<'a> {
                 Some(Transcoder::native()),
             )
         });
+        heap().register_roots(&STDIN);
         self.state
             .stack()
             .iter()
